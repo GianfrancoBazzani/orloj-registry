@@ -19,7 +19,8 @@ export interface Mcp {
 
 export interface Vault {
   id: string;
-  label: string;
+  name: string;
+  description: string;
   address: string;
   kms: string;
   policy: string;
@@ -241,39 +242,6 @@ export const MCP_REGISTRY: Mcp[] = [
     audits: [],
     verified: true,
     stars: 410,
-    color: "blue",
-  },
-];
-
-export const USER_VAULTS: Vault[] = [
-  {
-    id: "v-1",
-    label: "Daily Operations",
-    address: "0x7c2A...91Fd",
-    kms: "Turnkey",
-    policy: "500 USDC / day",
-    keys: 2,
-    lastUsed: "2 min ago",
-    color: "brass",
-  },
-  {
-    id: "v-2",
-    label: "Treasury Cold",
-    address: "0x3eA8...Bc44",
-    kms: "Fireblocks",
-    policy: "multisig 3/5, manual",
-    keys: 5,
-    lastUsed: "4 days ago",
-    color: "verdigris",
-  },
-  {
-    id: "v-3",
-    label: "Research Sandbox",
-    address: "0x91dc...0a12",
-    kms: "Lit Protocol",
-    policy: "testnet only",
-    keys: 1,
-    lastUsed: "11 hours ago",
     color: "blue",
   },
 ];

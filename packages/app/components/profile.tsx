@@ -16,7 +16,6 @@ import {
 } from "./ornaments";
 import {
   MCP_REGISTRY,
-  USER_VAULTS,
   USER_AGENTS,
   SHORT_ADDR,
   type Vault,
@@ -55,7 +54,7 @@ export const Profile = () => {
   const [tab, setTab] = useState(bindMcp ? "agents" : "overview");
   const [creatingVault, setCreatingVault] = useState(false);
   const [creatingAgent, setCreatingAgent] = useState(!!bindMcp);
-  const [vaults, setVaults] = useState<Vault[]>(USER_VAULTS);
+  const [vaults, setVaults] = useState<Vault[]>([]);
   const [agents, setAgents] = useState<Agent[]>(USER_AGENTS);
 
   const tabs = [
@@ -501,8 +500,8 @@ const Vaults = ({
       {creating && (
         <CreateVault
           onCancel={() => setCreating(false)}
-          onCreate={(v) => {
-            setVaults([...vaults, { ...v, id: "v-" + Date.now() }]);
+          onCreate={(vault) => {
+            setVaults([...vaults, vault]);
             setCreating(false);
           }}
         />
@@ -540,16 +539,28 @@ const Vaults = ({
                   alignItems: "flex-start",
                 }}
               >
-                <div>
+                <div style={{ minWidth: 0, paddingRight: 12 }}>
                   <div className="display" style={{ fontSize: 18 }}>
-                    {v.label}
+                    {v.name}
                   </div>
+                  {v.description && (
+                    <div
+                      style={{
+                        fontSize: 12.5,
+                        color: "var(--ink-soft)",
+                        marginTop: 4,
+                        lineHeight: 1.4,
+                      }}
+                    >
+                      {v.description}
+                    </div>
+                  )}
                   <div
                     className="smallcaps"
                     style={{
                       fontSize: 10,
                       color: "var(--ink-soft)",
-                      marginTop: 2,
+                      marginTop: 6,
                     }}
                   >
                     kms · {v.kms}
@@ -669,12 +680,46 @@ const CreateVault = ({
   onCreate,
 }: {
   onCancel: () => void;
-  onCreate: (v: Omit<Vault, "id">) => void;
+  onCreate: (vault: Vault) => void;
 }) => {
-  const [label, setLabel] = useState("");
-  const [kms, setKms] = useState("Turnkey");
-  const [policy, setPolicy] = useState("100 USDC / day");
-  const [color, setColor] = useState("brass");
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/vaults", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim(), description: description.trim() }),
+      });
+      if (res.status === 401) {
+        setError("Your session has expired. Please sign in again.");
+        return;
+      }
+      const payload = (await res.json().catch(() => null)) as
+        | { vault?: Vault; error?: string }
+        | null;
+      if (!res.ok) {
+        setError(payload?.error ?? "Failed to create vault.");
+        return;
+      }
+      if (!payload?.vault) {
+        setError("Unexpected response from server.");
+        return;
+      }
+      onCreate(payload.vault);
+    } catch {
+      setError("Network error. Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <div
       style={{
@@ -697,62 +742,51 @@ const CreateVault = ({
           New vault
         </h3>
       </div>
-      <div
-        style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 12 }}
-      >
-        <Field label="Label">
-          <Input
-            value={label}
-            onChange={(e) => setLabel(e.target.value)}
-            placeholder="e.g. Daily Operations"
-          />
-        </Field>
-        <Field label="KMS provider">
-          <Select
-            value={kms}
-            onChange={setKms}
-            options={[
-              "Turnkey",
-              "Fireblocks",
-              "Lit Protocol",
-              "Privy",
-              "Self-custody (Safe)",
-            ]}
-          />
-        </Field>
-        <Field label="Spend policy">
-          <Input value={policy} onChange={(e) => setPolicy(e.target.value)} />
-        </Field>
-      </div>
-      <Field label="Vault color" style={{ marginTop: 16 }}>
-        <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-          {(
-            [
-              ["brass", "var(--brass)"],
-              ["verdigris", "var(--verdigris)"],
-              ["blue", "var(--stained-blue)"],
-              ["wine", "var(--wine)"],
-            ] as [string, string][]
-          ).map(([k, c]) => (
-            <button
-              key={k}
-              onClick={() => setColor(k)}
-              style={{
-                width: 36,
-                height: 36,
-                background: c,
-                border:
-                  color === k
-                    ? "2px solid var(--ink)"
-                    : "2px solid transparent",
-                cursor: "pointer",
-                boxShadow:
-                  color === k ? "2px 2px 0 var(--ink-soft)" : "none",
-              }}
-            />
-          ))}
-        </div>
+      <Field label="Name">
+        <Input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="e.g. Daily Operations"
+          maxLength={80}
+          disabled={submitting}
+        />
       </Field>
+      <Field label="Description" style={{ marginTop: 16 }}>
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="What is this vault for?"
+          maxLength={500}
+          disabled={submitting}
+          rows={3}
+          style={{
+            width: "100%",
+            padding: "12px 14px",
+            background: "rgba(255,255,255,0.45)",
+            border: "1px solid var(--line)",
+            fontFamily: "var(--font-ui)",
+            fontSize: 14,
+            color: "var(--ink)",
+            outline: "none",
+            borderRadius: 0,
+            resize: "vertical",
+          }}
+        />
+      </Field>
+      {error && (
+        <div
+          style={{
+            marginTop: 14,
+            padding: "10px 12px",
+            background: "rgba(140,30,40,0.08)",
+            border: "1px solid var(--wine)",
+            color: "var(--wine)",
+            fontSize: 13,
+          }}
+        >
+          {error}
+        </div>
+      )}
       <div
         style={{
           display: "flex",
@@ -761,29 +795,15 @@ const CreateVault = ({
           justifyContent: "flex-end",
         }}
       >
-        <Btn kind="ghost" onClick={onCancel}>
+        <Btn kind="ghost" onClick={onCancel} disabled={submitting}>
           Cancel
         </Btn>
         <Btn
           kind="primary"
-          disabled={!label}
-          onClick={() =>
-            onCreate({
-              label,
-              kms,
-              policy,
-              color,
-              address:
-                "0x" +
-                Math.random().toString(16).slice(2, 10) +
-                "..." +
-                Math.random().toString(16).slice(2, 6),
-              keys: 1,
-              lastUsed: "just now",
-            })
-          }
+          disabled={!name.trim() || submitting}
+          onClick={submit}
         >
-          Generate keypair
+          {submitting ? "Creating…" : "Generate keypair"}
         </Btn>
       </div>
     </div>
@@ -966,7 +986,7 @@ const CreateAgent = ({
   onCreate: (a: Omit<Agent, "id">) => void;
 }) => {
   const [name, setName] = useState("");
-  const [vault, setVault] = useState(vaults[0]?.label || "");
+  const [vault, setVault] = useState(vaults[0]?.name || "");
   const [model, setModel] = useState("Claude Sonnet 4.5");
   return (
     <div
@@ -1006,7 +1026,7 @@ const CreateAgent = ({
           <Select
             value={vault}
             onChange={setVault}
-            options={vaults.map((v) => v.label)}
+            options={vaults.map((v) => v.name)}
           />
         </Field>
         <Field label="Model">
