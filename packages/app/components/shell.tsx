@@ -16,7 +16,7 @@ const ROUTE_MAP: Record<string, string> = {
 export const Shell = ({ children }: { children: React.ReactNode }) => {
   const pathname = usePathname();
   const router = useRouter();
-  const { user, setUser, showLogin, setShowLogin } = useAuth();
+  const { user, signIn, signOut, showLogin, setShowLogin } = useAuth();
 
   const route = ROUTE_MAP[pathname] ?? "home";
 
@@ -28,16 +28,15 @@ export const Shell = ({ children }: { children: React.ReactNode }) => {
     router.push(r === "home" ? "/" : `/${r}`);
   };
 
-  const handleLogin = (provider: string) => {
-    setUser({
-      name: "Vlastimil Hrabal",
-      email: "vlastimil@studio.eth",
-      address: "vlastimil.eth",
-      plan: "Studio",
-      joined: "Mar 2026",
-      provider,
-    });
-    setShowLogin(false);
+  const handleLogin = async (provider: string) => {
+    try {
+      await signIn(provider as Parameters<typeof signIn>[0]);
+      setShowLogin(false);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Sign-in failed";
+      console.error("[auth] sign-in failed:", err);
+      window.alert(message);
+    }
   };
 
   return (
@@ -47,7 +46,9 @@ export const Shell = ({ children }: { children: React.ReactNode }) => {
         onNavigate={navigate}
         user={user}
         onLogin={() => setShowLogin(true)}
-        onLogout={() => setUser(null)}
+        onLogout={() => {
+          void signOut();
+        }}
       />
       {children}
       <Footer />

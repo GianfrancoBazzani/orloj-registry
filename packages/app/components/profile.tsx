@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "./auth-context";
+import { authClient } from "@/lib/auth-client";
 import {
   Pill,
   Btn,
@@ -35,8 +36,12 @@ interface User {
 export const Profile = () => {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { user, setShowLogin } = useAuth();
+  const { user, setShowLogin, signOut } = useAuth();
   const onNavigate = (r: string) => router.push(r === "home" ? "/" : `/${r}`);
+  const handleSignOut = async () => {
+    await signOut();
+    router.push("/");
+  };
 
   const bindId = searchParams.get("bind");
   const [bindMcp, setBindMcp] = useState<Mcp | null>(
@@ -166,9 +171,14 @@ export const Profile = () => {
               </span>
             </div>
           </div>
-          <Btn kind="brass" onClick={() => onNavigate("register")}>
-            + Publish MCP
-          </Btn>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <Btn kind="brass" onClick={() => onNavigate("register")}>
+              + Publish MCP
+            </Btn>
+            <Btn kind="ghost" size="sm" onClick={handleSignOut}>
+              Sign out
+            </Btn>
+          </div>
         </div>
 
         {/* tabs */}
@@ -268,7 +278,9 @@ export const Profile = () => {
             />
           )}
           {tab === "activity" && <Activity agents={agents} />}
-          {tab === "settings" && <Settings user={user!} />}
+          {tab === "settings" && (
+            <Settings user={user!} onSignOut={handleSignOut} />
+          )}
         </div>
       </div>
     </main>
@@ -1186,48 +1198,115 @@ const Activity = ({ agents }: { agents: Agent[] }) => (
   </div>
 );
 
-const Settings = ({ user }: { user: User }) => (
-  <div>
-    <h2 className="display" style={{ fontSize: 28, margin: 0 }}>
-      Settings
-    </h2>
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "1fr 1fr",
-        gap: 24,
-        marginTop: 18,
-      }}
-    >
+const Settings = ({
+  user,
+  onSignOut,
+}: {
+  user: User;
+  onSignOut: () => Promise<void>;
+}) => {
+  const [name, setName] = useState(user.name);
+  const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const dirty = name.trim() !== user.name && name.trim().length > 0;
+
+  const handleSave = async () => {
+    if (!dirty || saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const { error: err } = await authClient.updateUser({ name: name.trim() });
+      if (err) throw new Error(err.message ?? "Failed to update");
+      setSavedAt(Date.now());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to update");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div>
+      <h2 className="display" style={{ fontSize: 28, margin: 0 }}>
+        Settings
+      </h2>
       <div
         style={{
-          padding: 22,
-          background: "rgba(241,233,212,0.55)",
-          border: "1px solid var(--line)",
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          gap: 24,
+          marginTop: 18,
         }}
       >
-        <h3 className="display" style={{ fontSize: 18, margin: 0 }}>
-          Profile
-        </h3>
-        <div style={{ display: "grid", gap: 12, marginTop: 16 }}>
-          <Field label="Display name">
-            <Input defaultValue={user.name} />
-          </Field>
-          <Field label="Email">
-            <Input defaultValue={user.email} />
-          </Field>
-          <Field label="ENS / address">
-            <Input
-              readOnly
-              defaultValue={user.address}
-              style={{
-                fontFamily: "var(--font-mono)",
-                background: "var(--parchment-3)",
-              }}
-            />
-          </Field>
+        <div
+          style={{
+            padding: 22,
+            background: "rgba(241,233,212,0.55)",
+            border: "1px solid var(--line)",
+          }}
+        >
+          <h3 className="display" style={{ fontSize: 18, margin: 0 }}>
+            Profile
+          </h3>
+          <div style={{ display: "grid", gap: 12, marginTop: 16 }}>
+            <Field label="Display name">
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                disabled={saving}
+              />
+            </Field>
+            <Field label="Email">
+              <Input
+                readOnly
+                defaultValue={user.email}
+                style={{ background: "var(--parchment-3)" }}
+              />
+            </Field>
+            <Field label="ENS / address">
+              <Input
+                readOnly
+                defaultValue={user.address}
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  background: "var(--parchment-3)",
+                }}
+              />
+            </Field>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              marginTop: 16,
+            }}
+          >
+            <Btn kind="primary" onClick={handleSave} disabled={!dirty || saving}>
+              {saving ? "Saving…" : "Save changes"}
+            </Btn>
+            {savedAt && !error && (
+              <span style={{ fontSize: 12, color: "var(--ink-soft)" }}>
+                Saved.
+              </span>
+            )}
+            {error && (
+              <span style={{ fontSize: 12, color: "#a14545" }}>{error}</span>
+            )}
+          </div>
+          <div
+            style={{
+              marginTop: 22,
+              paddingTop: 18,
+              borderTop: "1px solid var(--line)",
+            }}
+          >
+            <Btn kind="ghost" size="sm" onClick={onSignOut}>
+              Sign out of this device
+            </Btn>
+          </div>
         </div>
-      </div>
       <div
         style={{
           padding: 22,
@@ -1269,4 +1348,5 @@ const Settings = ({ user }: { user: User }) => (
       </div>
     </div>
   </div>
-);
+  );
+};
