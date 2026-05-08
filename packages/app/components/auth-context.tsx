@@ -63,7 +63,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
             ? shortAddr(rawAddress)
             : (u.email ?? ""),
       email: u.email ?? "",
-      address: rawAddress ? shortAddr(rawAddress) : "",
+      address: rawAddress,
       plan: "Studio",
       joined: formatJoined(u.createdAt),
       provider: isWallet ? "siwe" : "email",

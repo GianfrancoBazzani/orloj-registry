@@ -1,10 +1,12 @@
 import { randomBytes } from "node:crypto";
 import { betterAuth } from "better-auth";
+import { createAuthMiddleware } from "better-auth/api";
 import { siwe } from "better-auth/plugins";
 import { nextCookies } from "better-auth/next-js";
 import { Pool } from "pg";
 import {
   createPublicClient,
+  getAddress,
   http,
   recoverMessageAddress,
   type Address,
@@ -31,6 +33,19 @@ const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T | null> =>
     p,
     new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
   ]);
+
+const lookupEnsProfile = async (address: Address) => {
+  const name = await withTimeout(
+    ensClient.getEnsName({ address }),
+    ENS_TIMEOUT_MS,
+  );
+  if (!name) return { name: null, avatar: null } as const;
+  const avatar = await withTimeout(
+    ensClient.getEnsAvatar({ name: normalize(name) }),
+    ENS_TIMEOUT_MS,
+  );
+  return { name, avatar: avatar ?? null } as const;
+};
 
 export const auth = betterAuth({
   baseURL,
@@ -75,16 +90,10 @@ export const auth = betterAuth({
       },
       ensLookup: async ({ walletAddress }) => {
         try {
-          const name = await withTimeout(
-            ensClient.getEnsName({ address: walletAddress as Address }),
-            ENS_TIMEOUT_MS,
+          const { name, avatar } = await lookupEnsProfile(
+            walletAddress as Address,
           );
-          if (!name) return { name: "", avatar: "" };
-          const avatar = await withTimeout(
-            ensClient.getEnsAvatar({ name: normalize(name) }),
-            ENS_TIMEOUT_MS,
-          );
-          return { name, avatar: avatar ?? "" };
+          return { name: name ?? "", avatar: avatar ?? "" };
         } catch {
           return { name: "", avatar: "" };
         }
@@ -92,6 +101,48 @@ export const auth = betterAuth({
     }),
     nextCookies(),
   ],
+  hooks: {
+    after: createAuthMiddleware(async (ctx) => {
+      if (ctx.path !== "/siwe/verify") return;
+      const rawAddress = (ctx.body as { walletAddress?: string })
+        ?.walletAddress;
+      if (!rawAddress) return;
+      try {
+        const address = getAddress(rawAddress);
+        const wallet = await ctx.context.adapter.findOne<{ userId: string }>({
+          model: "walletAddress",
+          where: [{ field: "address", operator: "eq", value: address }],
+        });
+        if (!wallet) return;
+        const user = await ctx.context.adapter.findOne<{
+          id: string;
+          name: string;
+          image: string | null;
+        }>({
+          model: "user",
+          where: [{ field: "id", operator: "eq", value: wallet.userId }],
+        });
+        if (!user) return;
+        const { name, avatar } = await lookupEnsProfile(address);
+        if (!name) return;
+        const desiredImage = avatar ?? "";
+        if (user.name === name && (user.image ?? "") === desiredImage) return;
+        await ctx.context.adapter.update({
+          model: "user",
+          where: [{ field: "id", operator: "eq", value: user.id }],
+          update: { name, image: desiredImage },
+        });
+        console.log(
+          `[auth] refreshed ENS for ${address}: ${user.name} -> ${name}`,
+        );
+      } catch (err) {
+        console.warn(
+          "[auth] post-siwe ENS refresh failed:",
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }),
+  },
 });
 
 export type Session = typeof auth.$Infer.Session;

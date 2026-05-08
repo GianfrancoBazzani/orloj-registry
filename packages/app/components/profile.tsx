@@ -151,7 +151,8 @@ export const Profile = () => {
                 marginTop: 4,
               }}
             >
-              {user.address} · joined {user.joined}
+              {user.address ? SHORT_ADDR(user.address) : ""} · joined{" "}
+              {user.joined}
             </div>
             <div
               style={{
@@ -175,7 +176,7 @@ export const Profile = () => {
             <Btn kind="brass" onClick={() => onNavigate("register")}>
               + Publish MCP
             </Btn>
-            <Btn kind="ghost" size="sm" onClick={handleSignOut}>
+            <Btn kind="verdigris" onClick={handleSignOut}>
               Sign out
             </Btn>
           </div>
@@ -1257,17 +1258,10 @@ const Settings = ({
                 disabled={saving}
               />
             </Field>
-            <Field label="Email">
+            <Field label="Wallet address">
               <Input
                 readOnly
-                defaultValue={user.email}
-                style={{ background: "var(--parchment-3)" }}
-              />
-            </Field>
-            <Field label="ENS / address">
-              <Input
-                readOnly
-                defaultValue={user.address}
+                value={user.address}
                 style={{
                   fontFamily: "var(--font-mono)",
                   background: "var(--parchment-3)",
@@ -1302,7 +1296,7 @@ const Settings = ({
               borderTop: "1px solid var(--line)",
             }}
           >
-            <Btn kind="ghost" size="sm" onClick={onSignOut}>
+            <Btn kind="primary" size="sm" onClick={onSignOut}>
               Sign out of this device
             </Btn>
           </div>
