@@ -1,5 +1,7 @@
 "use client";
 import { useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useAuth } from "./auth-context";
 import {
   Pill,
   Btn,
@@ -30,17 +32,21 @@ interface User {
   provider: string;
 }
 
-export const Profile = ({
-  user,
-  onNavigate,
-  bindMcp,
-  onClearBind,
-}: {
-  user: User;
-  onNavigate: (r: string) => void;
-  bindMcp: Mcp | null;
-  onClearBind: () => void;
-}) => {
+export const Profile = () => {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const { user, setShowLogin } = useAuth();
+  const onNavigate = (r: string) => router.push(r === "home" ? "/" : `/${r}`);
+
+  const bindId = searchParams.get("bind");
+  const [bindMcp, setBindMcp] = useState<Mcp | null>(
+    bindId ? (MCP_REGISTRY.find((m) => m.id === bindId) ?? null) : null
+  );
+  const onClearBind = () => {
+    setBindMcp(null);
+    router.replace("/profile");
+  };
+
   const [tab, setTab] = useState(bindMcp ? "agents" : "overview");
   const [creatingVault, setCreatingVault] = useState(false);
   const [creatingAgent, setCreatingAgent] = useState(!!bindMcp);
@@ -54,6 +60,31 @@ export const Profile = ({
     { id: "activity", l: "Activity" },
     { id: "settings", l: "Settings" },
   ];
+
+  if (!user) {
+    return (
+      <main style={{ padding: "80px 32px", textAlign: "center" }}>
+        <p className="poetic" style={{ fontSize: 22, color: "var(--ink-soft)" }}>
+          Sign in to access your profile.
+        </p>
+        <button
+          onClick={() => setShowLogin(true)}
+          style={{
+            marginTop: 24,
+            padding: "12px 28px",
+            background: "var(--ink)",
+            color: "var(--parchment)",
+            border: "none",
+            fontFamily: "var(--font-ui)",
+            fontSize: 14,
+            cursor: "pointer",
+          }}
+        >
+          Sign in →
+        </button>
+      </main>
+    );
+  }
 
   return (
     <main style={{ padding: "40px 32px 80px" }}>
@@ -210,7 +241,7 @@ export const Profile = ({
         <div style={{ marginTop: 24 }}>
           {tab === "overview" && (
             <Overview
-              user={user}
+              user={user ?? undefined}
               vaults={vaults}
               agents={agents}
               setTab={setTab}
@@ -237,7 +268,7 @@ export const Profile = ({
             />
           )}
           {tab === "activity" && <Activity agents={agents} />}
-          {tab === "settings" && <Settings user={user} />}
+          {tab === "settings" && <Settings user={user!} />}
         </div>
       </div>
     </main>

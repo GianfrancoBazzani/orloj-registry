@@ -1,4 +1,6 @@
 "use client";
+import { useRouter } from "next/navigation";
+import { useAuth } from "./auth-context";
 import {
   Pill,
   Btn,
@@ -10,13 +12,11 @@ import {
   GearIcon,
 } from "./ornaments";
 
-export const Landing = ({
-  onNavigate,
-  onLogin,
-}: {
-  onNavigate: (r: string) => void;
-  onLogin: () => void;
-}) => {
+export const Landing = () => {
+  const router = useRouter();
+  const { setShowLogin } = useAuth();
+  const onNavigate = (r: string) => router.push(r === "home" ? "/" : `/${r}`);
+  const onLogin = () => setShowLogin(true);
   const stats = [
     { v: "142", l: "registered MCPs" },
     { v: "38", l: "chains indexed" },

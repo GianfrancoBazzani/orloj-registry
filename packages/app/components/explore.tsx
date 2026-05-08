@@ -1,5 +1,7 @@
 "use client";
 import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useAuth } from "./auth-context";
 import {
   Pill,
   Btn,
@@ -12,13 +14,14 @@ import {
 } from "./ornaments";
 import { MCP_REGISTRY, SHORT_ADDR, type Mcp } from "./data";
 
-export const Explore = ({
-  onNavigate,
-  onBind,
-}: {
-  onNavigate: (r: string) => void;
-  onBind: (m: Mcp) => void;
-}) => {
+export const Explore = () => {
+  const router = useRouter();
+  const { user, setShowLogin } = useAuth();
+  const onNavigate = (r: string) => router.push(r === "home" ? "/" : `/${r}`);
+  const onBind = (m: Mcp) => {
+    if (!user) { setShowLogin(true); return; }
+    router.push(`/profile?bind=${m.id}`);
+  };
   const [q, setQ] = useState("");
   const [chain, setChain] = useState("All chains");
   const [tag, setTag] = useState("All capabilities");

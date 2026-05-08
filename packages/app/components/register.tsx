@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Pill,
   Btn,
@@ -100,11 +101,9 @@ interface FormState {
   selectedFns: Record<string, boolean>;
 }
 
-export const Register = ({
-  onNavigate,
-}: {
-  onNavigate: (r: string) => void;
-}) => {
+export const Register = () => {
+  const router = useRouter();
+  const onNavigate = (r: string) => router.push(r === "home" ? "/" : `/${r}`);
   const [step, setStep] = useState(0);
   const [form, setForm] = useState<FormState>({
     address: "",
