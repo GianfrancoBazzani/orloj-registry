@@ -99,11 +99,12 @@ export const GearIcon = ({
       <circle cx="12" cy="12" r="3.6" />
       <circle cx="12" cy="12" r="8" />
       {Array.from({ length: 12 }).map((_, i) => {
+        const r6 = (n: number) => Math.round(n * 1e6) / 1e6;
         const a = (i / 12) * Math.PI * 2;
-        const x1 = 12 + Math.cos(a) * 8;
-        const y1 = 12 + Math.sin(a) * 8;
-        const x2 = 12 + Math.cos(a) * 10;
-        const y2 = 12 + Math.sin(a) * 10;
+        const x1 = r6(12 + Math.cos(a) * 8);
+        const y1 = r6(12 + Math.sin(a) * 8);
+        const x2 = r6(12 + Math.cos(a) * 10);
+        const y2 = r6(12 + Math.sin(a) * 10);
         return <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} />;
       })}
     </g>
@@ -123,10 +124,11 @@ export const OrlojMark = ({ size = 56 }: { size?: number }) => (
     <circle cx="40" cy="40" r="34" fill="url(#orloj-face)" />
     {Array.from({ length: 12 }).map((_, i) => {
       const a = (i / 12) * Math.PI * 2 - Math.PI / 2;
-      const x1 = 40 + Math.cos(a) * 30;
-      const y1 = 40 + Math.sin(a) * 30;
-      const x2 = 40 + Math.cos(a) * 33;
-      const y2 = 40 + Math.sin(a) * 33;
+      const r6 = (n: number) => Math.round(n * 1e6) / 1e6;
+      const x1 = r6(40 + Math.cos(a) * 30);
+      const y1 = r6(40 + Math.sin(a) * 30);
+      const x2 = r6(40 + Math.cos(a) * 33);
+      const y2 = r6(40 + Math.sin(a) * 33);
       return (
         <line
           key={i}
