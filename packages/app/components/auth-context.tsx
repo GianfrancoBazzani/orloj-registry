@@ -2,7 +2,7 @@
 import { createContext, useContext, useMemo, useState } from "react";
 import { authClient } from "@/lib/auth-client";
 
-type Provider = "wallet" | "github" | "google" | "farcaster" | "email";
+type Provider = "wallet";
 
 interface UiUser {
   name: string;
@@ -66,16 +66,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       address: rawAddress,
       plan: "Studio",
       joined: formatJoined(u.createdAt),
-      provider: isWallet ? "siwe" : "email",
+      provider: "siwe",
     };
   }, [session.data?.user]);
 
-  const signIn = async (provider: Provider) => {
-    if (provider !== "wallet") {
-      throw new Error(
-        `Provider "${provider}" is not wired yet — only Ethereum wallet (SIWE) is implemented.`,
-      );
-    }
+  const signIn = async (_provider: Provider) => {
     const eth = getInjectedEthereum();
     if (!eth) {
       throw new Error(
