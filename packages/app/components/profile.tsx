@@ -696,12 +696,38 @@ const Vaults = ({
                   </div>
                 )}
               </div>
-              <Pill tone="verdigris">● secured</Pill>
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 4,
+                  alignItems: "flex-end",
+                  flexShrink: 0,
+                }}
+              >
+                <Pill tone={v.provider === "orbitport" ? "blue" : "brass"}>
+                  {v.provider === "orbitport" ? "spacecomputer" : "1claw"}
+                </Pill>
+              </div>
             </div>
+            {v.address && (
+              <div
+                className="mono"
+                style={{
+                  marginTop: 12,
+                  fontSize: 11,
+                  color: "var(--verdigris-deep)",
+                  wordBreak: "break-all",
+                }}
+                title={v.address}
+              >
+                {v.address}
+              </div>
+            )}
             <div
               className="mono"
               style={{
-                marginTop: 14,
+                marginTop: 8,
                 fontSize: 11,
                 color: "var(--ink-soft)",
                 wordBreak: "break-all",
@@ -717,7 +743,9 @@ const Vaults = ({
                 color: "var(--ink-soft)",
               }}
             >
-              {v.keyCount} {v.keyCount === 1 ? "key" : "keys"}
+              {v.provider === "orbitport"
+                ? "kms-managed wallet"
+                : `${v.keyCount} ${v.keyCount === 1 ? "key" : "keys"}`}
             </div>
             <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
               <Btn
@@ -745,6 +773,7 @@ const CreateVault = ({
 }) => {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [provider, setProvider] = useState<"oneclaw" | "orbitport">("oneclaw");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -756,7 +785,11 @@ const CreateVault = ({
       const res = await fetch("/api/vaults", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), description: description.trim() }),
+        body: JSON.stringify({
+          name: name.trim(),
+          description: description.trim(),
+          provider,
+        }),
       });
       if (res.status === 401) {
         setError("Your session has expired. Please sign in again.");
@@ -833,6 +866,65 @@ const CreateVault = ({
             resize: "vertical",
           }}
         />
+      </Field>
+      <Field label="KMS provider" style={{ marginTop: 16 }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 10,
+          }}
+        >
+          {(
+            [
+              {
+                id: "oneclaw" as const,
+                title: "1Claw",
+                desc: "HSM + TEE, intent-based signing.",
+              },
+              {
+                id: "orbitport" as const,
+                title: "SpaceComputer",
+                desc: "Orbital HSM with SpaceTEE.",
+              },
+            ]
+          ).map((opt) => {
+            const active = provider === opt.id;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => setProvider(opt.id)}
+                disabled={submitting}
+                style={{
+                  textAlign: "left",
+                  padding: "12px 14px",
+                  background: active
+                    ? "rgba(184,137,58,0.18)"
+                    : "rgba(255,255,255,0.45)",
+                  border: active
+                    ? "1.5px solid var(--brass-deep)"
+                    : "1px solid var(--line)",
+                  cursor: submitting ? "not-allowed" : "pointer",
+                  borderRadius: 0,
+                  color: "var(--ink)",
+                  fontFamily: "var(--font-ui)",
+                }}
+              >
+                <div
+                  className="display"
+                  style={{ fontSize: 15, marginBottom: 2 }}
+                >
+                  {active ? "● " : "○ "}
+                  {opt.title}
+                </div>
+                <div style={{ fontSize: 12, color: "var(--ink-soft)" }}>
+                  {opt.desc}
+                </div>
+              </button>
+            );
+          })}
+        </div>
       </Field>
       {error && (
         <div
@@ -1455,9 +1547,20 @@ const EditVault = ({
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [signing, setSigning] = useState(false);
+  const [signTxHash, setSignTxHash] = useState<string | null>(null);
+  const [signError, setSignError] = useState<string | null>(null);
+
   const busy = adding || deleting || !!removingKey;
 
   useEffect(() => {
+    // Orbitport-backed vaults have a single KMS-managed signing wallet; the
+    // secrets KV is intentionally not surfaced as "keys" in the UI for them.
+    // Skip the fetch entirely.
+    if (vault.provider === "orbitport") {
+      onKeyCountChange(vault.id, 0);
+      return;
+    }
     const ac = new AbortController();
     const run = async () => {
       setKeysLoading(true);
@@ -1486,7 +1589,7 @@ const EditVault = ({
     };
     void Promise.resolve().then(run);
     return () => ac.abort();
-  }, [vault.id, onKeyCountChange]);
+  }, [vault.id, vault.provider, onKeyCountChange]);
 
   const submitSecret = async (privateKey: Hex, address: string) => {
     const res = await fetch(`/api/vaults/${vault.id}/secrets`, {
@@ -1589,6 +1692,32 @@ const EditVault = ({
     setAddError(null);
   };
 
+  const sendTestTx = async () => {
+    if (signing) return;
+    setSigning(true);
+    setSignError(null);
+    setSignTxHash(null);
+    try {
+      const res = await fetch(`/api/vaults/${vault.id}/sign-test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chainId: 11155111 }),
+      });
+      const payload = (await res.json().catch(() => null)) as
+        | { txHash?: string; error?: string }
+        | null;
+      if (!res.ok || !payload?.txHash) {
+        setSignError(payload?.error ?? `Request failed (${res.status})`);
+        return;
+      }
+      setSignTxHash(payload.txHash);
+    } catch {
+      setSignError("Network error. Please try again.");
+    } finally {
+      setSigning(false);
+    }
+  };
+
   const deleteVault = async () => {
     if (deleting) return;
     setDeleting(true);
@@ -1646,6 +1775,8 @@ const EditVault = ({
         {vault.name}
       </div>
 
+      {vault.provider !== "orbitport" && (
+        <>
       <div
         className="smallcaps"
         style={{
@@ -1882,6 +2013,104 @@ const EditVault = ({
           }}
         >
           {addError}
+        </div>
+      )}
+        </>
+      )}
+
+      {vault.address && (
+        <div
+          style={{
+            marginTop: 18,
+            padding: 14,
+            background: "rgba(255,255,255,0.45)",
+            border: "1px solid var(--line)",
+          }}
+        >
+          <div
+            className="smallcaps"
+            style={{
+              fontSize: 11,
+              color: "var(--ink-soft)",
+              marginBottom: 6,
+            }}
+          >
+            vault wallet ·{" "}
+            {vault.provider === "orbitport"
+              ? "managed by spacecomputer kms"
+              : "managed by 1claw"}
+          </div>
+          <div
+            className="mono"
+            style={{
+              fontSize: 12,
+              color: "var(--verdigris-deep)",
+              wordBreak: "break-all",
+              marginBottom: 6,
+            }}
+          >
+            {vault.address}
+          </div>
+          <div
+            style={{
+              fontSize: 11,
+              color: "var(--ink-soft)",
+              marginBottom: 12,
+              lineHeight: 1.45,
+            }}
+          >
+            The private key lives inside the KMS enclave — only digests cross
+            the wire. Fund this address on Sepolia to run a live signing demo
+            (e.g. via{" "}
+            <a
+              href="https://sepolia-faucet.pk910.de/"
+              target="_blank"
+              rel="noreferrer"
+              style={{ color: "var(--brass-deep)" }}
+            >
+              pk910 faucet
+            </a>
+            ).
+          </div>
+          <Btn
+            kind="ghost"
+            size="sm"
+            onClick={sendTestTx}
+            disabled={signing || busy}
+          >
+            {signing ? "Signing on Sepolia…" : "Send test tx (Sepolia, self-send)"}
+          </Btn>
+          {signTxHash && (
+            <div
+              style={{
+                marginTop: 10,
+                fontSize: 12,
+                color: "var(--verdigris-deep)",
+              }}
+            >
+              ✓ broadcast —{" "}
+              <a
+                className="mono"
+                href={`https://sepolia.etherscan.io/tx/${signTxHash}`}
+                target="_blank"
+                rel="noreferrer"
+                style={{ color: "var(--verdigris-deep)" }}
+              >
+                {signTxHash.slice(0, 10)}…{signTxHash.slice(-8)}
+              </a>
+            </div>
+          )}
+          {signError && (
+            <div
+              style={{
+                marginTop: 10,
+                fontSize: 12,
+                color: "var(--wine)",
+              }}
+            >
+              {signError}
+            </div>
+          )}
         </div>
       )}
 
@@ -2291,12 +2520,32 @@ const CreateAgent = ({
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
+  const selectedVault = vaults.find((v) => v.id === vaultId) ?? null;
+  const selectedProvider = selectedVault?.provider;
+
   useEffect(() => {
     const ac = new AbortController();
     const run = async () => {
       if (!vaultId) {
         setKeys([]);
         setKeyPath("");
+        return;
+      }
+      // Orbitport vaults expose exactly one signing artifact — the
+      // KMS-managed wallet address. Skip the secrets fetch and synthesize
+      // it as the single key entry the agent can be granted access to.
+      if (selectedVault?.provider === "orbitport") {
+        const address = selectedVault.address ?? "";
+        const synthetic: VaultKey = {
+          id: `${vaultId}:wallet`,
+          key: address,
+          type: "kms_wallet",
+          version: 1,
+          createdAt: new Date().toISOString(),
+        };
+        setKeys(address ? [synthetic] : []);
+        setKeyPath(address);
+        setKeysError(address ? null : "Vault has no wallet address yet.");
         return;
       }
       setKeysLoading(true);
@@ -2325,7 +2574,7 @@ const CreateAgent = ({
     };
     void Promise.resolve().then(run);
     return () => ac.abort();
-  }, [vaultId]);
+  }, [vaultId, selectedVault?.provider, selectedVault?.address]);
 
   const submit = async () => {
     if (submitting) return;
@@ -2439,7 +2688,11 @@ const CreateAgent = ({
             keysLoading
               ? "Loading keys…"
               : keys.length === 0
-              ? "This vault has no keys yet. Add one in Vaults & Keys."
+              ? selectedProvider === "orbitport"
+                ? "Open the vault and wait for its KMS wallet to be provisioned."
+                : "This vault has no keys yet. Add one in Vaults & Keys."
+              : selectedProvider === "orbitport"
+              ? "The agent will be granted signing access to this KMS-managed wallet."
               : "The agent will be granted read access to this key only."
           }
         >

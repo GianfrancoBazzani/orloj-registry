@@ -2,13 +2,14 @@
 
 > *Orloj* (Czech for "astronomical clock") — a nod to Prague's iconic timepiece, built for **ETHPrague Hackathon 2026**.
 
-Orloj is a registry that exposes smart-contract interfaces to AI agents as **MCP (Model Context Protocol) servers**. MCPs are generated dynamically from [Sourcify](https://sourcify.dev/)-verified contract metadata, and signing is delegated to **1Claw** vaults backed by HSM + TEE. Agents discover contracts and call them through a single, hot-pluggable HTTP endpoint — without ever touching keys, RPCs, or gas.
+Orloj is a registry that exposes smart-contract interfaces to AI agents as **MCP (Model Context Protocol) servers**. MCPs are generated dynamically from [Sourcify](https://sourcify.dev/)-verified contract metadata, and signing is delegated to a **pluggable KMS layer** — pick **1Claw** (HSM + TEE) or **SpaceComputer Orbitport** (orbital HSM + SpaceTEE) per vault. Agents discover contracts and call them through a single, hot-pluggable HTTP endpoint — without ever touching keys, RPCs, or gas.
 
 ## Tracks Applied
 
 - Ethereum Core
 - Network Economy
 - [Sourcify Bounty](https://ducttapeevents.notion.site/Sourcify-2fe1a305cfe7805c87a7ce855ae2bde6)
+- [SpaceComputer Bounty](https://ducttapeevents.notion.site/SpaceComputer-3101a305cfe7801ca388f3bc292f148d)
 - Best UX Flow
 
 ## The Problem It Solves
@@ -40,9 +41,16 @@ Orloj rests on two pillars:
 
 **1. Sourcify-driven MCP generation.** We use the Sourcify verified-contracts dataset as our source of truth for ABIs. The registry fetches a contract's metadata, parses its ABI, and **dynamically builds an MCP server** where every contract function becomes an MCP tool — with typed inputs, descriptions, and structured outputs. No hand-written wrappers; the moment a contract is verified on Sourcify, it's callable by an agent.
 
-**2. 1Claw vaults for keys.** Users create a vault in 1Claw to hold their private keys. The agent **never sees the key**: it issues a 1Claw *intent* describing the call it wants to make, and 1Claw signs the transaction inside a **TEE** with keys that live in an **HSM**. The agent's surface area shrinks to "describe what you want done" — signing, custody, and policy enforcement happen in hardened infrastructure.
+**2. Pluggable KMS-backed vaults.** Each vault holds a wallet whose private key never leaves a hardened enclave. At creation time the user picks the KMS provider:
 
-![Orloj architecture: agents call MCP tools generated from Sourcify-verified ABIs; signing is delegated to 1Claw vaults (HSM + TEE).](architecture.png)
+- **1Claw** — HSM + TEE, intent-based signing. The agent issues a 1Claw *intent* and 1Claw signs inside the TEE.
+- **SpaceComputer Orbitport** — secp256k1 keys provisioned inside orbital HSMs with **SpaceTEE**, "physically isolated, tamper-proof by any administrator or state actor." The registry constructs the unsigned tx, sends only the digest to Orbitport, assembles `(r,s,v)` into a broadcast-ready transaction, and submits it via RPC. Secrets stored alongside the wallet are protected by a per-vault TRANSIT (AES-256-GCM) key inside the same HSM (envelope encryption — ciphertext lives in our DB, the key never leaves the enclave).
+
+The provider is recorded per vault, so a single deployment can run both side-by-side. The agent surface stays the same regardless of backend: "describe what you want done."
+
+> SpaceComputer's Orbitport KMS is documented as experimental ("not for production"). Use Sepolia / testnets for the SpaceComputer-backed flows during the demo.
+
+![Orloj architecture: agents call MCP tools generated from Sourcify-verified ABIs; signing is delegated to pluggable KMS vaults (1Claw HSM/TEE or SpaceComputer Orbitport).](architecture.png)
 
 ## Challenges We Ran Into
 
@@ -69,6 +77,8 @@ Orloj rests on two pillars:
 
 - [Sourcify](https://sourcify.dev/) — verified contract metadata / ABIs (source of truth for MCP generation)
 - 1Claw — key vaults, intent-based signing, HSM-backed keys, TEE signing
+- [SpaceComputer Orbitport](https://docs.spacecomputer.io/) — orbital HSM-backed KMS (`@spacecomputer-io/orbitport-sdk-ts`) for secp256k1 signing keys + AES-256-GCM envelope-encryption keys
+- viem — local tx construction, digest hashing, signature recovery, broadcasting
 
 **Tooling**
 

@@ -192,6 +192,7 @@ const UserMenu = ({
       onMouseLeave={() => setOpen(false)}
     >
       <button
+        onClick={() => { setOpen(false); onNavigate("profile"); }}
         style={{
           display: "flex",
           alignItems: "center",
@@ -248,26 +249,6 @@ const UserMenu = ({
               flexDirection: "column",
             }}
           >
-            {!onProfile && (
-              <button
-                onClick={() => { setOpen(false); onNavigate("profile"); }}
-                style={{
-                  padding: "11px 16px",
-                  background: "transparent",
-                  border: "none",
-                  borderBottom: "1px solid var(--line)",
-                  cursor: "pointer",
-                  fontFamily: "var(--font-ui)",
-                  fontSize: 13,
-                  color: "var(--ink)",
-                  textAlign: "left",
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(184,137,58,0.1)"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-              >
-                Profile
-              </button>
-            )}
             <button
               onClick={() => { setOpen(false); onLogout(); }}
               style={{

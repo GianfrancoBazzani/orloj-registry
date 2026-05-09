@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@1claw/sdk": "0.20.4",
+    "@spacecomputer-io/orbitport-sdk-ts": "0.2.1",
     "better-auth": "1.6.9",
     "next": "16.2.6",
     "pg": "8.20.0",

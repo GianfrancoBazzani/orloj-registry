@@ -1,14 +1,18 @@
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
-import { getOneclawClient } from "@/lib/oneclaw";
 import {
-  claimVault,
-  listVaultIdsForUser,
-} from "@/lib/vault-ownership";
+  getProvider,
+  providerErrorToResponse,
+  type ProviderId,
+} from "@/lib/vault-providers";
+import { claimVault, listVaultsForUser } from "@/lib/vault-ownership";
 import type { Vault } from "@/components/data";
 
 const NAME_MAX = 80;
 const DESCRIPTION_MAX = 500;
+
+const isProviderId = (v: unknown): v is ProviderId =>
+  v === "oneclaw" || v === "orbitport";
 
 export async function GET() {
   const session = await auth.api.getSession({ headers: await headers() });
@@ -16,55 +20,60 @@ export async function GET() {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let client;
-  try {
-    client = await getOneclawClient();
-  } catch (err) {
-    console.error("[vaults] 1claw client init failed", err);
-    return Response.json(
-      { error: "Vault service is not configured" },
-      { status: 503 },
-    );
-  }
-
-  const [ownedIds, listResult] = await Promise.all([
-    listVaultIdsForUser(session.user.id),
-    client.vault.list(),
-  ]);
-
-  const { data, error } = listResult;
-  if (error || !data) {
-    console.error("[vaults] 1claw list failed", error);
-    return Response.json(
-      { error: error?.message ?? "Failed to list vaults upstream" },
-      { status: 502 },
-    );
-  }
-
-  const owned = data.vaults.filter((v) => ownedIds.has(v.id));
-
-  const counts = await Promise.all(
-    owned.map(async (v) => {
-      const res = await client.secrets.list(v.id);
-      if (res.error || !res.data) {
-        console.error(
-          `[vaults] failed to count secrets for ${v.id}`,
-          res.error,
-        );
-        return 0;
-      }
-      return res.data.secrets.length;
-    }),
+  const owned = await listVaultsForUser(session.user.id);
+  const byProvider = owned.reduce<Record<ProviderId, string[]>>(
+    (acc, v) => {
+      acc[v.provider].push(v.vaultId);
+      return acc;
+    },
+    { oneclaw: [], orbitport: [] },
   );
 
-  const vaults: Vault[] = owned.map((v, i) => ({
-    id: v.id,
-    name: v.name,
-    description: v.description ?? "",
-    keyCount: counts[i],
-  }));
+  const results = await Promise.allSettled([
+    byProvider.oneclaw.length > 0
+      ? getProvider("oneclaw").listVaults(byProvider.oneclaw)
+      : Promise.resolve([]),
+    byProvider.orbitport.length > 0
+      ? getProvider("orbitport").listVaults(byProvider.orbitport)
+      : Promise.resolve([]),
+  ]);
 
-  return Response.json({ vaults });
+  const vaults: Vault[] = [];
+  const errors: string[] = [];
+
+  if (results[0].status === "fulfilled") {
+    for (const v of results[0].value) {
+      vaults.push({
+        id: v.id,
+        name: v.name,
+        description: v.description,
+        keyCount: v.keyCount,
+        provider: "oneclaw",
+        address: v.address,
+      });
+    }
+  } else {
+    console.error("[vaults] oneclaw listVaults failed", results[0].reason);
+    errors.push("oneclaw");
+  }
+
+  if (results[1].status === "fulfilled") {
+    for (const v of results[1].value) {
+      vaults.push({
+        id: v.id,
+        name: v.name,
+        description: v.description,
+        keyCount: v.keyCount,
+        provider: "orbitport",
+        address: v.address,
+      });
+    }
+  } else {
+    console.error("[vaults] orbitport listVaults failed", results[1].reason);
+    errors.push("orbitport");
+  }
+
+  return Response.json({ vaults, errors });
 }
 
 export async function POST(request: Request) {
@@ -84,7 +93,7 @@ export async function POST(request: Request) {
     return Response.json({ error: "Invalid body" }, { status: 400 });
   }
 
-  const { name, description } = body as Record<string, unknown>;
+  const { name, description, provider } = body as Record<string, unknown>;
 
   if (typeof name !== "string" || typeof description !== "string") {
     return Response.json(
@@ -102,7 +111,6 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
-
   if (trimmedDescription.length > DESCRIPTION_MAX) {
     return Response.json(
       { error: `\`description\` must be ≤ ${DESCRIPTION_MAX} characters` },
@@ -110,42 +118,38 @@ export async function POST(request: Request) {
     );
   }
 
-  let client;
+  const providerId: ProviderId =
+    provider === undefined ? "oneclaw" : isProviderId(provider) ? provider : "oneclaw";
+  if (provider !== undefined && !isProviderId(provider)) {
+    return Response.json(
+      { error: "`provider` must be 'oneclaw' or 'orbitport'" },
+      { status: 400 },
+    );
+  }
+
+  let created;
   try {
-    client = await getOneclawClient();
+    created = await getProvider(providerId).createVault({
+      name: trimmedName,
+      description: trimmedDescription,
+    });
   } catch (err) {
-    console.error("[vaults] 1claw client init failed", err);
-    return Response.json(
-      { error: "Vault service is not configured" },
-      { status: 503 },
-    );
-  }
-
-  const { data, error } = await client.vault.create({
-    name: trimmedName,
-    description: trimmedDescription,
-  });
-
-  if (error || !data) {
-    console.error("[vaults] 1claw create failed", error);
-    return Response.json(
-      { error: error?.message ?? "Failed to create vault upstream" },
-      { status: 502 },
-    );
+    return providerErrorToResponse(err);
   }
 
   try {
-    await claimVault(data.id, session.user.id);
+    await claimVault(created.id, session.user.id, providerId);
   } catch (claimErr) {
     console.error(
       "[vaults] ownership claim failed; rolling back upstream vault",
       claimErr,
     );
-    const { error: rollbackError } = await client.vault.delete(data.id);
-    if (rollbackError) {
+    try {
+      await getProvider(providerId).deleteVault(created.id);
+    } catch (rollbackErr) {
       console.error(
-        `[vaults] rollback delete failed for orphan vault ${data.id}`,
-        rollbackError,
+        `[vaults] rollback delete failed for orphan vault ${created.id}`,
+        rollbackErr,
       );
     }
     return Response.json(
@@ -155,10 +159,12 @@ export async function POST(request: Request) {
   }
 
   const vault: Vault = {
-    id: data.id,
-    name: data.name,
-    description: data.description ?? "",
-    keyCount: 0,
+    id: created.id,
+    name: created.name,
+    description: created.description,
+    keyCount: created.keyCount,
+    provider: providerId,
+    address: created.address,
   };
 
   return Response.json({ vault }, { status: 201 });

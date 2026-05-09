@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import * as registry from "./registry.mjs";
 import { buildMcp } from "./generate-mcp.js";
+import { requireBearer } from "./auth.mjs";
 
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
 
@@ -122,6 +123,7 @@ app.post("/register", async (req, res) => {
       address,
       implementation,
       rpcUrl: rpcUrl || null,
+      contractName: built.meta.contractName,
       url: `/interface/${name}/mcp`,
     });
   } catch (err) {
@@ -130,13 +132,14 @@ app.post("/register", async (req, res) => {
   }
 });
 
-app.post("/interface/:name/mcp", async (req, res) => {
+app.post("/interface/:name/mcp", requireBearer, async (req, res) => {
   const { name } = req.params;
   const entry = registry.get(name);
   if (!entry) {
     res.status(404).json({ error: "MCP not found" });
     return;
   }
+  console.log(`[mcp] ${name} agent=${req.auth.agentId}`);
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     enableJsonResponse: true,
