@@ -1,48 +1,15 @@
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
-import { getOneclawClient } from "@/lib/oneclaw";
+import {
+  getProvider,
+  providerErrorToResponse,
+} from "@/lib/vault-providers";
 import { assertVaultOwner } from "@/lib/vault-ownership";
 import { assertAgentOwner } from "@/lib/agent-ownership";
 
 const SECRET_PATH_MAX = 256;
 const PERMISSION_MAX = 32;
 const VALID_PERMISSIONS = new Set(["read", "write", "sign", "admin"]);
-
-const initClient = async () => {
-  try {
-    return { client: await getOneclawClient() } as const;
-  } catch (err) {
-    console.error("[key-grants] 1claw client init failed", err);
-    return {
-      response: Response.json(
-        { error: "Vault service is not configured" },
-        { status: 503 },
-      ),
-    } as const;
-  }
-};
-
-const serializeGrant = (p: {
-  id: string;
-  vault_id: string;
-  secret_path_pattern: string;
-  principal_type: string;
-  principal_id: string;
-  permissions: string[];
-  conditions: Record<string, unknown>;
-  expires_at?: string;
-  created_at: string;
-}) => ({
-  id: p.id,
-  vaultId: p.vault_id,
-  secretPathPattern: p.secret_path_pattern,
-  principalType: p.principal_type,
-  principalId: p.principal_id,
-  permissions: p.permissions,
-  conditions: p.conditions,
-  expiresAt: p.expires_at,
-  createdAt: p.created_at,
-});
 
 export async function GET(
   _request: Request,
@@ -59,22 +26,14 @@ export async function GET(
   }
 
   const ownership = await assertVaultOwner(id, session.user.id);
-  if (ownership !== true) return ownership;
+  if (ownership instanceof Response) return ownership;
 
-  const init = await initClient();
-  if ("response" in init) return init.response;
-
-  const { data, error } = await init.client.access.listGrants(id);
-  if (error || !data) {
-    console.error("[key-grants] 1claw listGrants failed", error);
-    return Response.json(
-      { error: error?.message ?? "Failed to list key grants upstream" },
-      { status: 502 },
-    );
+  try {
+    const grants = await getProvider(ownership.provider).listGrants(id);
+    return Response.json({ grants });
+  } catch (err) {
+    return providerErrorToResponse(err);
   }
-
-  const grants = data.policies.map(serializeGrant);
-  return Response.json({ grants });
 }
 
 export async function POST(
@@ -92,7 +51,7 @@ export async function POST(
   }
 
   const vaultOwnership = await assertVaultOwner(id, session.user.id);
-  if (vaultOwnership !== true) return vaultOwnership;
+  if (vaultOwnership instanceof Response) return vaultOwnership;
 
   let body: unknown;
   try {
@@ -184,27 +143,16 @@ export async function POST(
   const agentOwnership = await assertAgentOwner(agentId, session.user.id);
   if (agentOwnership !== true) return agentOwnership;
 
-  const init = await initClient();
-  if ("response" in init) return init.response;
-
-  const { data, error } = await init.client.access.grantAgent(
-    id,
-    agentId,
-    normalizedPermissions,
-    {
+  try {
+    const grant = await getProvider(vaultOwnership.provider).createGrant(id, {
+      agentId,
       secretPathPattern: trimmedPattern,
+      permissions: normalizedPermissions,
       ...(conditions ? { conditions: conditions as Record<string, unknown> } : {}),
-      ...(expiresAt ? { expires_at: expiresAt as string } : {}),
-    },
-  );
-
-  if (error || !data) {
-    console.error("[key-grants] 1claw grantAgent failed", error);
-    return Response.json(
-      { error: error?.message ?? "Failed to create key grant upstream" },
-      { status: 502 },
-    );
+      ...(expiresAt ? { expiresAt: expiresAt as string } : {}),
+    });
+    return Response.json({ grant }, { status: 201 });
+  } catch (err) {
+    return providerErrorToResponse(err);
   }
-
-  return Response.json({ grant: serializeGrant(data) }, { status: 201 });
 }

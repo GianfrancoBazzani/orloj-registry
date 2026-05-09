@@ -17,11 +17,15 @@ export interface Mcp {
   color: string;
 }
 
+export type VaultProviderId = "oneclaw" | "orbitport";
+
 export interface Vault {
   id: string;
   name: string;
   description: string;
   keyCount: number;
+  provider: VaultProviderId;
+  address?: string;
 }
 
 export interface Agent {

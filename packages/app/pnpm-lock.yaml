@@ -11,6 +11,9 @@ importers:
       '@1claw/sdk':
         specifier: 0.20.4
         version: 0.20.4
+      '@spacecomputer-io/orbitport-sdk-ts':
+        specifier: 0.2.1
+        version: 0.2.1(typescript@5.9.3)
       better-auth:
         specifier: 1.6.9
         version: 1.6.9(next@16.2.6(@babel/core@7.29.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(pg@8.20.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -564,6 +567,12 @@ packages:
 
   '@scure/bip39@1.6.0':
     resolution: {integrity: sha512-+lF0BbLiJNwVlev4eKelw1WWLaiKXw7sSl8T6FvBlWkdX+94aGJ4o8XjUdlyhTCjd8c+B3KT3JfS8P0bLRNU6A==}
+
+  '@spacecomputer-io/orbitport-sdk-ts@0.2.1':
+    resolution: {integrity: sha512-RWVbznZwseapRtexjmsjT64uNscf/AiSjQAZe9PBZbcfcmyaThk2XFur3AOnyD87GKujKmm1sxCFScAfFM8u4A==}
+    engines: {node: '>=22.0.0'}
+    peerDependencies:
+      typescript: '>=5.0.0'
 
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
@@ -2720,6 +2729,11 @@ snapshots:
     dependencies:
       '@noble/hashes': 1.8.0
       '@scure/base': 1.2.6
+
+  '@spacecomputer-io/orbitport-sdk-ts@0.2.1(typescript@5.9.3)':
+    dependencies:
+      tslib: 2.8.1
+      typescript: 5.9.3
 
   '@standard-schema/spec@1.1.0': {}
 

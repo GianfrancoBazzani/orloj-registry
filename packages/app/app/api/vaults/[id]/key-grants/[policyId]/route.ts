@@ -1,46 +1,13 @@
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
-import { getOneclawClient } from "@/lib/oneclaw";
+import {
+  getProvider,
+  providerErrorToResponse,
+} from "@/lib/vault-providers";
 import { assertVaultOwner } from "@/lib/vault-ownership";
 
 const PERMISSION_MAX = 32;
 const VALID_PERMISSIONS = new Set(["read", "write", "sign", "admin"]);
-
-const initClient = async () => {
-  try {
-    return { client: await getOneclawClient() } as const;
-  } catch (err) {
-    console.error("[key-grants] 1claw client init failed", err);
-    return {
-      response: Response.json(
-        { error: "Vault service is not configured" },
-        { status: 503 },
-      ),
-    } as const;
-  }
-};
-
-const serializeGrant = (p: {
-  id: string;
-  vault_id: string;
-  secret_path_pattern: string;
-  principal_type: string;
-  principal_id: string;
-  permissions: string[];
-  conditions: Record<string, unknown>;
-  expires_at?: string;
-  created_at: string;
-}) => ({
-  id: p.id,
-  vaultId: p.vault_id,
-  secretPathPattern: p.secret_path_pattern,
-  principalType: p.principal_type,
-  principalId: p.principal_id,
-  permissions: p.permissions,
-  conditions: p.conditions,
-  expiresAt: p.expires_at,
-  createdAt: p.created_at,
-});
 
 export async function PATCH(
   request: Request,
@@ -60,7 +27,7 @@ export async function PATCH(
   }
 
   const ownership = await assertVaultOwner(id, session.user.id);
-  if (ownership !== true) return ownership;
+  if (ownership instanceof Response) return ownership;
 
   let body: unknown;
   try {
@@ -78,7 +45,7 @@ export async function PATCH(
   const update: {
     permissions?: string[];
     conditions?: Record<string, unknown>;
-    expires_at?: string;
+    expiresAt?: string;
   } = {};
 
   if (permissions !== undefined) {
@@ -128,7 +95,7 @@ export async function PATCH(
         { status: 400 },
       );
     }
-    update.expires_at = expiresAt;
+    update.expiresAt = expiresAt;
   }
 
   if (Object.keys(update).length === 0) {
@@ -141,19 +108,16 @@ export async function PATCH(
     );
   }
 
-  const init = await initClient();
-  if ("response" in init) return init.response;
-
-  const { data, error } = await init.client.access.update(id, policyId, update);
-  if (error || !data) {
-    console.error("[key-grants] 1claw update failed", error);
-    return Response.json(
-      { error: error?.message ?? "Failed to update key grant upstream" },
-      { status: 502 },
+  try {
+    const grant = await getProvider(ownership.provider).updateGrant(
+      id,
+      policyId,
+      update,
     );
+    return Response.json({ grant });
+  } catch (err) {
+    return providerErrorToResponse(err);
   }
-
-  return Response.json({ grant: serializeGrant(data) });
 }
 
 export async function DELETE(
@@ -174,19 +138,12 @@ export async function DELETE(
   }
 
   const ownership = await assertVaultOwner(id, session.user.id);
-  if (ownership !== true) return ownership;
+  if (ownership instanceof Response) return ownership;
 
-  const init = await initClient();
-  if ("response" in init) return init.response;
-
-  const { error } = await init.client.access.revoke(id, policyId);
-  if (error) {
-    console.error("[key-grants] 1claw revoke failed", error);
-    return Response.json(
-      { error: error.message ?? "Failed to revoke key grant upstream" },
-      { status: 502 },
-    );
+  try {
+    await getProvider(ownership.provider).revokeGrant(id, policyId);
+    return new Response(null, { status: 204 });
+  } catch (err) {
+    return providerErrorToResponse(err);
   }
-
-  return new Response(null, { status: 204 });
 }
