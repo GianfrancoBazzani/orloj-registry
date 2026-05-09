@@ -86,7 +86,7 @@ function getConfig(
     case "hermes":
       return {
         file: " ~/.hermes/config.yaml",
-        code: `mcp_servers:\n\tmcp_name:\n\t\turl: "${url}"\n\t\t\theaders: Authorization: "Bearer ${auth}"\n\t\t\ttimeout: 120`,
+        code: `mcp_servers:\n\tmcp_name:\n\t\turl: "${url}"\n\t\t\theaders: Authorization: "Bearer ${token}"\n\t\t\ttimeout: 120`,
       };
   }
 }
