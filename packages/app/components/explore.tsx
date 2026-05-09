@@ -12,9 +12,9 @@ import {
   Select,
   StainedPanel,
 } from "./ornaments";
-import { MCP_REGISTRY, SHORT_ADDR, type Mcp } from "./data";
+import { SHORT_ADDR, type Mcp } from "./data";
 
-export const Explore = () => {
+export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
   const router = useRouter();
   const { user, setShowLogin } = useAuth();
   const onNavigate = (r: string) => router.push(r === "home" ? "/" : `/${r}`);
@@ -31,14 +31,14 @@ export const Explore = () => {
 
   const allTags = [
     "All capabilities",
-    ...new Set(MCP_REGISTRY.flatMap((m) => m.tags)),
+    ...new Set(mcps.flatMap((m) => m.tags)),
   ];
   const allChains = [
     "All chains",
-    ...new Set(MCP_REGISTRY.map((m) => m.chain)),
+    ...new Set(mcps.map((m) => m.chain)),
   ];
 
-  let list = MCP_REGISTRY.filter((m) => {
+  let list = mcps.filter((m) => {
     if (
       q &&
       !`${m.name} ${m.summary} ${m.author} ${m.tags.join(" ")}`
@@ -50,6 +50,9 @@ export const Explore = () => {
     if (tag !== "All capabilities" && !m.tags.includes(tag)) return false;
     return true;
   });
+
+  console.log(list);
+
   if (sort === "Most active")
     list = [...list].sort((a, b) => b.callsLast24h - a.callsLast24h);
   if (sort === "Most starred")
@@ -93,7 +96,7 @@ export const Explore = () => {
                 marginBottom: 0,
               }}
             >
-              {list.length} of {MCP_REGISTRY.length} interfaces — bound by
+              {list.length} of {mcps.length} interfaces — bound by
               manifests, not promises.
             </p>
           </div>
@@ -667,25 +670,29 @@ const DetailDrawer = ({
           ))}
         </div>
 
-        <h4
-          className="smallcaps"
-          style={{ marginTop: 24, color: "var(--ink-soft)", fontSize: 11 }}
-        >
-          contract
-        </h4>
-        <div
-          className="mono"
-          style={{
-            padding: 12,
-            background: "var(--ink)",
-            color: "var(--brass-bright)",
-            fontSize: 12,
-            marginTop: 6,
-            wordBreak: "break-all",
-          }}
-        >
-          {m.contract}
-        </div>
+        {m.contract && (
+          <>
+            <h4
+              className="smallcaps"
+              style={{ marginTop: 24, color: "var(--ink-soft)", fontSize: 11 }}
+            >
+              contract
+            </h4>
+            <div
+              className="mono"
+              style={{
+                padding: 12,
+                background: "var(--ink)",
+                color: "var(--brass-bright)",
+                fontSize: 12,
+                marginTop: 6,
+                wordBreak: "break-all",
+              }}
+            >
+              {m.contract}
+            </div>
+          </>
+        )}
 
         <h4
           className="smallcaps"
