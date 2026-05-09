@@ -1,9 +1,11 @@
 import { randomBytes } from "node:crypto";
 import { betterAuth } from "better-auth";
 import { createAuthMiddleware } from "better-auth/api";
-import { siwe } from "better-auth/plugins";
+import { magicLink, siwe } from "better-auth/plugins";
 import { nextCookies } from "better-auth/next-js";
 import { Pool } from "pg";
+import { Resend } from "resend";
+import { renderMagicLinkEmail } from "./magic-link-email";
 import {
   createPublicClient,
   getAddress,
@@ -18,6 +20,17 @@ import { resolveEnsChain } from "./chains";
 
 const baseURL = process.env.BETTER_AUTH_URL ?? "http://localhost:3000";
 const siweDomain = new URL(baseURL).host;
+
+let resendClient: Resend | null = null;
+const getResend = () => {
+  if (!resendClient) {
+    const key = process.env.RESEND_API_KEY;
+    if (!key) throw new Error("RESEND_API_KEY is not set");
+    resendClient = new Resend(key);
+  }
+  return resendClient;
+};
+const emailFrom = process.env.EMAIL_FROM ?? "Orloj <onboarding@resend.dev>";
 
 const ENS_TIMEOUT_MS = 3000;
 const { chain: ensChain, rpcUrl: ensRpcUrl, key: ensChainKey } =
@@ -55,6 +68,22 @@ export const auth = betterAuth({
     ssl: { rejectUnauthorized: false },
   }),
   plugins: [
+    magicLink({
+      sendMagicLink: async ({ email, url }) => {
+        const { html, text } = renderMagicLinkEmail(url);
+        const { error } = await getResend().emails.send({
+          from: emailFrom,
+          to: email,
+          subject: "Your sign-in link to Orloj",
+          html,
+          text,
+        });
+        if (error) {
+          console.error("[auth] resend send failed:", error);
+          throw new Error(error.message ?? "Failed to send magic link");
+        }
+      },
+    }),
     siwe({
       domain: siweDomain,
       anonymous: true,

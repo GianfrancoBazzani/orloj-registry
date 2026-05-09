@@ -3,7 +3,8 @@ import { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { StainedPanel, Pill, Btn } from "./ornaments";
+import { StainedPanel, Pill, Btn, Input } from "./ornaments";
+import { authClient } from "@/lib/auth-client";
 import { SHORT_ADDR, type Mcp } from "./data";
 import { LaunchModal, type RegisterResult } from "./launch-modal";
 
@@ -17,6 +18,33 @@ export const LoginModal = ({
   const providers = [
     { id: "wallet", label: "Ethereum wallet (SIWE)", icon: "◆" },
   ];
+
+  const [email, setEmail] = useState("");
+  const [magicStatus, setMagicStatus] = useState<
+    "idle" | "sending" | "sent" | "error"
+  >("idle");
+  const [magicError, setMagicError] = useState("");
+  const [sentTo, setSentTo] = useState("");
+
+  const handleSendMagicLink = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email) return;
+    setMagicStatus("sending");
+    setMagicError("");
+    const callbackURL =
+      typeof window !== "undefined" ? window.location.pathname || "/" : "/";
+    const { error } = await authClient.signIn.magicLink({
+      email,
+      callbackURL,
+    });
+    if (error) {
+      setMagicStatus("error");
+      setMagicError(error.message ?? "Failed to send sign-in link");
+      return;
+    }
+    setSentTo(email);
+    setMagicStatus("sent");
+  };
 
   return (
     <div
@@ -72,8 +100,8 @@ export const LoginModal = ({
           </div>
           <div style={{ position: "relative", paddingTop: 32 }}>
             <div className="poetic" style={{ fontSize: 30, lineHeight: 1.2 }}>
-              "When the noon bell strikes, the apostles parade — and your agent
-              signs."
+              &ldquo;When the noon bell strikes, the apostles parade — and
+              your agent signs.&rdquo;
             </div>
             <div
               className="smallcaps"
@@ -119,7 +147,115 @@ export const LoginModal = ({
             One identity, all your agents.
           </p>
 
-          <div style={{ display: "grid", gap: 8, marginTop: 16 }}>
+          {magicStatus === "sent" ? (
+            <div
+              style={{
+                marginTop: 24,
+                padding: "20px 18px",
+                background: "rgba(47,110,94,0.08)",
+                border: "1px solid rgba(47,110,94,0.35)",
+                display: "grid",
+                gap: 8,
+              }}
+            >
+              <div
+                className="smallcaps"
+                style={{
+                  fontSize: 11,
+                  color: "var(--verdigris-deep)",
+                }}
+              >
+                ✦ check your inbox
+              </div>
+              <div
+                className="display"
+                style={{ fontSize: 18, color: "var(--ink)" }}
+              >
+                A signal is on its way.
+              </div>
+              <div style={{ fontSize: 13, color: "var(--ink-soft)" }}>
+                We sent a sign-in link to{" "}
+                <span className="mono" style={{ color: "var(--ink)" }}>
+                  {sentTo}
+                </span>
+                . The link expires in 5 minutes.
+              </div>
+              <button
+                onClick={() => {
+                  setMagicStatus("idle");
+                  setEmail("");
+                  setSentTo("");
+                }}
+                className="smallcaps"
+                style={{
+                  marginTop: 6,
+                  background: "transparent",
+                  border: "none",
+                  padding: 0,
+                  fontSize: 11,
+                  color: "var(--brass-deep)",
+                  cursor: "pointer",
+                  textAlign: "left",
+                  fontFamily: "var(--font-ui)",
+                }}
+              >
+                use a different email →
+              </button>
+            </div>
+          ) : (
+            <form
+              onSubmit={handleSendMagicLink}
+              style={{ marginTop: 24, display: "grid", gap: 10 }}
+            >
+              <Input
+                type="email"
+                required
+                placeholder="you@somewhere.eth"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                disabled={magicStatus === "sending"}
+              />
+              {magicStatus === "error" && (
+                <div style={{ fontSize: 12, color: "var(--wine)" }}>
+                  {magicError}
+                </div>
+              )}
+              <Btn
+                kind="primary"
+                size="md"
+                type="submit"
+                disabled={magicStatus === "sending" || !email}
+              >
+                {magicStatus === "sending"
+                  ? "sending…"
+                  : "email me a sign-in link"}
+              </Btn>
+            </form>
+          )}
+
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              margin: "24px 0 16px",
+            }}
+          >
+            <div style={{ flex: 1, height: 1, background: "var(--line)" }} />
+            <span
+              className="smallcaps"
+              style={{
+                fontSize: 10,
+                color: "var(--ink-soft)",
+                letterSpacing: "0.22em",
+              }}
+            >
+              or
+            </span>
+            <div style={{ flex: 1, height: 1, background: "var(--line)" }} />
+          </div>
+
+          <div style={{ display: "grid", gap: 10 }}>
             {providers.map((p) => (
               <button
                 key={p.id}
