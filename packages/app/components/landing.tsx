@@ -1,10 +1,13 @@
 "use client";
 import { useRouter } from "next/navigation";
 import { Pill, Btn, Divider, SectionHeader } from "./ornaments";
+import { useAuth } from "./auth-context";
 
 export const Landing = () => {
   const router = useRouter();
+  const { user, setShowLogin } = useAuth();
   const onNavigate = (r: string) => router.push(r === "home" ? "/" : `/${r}`);
+  const onRegister = () => { if (!user) { setShowLogin(true); return; } onNavigate("register"); };
 const stats = [
     { v: "142", l: "registered MCPs" },
     { v: "38", l: "chains indexed" },
@@ -86,7 +89,7 @@ const stats = [
                 flexWrap: "wrap",
               }}
             >
-              <Btn kind="primary" size="lg" onClick={() => onNavigate("register")}>
+              <Btn kind="primary" size="lg" onClick={onRegister}>
                 Register an MCP &nbsp;→
               </Btn>
               <Btn kind="ghost" size="lg" onClick={() => onNavigate("explore")}>
@@ -166,7 +169,7 @@ const stats = [
                 "Public + private listings",
               ]}
               cta="Open the wizard"
-              onClick={() => onNavigate("register")}
+              onClick={onRegister}
               illustration={<RegisterIllustration />}
             />
             <ForkCard
