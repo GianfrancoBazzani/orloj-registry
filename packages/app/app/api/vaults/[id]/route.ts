@@ -1,6 +1,7 @@
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
 import { getOneclawClient } from "@/lib/oneclaw";
+import { assertVaultOwner, releaseVault } from "@/lib/vault-ownership";
 
 export async function DELETE(
   _request: Request,
@@ -15,6 +16,9 @@ export async function DELETE(
   if (!id) {
     return Response.json({ error: "Missing vault id" }, { status: 400 });
   }
+
+  const ownership = await assertVaultOwner(id, session.user.id);
+  if (ownership !== true) return ownership;
 
   let client;
   try {
@@ -35,6 +39,8 @@ export async function DELETE(
       { status: 502 },
     );
   }
+
+  await releaseVault(id);
 
   return new Response(null, { status: 204 });
 }

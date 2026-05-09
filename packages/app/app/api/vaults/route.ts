@@ -1,6 +1,10 @@
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
 import { getOneclawClient } from "@/lib/oneclaw";
+import {
+  claimVault,
+  listVaultIdsForUser,
+} from "@/lib/vault-ownership";
 import type { Vault } from "@/components/data";
 
 const NAME_MAX = 80;
@@ -23,8 +27,12 @@ export async function GET() {
     );
   }
 
-  const { data, error } = await client.vault.list();
+  const [ownedIds, listResult] = await Promise.all([
+    listVaultIdsForUser(session.user.id),
+    client.vault.list(),
+  ]);
 
+  const { data, error } = listResult;
   if (error || !data) {
     console.error("[vaults] 1claw list failed", error);
     return Response.json(
@@ -33,8 +41,10 @@ export async function GET() {
     );
   }
 
+  const owned = data.vaults.filter((v) => ownedIds.has(v.id));
+
   const counts = await Promise.all(
-    data.vaults.map(async (v) => {
+    owned.map(async (v) => {
       const res = await client.secrets.list(v.id);
       if (res.error || !res.data) {
         console.error(
@@ -47,7 +57,7 @@ export async function GET() {
     }),
   );
 
-  const vaults: Vault[] = data.vaults.map((v, i) => ({
+  const vaults: Vault[] = owned.map((v, i) => ({
     id: v.id,
     name: v.name,
     description: v.description ?? "",
@@ -121,6 +131,26 @@ export async function POST(request: Request) {
     return Response.json(
       { error: error?.message ?? "Failed to create vault upstream" },
       { status: 502 },
+    );
+  }
+
+  try {
+    await claimVault(data.id, session.user.id);
+  } catch (claimErr) {
+    console.error(
+      "[vaults] ownership claim failed; rolling back upstream vault",
+      claimErr,
+    );
+    const { error: rollbackError } = await client.vault.delete(data.id);
+    if (rollbackError) {
+      console.error(
+        `[vaults] rollback delete failed for orphan vault ${data.id}`,
+        rollbackError,
+      );
+    }
+    return Response.json(
+      { error: "Failed to register vault ownership" },
+      { status: 500 },
     );
   }
 

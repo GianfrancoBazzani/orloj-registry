@@ -9,7 +9,7 @@ importers:
   .:
     dependencies:
       '@1claw/sdk':
-        specifier: ^0.20.4
+        specifier: 0.20.4
         version: 0.20.4
       better-auth:
         specifier: 1.6.9

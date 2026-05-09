@@ -1,6 +1,7 @@
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
 import { getOneclawClient } from "@/lib/oneclaw";
+import { assertVaultOwner } from "@/lib/vault-ownership";
 
 const initClient = async () => {
   try {
@@ -36,6 +37,9 @@ export async function GET(
       { status: 400 },
     );
   }
+
+  const ownership = await assertVaultOwner(id, session.user.id);
+  if (ownership !== true) return ownership;
 
   const init = await initClient();
   if ("response" in init) return init.response;
@@ -78,6 +82,9 @@ export async function DELETE(
       { status: 400 },
     );
   }
+
+  const ownership = await assertVaultOwner(id, session.user.id);
+  if (ownership !== true) return ownership;
 
   const init = await initClient();
   if ("response" in init) return init.response;
