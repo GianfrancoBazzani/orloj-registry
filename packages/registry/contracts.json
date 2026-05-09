@@ -28,5 +28,11 @@
         "address": "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0",
         "implementation": false,
         "rpcUrl": "https://eth.llamarpc.com"
+    },
+    {
+        "chainId": 1,
+        "address": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+        "implementation": false,
+        "rpcUrl": "https://go.getblock.io/aefd01aa907c4805ba3c00a9e5b48c6b"
     }
 ]
