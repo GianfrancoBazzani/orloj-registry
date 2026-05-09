@@ -3,10 +3,7 @@
 const LoginModal = ({ onClose, onLogin }) => {
   const [mode, setMode] = React.useState('login'); // login | signup
   const providers = [
-    { id: 'github', label: 'GitHub', icon: '⌥' },
-    { id: 'google', label: 'Google', icon: '◯' },
-    { id: 'wallet', label: 'Ethereum wallet (SIWE)', icon: '◆' },
-    { id: 'farcaster', label: 'Farcaster', icon: '✦' },
+    { id: 'wallet', label: 'Ethereum wallet (SIWE)', icon: '◆' }
   ];
 
   return (
@@ -102,7 +99,6 @@ const TopNav = ({ route, onNavigate, user, onLogin, onLogout }) => {
   const items = [
     { id: 'explore', l: 'Explore' },
     { id: 'register', l: 'Register' },
-    { id: 'docs', l: 'Docs' },
   ];
   return (
     <header style={{

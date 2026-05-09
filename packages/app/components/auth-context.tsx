@@ -8,7 +8,6 @@ interface UiUser {
   name: string;
   email: string;
   address: string;
-  plan: string;
   joined: string;
   provider: string;
 }
@@ -64,7 +63,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
             : (u.email ?? ""),
       email: u.email ?? "",
       address: rawAddress,
-      plan: "Studio",
       joined: formatJoined(u.createdAt),
       provider: "siwe",
     };

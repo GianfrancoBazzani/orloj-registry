@@ -34,9 +34,6 @@ const Profile = ({ user, onNavigate, onBindFlow, bindMcp, onClearBind }) => {
           <div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <div className="display" style={{ fontSize: 28 }}>{user.name}</div>
-              <Pill tone="brass" style={{ background: 'rgba(184,137,58,0.25)', color: 'var(--brass-bright)', borderColor: 'var(--brass)' }}>
-                {user.plan}
-              </Pill>
             </div>
             <div className="mono" style={{ fontSize: 12, color: 'var(--brass-bright)', marginTop: 4 }}>{user.address} · joined {user.joined}</div>
             <div style={{ display: 'flex', gap: 24, marginTop: 14, fontSize: 13, color: 'rgba(241,233,212,0.7)' }}>

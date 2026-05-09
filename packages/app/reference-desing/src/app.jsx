@@ -34,7 +34,6 @@ const App = () => {
       name: 'Vlastimil Hrabal',
       email: 'vlastimil@studio.eth',
       address: 'vlastimil.eth',
-      plan: 'Studio',
       joined: 'Mar 2026',
       provider,
     });

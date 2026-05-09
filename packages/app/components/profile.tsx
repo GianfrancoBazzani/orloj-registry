@@ -27,7 +27,6 @@ interface User {
   name: string;
   email: string;
   address: string;
-  plan: string;
   joined: string;
   provider: string;
 }
@@ -246,16 +245,6 @@ export const Profile = () => {
               <div className="display" style={{ fontSize: 28 }}>
                 {user.name}
               </div>
-              <Pill
-                tone="brass"
-                style={{
-                  background: "rgba(184,137,58,0.25)",
-                  color: "var(--brass-bright)",
-                  border: "1px solid var(--brass)",
-                }}
-              >
-                {user.plan}
-              </Pill>
             </div>
             <div
               className="mono"
