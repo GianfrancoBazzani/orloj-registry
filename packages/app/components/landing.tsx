@@ -389,10 +389,11 @@ const ClockTableau = () => {
             const cos = Math.cos(a), sin = Math.sin(a);
             const major = i%6===0, mid = i%3===0;
             const r2 = major ? 167 : mid ? 176 : 181;
+            const r = (n: number) => Math.round(n * 1e6) / 1e6;
             return (
               <line key={i}
-                x1={cx + cos*185} y1={cy + sin*185}
-                x2={cx + cos*r2}  y2={cy + sin*r2}
+                x1={r(cx + cos*185)} y1={r(cy + sin*185)}
+                x2={r(cx + cos*r2)}  y2={r(cy + sin*r2)}
                 stroke="#C8913A"
                 strokeWidth={major ? 2 : mid ? 1.2 : 0.6}
                 strokeOpacity={major ? 1 : mid ? 0.8 : 0.5}
@@ -402,8 +403,10 @@ const ClockTableau = () => {
           {/* Cardinal diamond markers */}
           {Array.from({ length: 4 }, (_, i) => {
             const a = (i/4)*Math.PI*2 - Math.PI/2;
+            const rx = Math.round((cx + Math.cos(a)*198) * 1e6) / 1e6;
+            const ry = Math.round((cy + Math.sin(a)*198) * 1e6) / 1e6;
             return (
-              <g key={i} transform={`translate(${cx + Math.cos(a)*198},${cy + Math.sin(a)*198}) rotate(${i*90})`}>
+              <g key={i} transform={`translate(${rx},${ry}) rotate(${i*90})`}>
                 <polygon points="0,-7 6,0 0,7 -6,0" fill="#F7EBB0"/>
               </g>
             );
@@ -426,17 +429,18 @@ const ClockTableau = () => {
             const a = (i/12)*Math.PI*2 - Math.PI/2;
             const cos = Math.cos(a), sin = Math.sin(a);
             const major = i%3===0;
+            const r = (n: number) => Math.round(n * 1e6) / 1e6;
             return (
               <g key={i}>
                 <line
-                  x1={cx + cos*142} y1={cy + sin*142}
-                  x2={cx + cos*(major ? 120 : 131)} y2={cy + sin*(major ? 120 : 131)}
+                  x1={r(cx + cos*142)} y1={r(cy + sin*142)}
+                  x2={r(cx + cos*(major ? 120 : 131))} y2={r(cy + sin*(major ? 120 : 131))}
                   stroke="#C8913A" strokeWidth={major ? 2 : 1} strokeOpacity="0.9"
                 />
                 {major && <>
-                  <circle cx={cx + cos*158} cy={cy + sin*158}
+                  <circle cx={r(cx + cos*158)} cy={r(cy + sin*158)}
                     r="6.5" fill="none" stroke="#F7EBB0" strokeWidth="1" strokeOpacity="0.8"/>
-                  <circle cx={cx + cos*158} cy={cy + sin*158} r="2.5" fill="#F7EBB0"/>
+                  <circle cx={r(cx + cos*158)} cy={r(cy + sin*158)} r="2.5" fill="#F7EBB0"/>
                 </>}
               </g>
             );
@@ -467,10 +471,11 @@ const ClockTableau = () => {
             const a = (i/8)*Math.PI*2 - Math.PI/2;
             const cos = Math.cos(a), sin = Math.sin(a);
             const major = i%2===0;
+            const r = (n: number) => Math.round(n * 1e6) / 1e6;
             return (
               <line key={i}
-                x1={cx + cos*100} y1={cy + sin*100}
-                x2={cx + cos*(major ? 81 : 89)} y2={cy + sin*(major ? 81 : 89)}
+                x1={r(cx + cos*100)} y1={r(cy + sin*100)}
+                x2={r(cx + cos*(major ? 81 : 89))} y2={r(cy + sin*(major ? 81 : 89))}
                 stroke={major ? "#F7EBB0" : "#C8913A"}
                 strokeWidth={major ? 2.2 : 1.2} strokeOpacity="1"
               />
@@ -479,8 +484,10 @@ const ClockTableau = () => {
           {/* Small crescents at intercardinals, fat facing outward */}
           {[45, 135, 225, 315].map((deg, i) => {
             const a = (deg-90)*Math.PI/180;
+            const rx = Math.round((cx + Math.cos(a)*100) * 1e6) / 1e6;
+            const ry = Math.round((cy + Math.sin(a)*100) * 1e6) / 1e6;
             return (
-              <g key={i} transform={`translate(${cx + Math.cos(a)*100},${cy + Math.sin(a)*100}) rotate(${deg+90})`}>
+              <g key={i} transform={`translate(${rx},${ry}) rotate(${deg+90})`}>
                 <path d={SCP} fill="#C8913A" fillOpacity="0.65"/>
               </g>
             );
