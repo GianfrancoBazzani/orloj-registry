@@ -24,6 +24,16 @@ Every one of those is a footgun — and a reason teams don't ship agentic on-cha
 
 Orloj removes the entire surface. Each contract is published as an MCP server, so the agent sees only **typed, verified interfaces** it can call like any other tool. Account management, signing, and gas are abstracted away by the registry layer; the agent never holds a key and never sees a transaction. The result: agents that can act on-chain with the same ergonomics as calling a REST API.
 
+## Why This Matters for Agents
+
+By abstracting key management and gas handling into the MCP boundary:
+
+- **Simplified mental model.** Agents never need context about blockchain infrastructure, private key custody, or transaction mechanics — only contract interfaces. This shrinks cognitive load and reduces reasoning errors.
+- **Infrastructure-agnostic.** Key rotation, HSM policies, network selection, and gas strategies are handled outside the agent's control loop. The agent stays focused on *what to do*, not *how to pay for it*.
+- **Lower model requirements.** Even less powerful models (that support tool calling) can reliably execute on-chain operations. The agent doesn't need to reason about gas prices, nonce management, or transaction finality — it just calls a tool with clear inputs/outputs.
+- **Higher reliability.** By removing accounts and signing from the agent's purview, you eliminate an entire class of bugs: fund loss, key leakage, stuck transactions, failed estimates. The registry layer enforces correctness.
+- **Focused reasoning.** Agents can concentrate entirely on business logic — when to call what function and with what parameters — rather than worrying about the infrastructure layer.
+
 ## How It Works
 
 Orloj rests on two pillars:
