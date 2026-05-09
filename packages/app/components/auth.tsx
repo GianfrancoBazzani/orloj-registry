@@ -1,6 +1,5 @@
 "use client";
-import { useState } from "react";
-import { OrlojMark, StainedPanel, Pill, Btn, Field, Input } from "./ornaments";
+import { OrlojMark, StainedPanel, Pill, Btn } from "./ornaments";
 
 export const LoginModal = ({
   onClose,
@@ -9,12 +8,8 @@ export const LoginModal = ({
   onClose: () => void;
   onLogin: (provider: string) => void;
 }) => {
-  const [mode, setMode] = useState<"login" | "signup">("login");
   const providers = [
-    { id: "github", label: "GitHub", icon: "⌥" },
-    { id: "google", label: "Google", icon: "◯" },
     { id: "wallet", label: "Ethereum wallet (SIWE)", icon: "◆" },
-    { id: "farcaster", label: "Farcaster", icon: "✦" },
   ];
 
   return (
@@ -107,16 +102,12 @@ export const LoginModal = ({
             ×
           </button>
 
-          <Pill tone="brass">
-            {mode === "login" ? "sign in" : "create account"}
-          </Pill>
+          <Pill tone="brass">sign in</Pill>
           <h2
             className="display"
             style={{ fontSize: 28, marginTop: 12, marginBottom: 4 }}
           >
-            {mode === "login"
-              ? "Welcome back to the square."
-              : "Take a seat in the square."}
+            Welcome back to the square.
           </h2>
           <p style={{ color: "var(--ink-soft)", fontSize: 14, marginTop: 4 }}>
             One identity, all your agents.
@@ -170,62 +161,6 @@ export const LoginModal = ({
             ))}
           </div>
 
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              margin: "24px 0",
-            }}
-          >
-            <div style={{ flex: 1, height: 1, background: "var(--line)" }} />
-            <span
-              className="smallcaps"
-              style={{ fontSize: 10, color: "var(--ink-soft)" }}
-            >
-              or
-            </span>
-            <div style={{ flex: 1, height: 1, background: "var(--line)" }} />
-          </div>
-
-          <Field label="Email">
-            <Input type="email" placeholder="you@studio.eth" />
-          </Field>
-          <div style={{ marginTop: 16 }}>
-            <Btn
-              kind="primary"
-              style={{ width: "100%" }}
-              onClick={() => onLogin("email")}
-            >
-              {mode === "login" ? "Sign in with magic link" : "Send signup link"}{" "}
-              →
-            </Btn>
-          </div>
-
-          <div
-            style={{
-              marginTop: 18,
-              fontSize: 13,
-              color: "var(--ink-soft)",
-              textAlign: "center",
-            }}
-          >
-            {mode === "login" ? "New to ORLOJ? " : "Already have an account? "}
-            <button
-              onClick={() => setMode(mode === "login" ? "signup" : "login")}
-              style={{
-                background: "none",
-                border: "none",
-                cursor: "pointer",
-                color: "var(--brass-deep)",
-                textDecoration: "underline",
-                fontSize: 13,
-                fontFamily: "var(--font-ui)",
-              }}
-            >
-              {mode === "login" ? "Create an account" : "Sign in"}
-            </button>
-          </div>
         </div>
       </div>
     </div>
