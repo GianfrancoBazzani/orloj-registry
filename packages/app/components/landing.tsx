@@ -720,14 +720,16 @@ const RegisterIllustration = () => (
 const ClockFace = ({ deg }: { deg: number }) => {
   const r = 44;
   const cx = 52, cy = 52;
+  // Math.sin/cos are not bit-identical across V8 builds; round so SSR and client agree.
+  const q = (n: number) => Math.round(n * 10000) / 10000;
   const rad = (deg - 90) * (Math.PI / 180);
-  const hx = cx + Math.cos(rad) * r * 0.62;
-  const hy = cy + Math.sin(rad) * r * 0.62;
+  const hx = q(cx + Math.cos(rad) * r * 0.62);
+  const hy = q(cy + Math.sin(rad) * r * 0.62);
   const ticks = Array.from({ length: 12 }, (_, i) => {
     const a = (i / 12) * Math.PI * 2 - Math.PI / 2;
     const major = i % 3 === 0;
     const r1 = major ? r - 8 : r - 5;
-    return { x1: cx + Math.cos(a) * r, y1: cy + Math.sin(a) * r, x2: cx + Math.cos(a) * r1, y2: cy + Math.sin(a) * r1, major };
+    return { x1: q(cx + Math.cos(a) * r), y1: q(cy + Math.sin(a) * r), x2: q(cx + Math.cos(a) * r1), y2: q(cy + Math.sin(a) * r1), major };
   });
   return (
     <svg
