@@ -16,7 +16,10 @@ const CONTRACTS_FILE = path.resolve(
   process.env.CONTRACTS_FILE ?? "./contracts.json",
 );
 
-function entryName({ chainId, address }) {
+function entryName({ chainId, address, implementation }) {
+  if (address === false && implementation === false) {
+    return `native_token_chain_id_${Number(chainId)}`;
+  }
   return `${chainId}-${address.toLowerCase()}`;
 }
 
@@ -29,7 +32,14 @@ app.get("/healthz", (_req, res) => {
 });
 
 app.get("/mcp", (_req, res) => {
-  const items = registry.list().map((name) => `/interface/${name}/mcp`);
+  const items = registry.entriesList().map(({ name, meta }) => {
+    const { tools: _tools, ...rest } = meta;
+    return {
+      name,
+      url: `/interface/${name}/mcp`,
+      ...rest,
+    };
+  });
   res.json(items);
 });
 
@@ -90,12 +100,12 @@ app.post("/register", async (req, res) => {
 
     const impl = typeof implementation === "string" ? implementation : null;
     const name = entryName({ chainId: numericChainId, address });
-    const server = await buildMcp({
+    const built = await buildMcp({
       chainId: numericChainId,
       address,
       implementation: impl,
     });
-    await registry.set(name, server);
+    await registry.set(name, built);
     console.log(
       `[registry] registered "${name}"${impl ? ` (proxy → ${impl})` : ""}`,
     );
@@ -115,8 +125,8 @@ app.post("/register", async (req, res) => {
 
 app.post("/interface/:name/mcp", async (req, res) => {
   const { name } = req.params;
-  const mcpServer = registry.get(name);
-  if (!mcpServer) {
+  const entry = registry.get(name);
+  if (!entry) {
     res.status(404).json({ error: "MCP not found" });
     return;
   }
@@ -126,7 +136,7 @@ app.post("/interface/:name/mcp", async (req, res) => {
   });
   res.on("close", () => transport.close());
   try {
-    await mcpServer.connect(transport);
+    await entry.server.connect(transport);
     await transport.handleRequest(req, res, req.body);
   } catch (err) {
     console.error(`[registry] request error for "${name}":`, err);
@@ -145,7 +155,12 @@ async function registerContracts() {
 
   for (const entry of contracts) {
     const { chainId, address, implementation } = entry ?? {};
-    if (!Number.isFinite(Number(chainId)) || !ADDRESS_RE.test(address ?? "")) {
+    if (!Number.isFinite(Number(chainId))) {
+      console.error(`[registry] skipping invalid entry:`, entry);
+      continue;
+    }
+    const isNative = address === false && implementation === false;
+    if (!isNative && !ADDRESS_RE.test(address ?? "")) {
       console.error(`[registry] skipping invalid entry:`, entry);
       continue;
     }
@@ -153,16 +168,16 @@ async function registerContracts() {
       typeof implementation === "string" && ADDRESS_RE.test(implementation)
         ? implementation
         : null;
-    const name = entryName({ chainId, address });
+    const name = entryName({ chainId, address, implementation });
     try {
-      const server = await buildMcp({
+      const built = await buildMcp({
         chainId,
-        address,
-        implementation: impl,
+        address: isNative ? false : address,
+        implementation: isNative ? false : impl,
       });
-      await registry.set(name, server);
+      await registry.set(name, built);
       console.log(
-        `[registry] registered "${name}"${impl ? ` (proxy → ${impl})` : ""}`,
+        `[registry] registered "${name}"${isNative ? " (native token)" : impl ? ` (proxy → ${impl})` : ""}`,
       );
     } catch (err) {
       console.error(`[registry] failed to register "${name}":`, err.message);
