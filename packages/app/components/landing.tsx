@@ -254,18 +254,21 @@ const stats = [
             {[
               {
                 n: "I",
-                t: "Publish",
-                d: "Submit a contract address. We resolve the ABI, hash the manifest, and pin it to IPFS.",
+                t: "Create",
+                d: "Register your agent and seal their private keys in a vault — secure by default, never exposed.",
+                hand: 0,
               },
               {
                 n: "II",
-                t: "Bind",
-                d: "An operator picks an MCP, scopes a vault, and the agent receives a session‑signed credential.",
+                t: "Generate",
+                d: "Paste a contract address. We resolve the ABI and generate a ready‑to‑use MCP server in seconds.",
+                hand: 120,
               },
               {
                 n: "III",
-                t: "Strike",
-                d: "Each tool call is logged, rate‑limited, and revocable — like the bell at noon.",
+                t: "Act",
+                d: "Let the agent wield the MCPs and move onchain seamlessly — call by call, permission by permission.",
+                hand: 240,
               },
             ].map((m, i) => (
               <div
@@ -277,17 +280,7 @@ const stats = [
                   border: "1px solid var(--line)",
                 }}
               >
-                <div
-                  className="display"
-                  style={{
-                    fontSize: 56,
-                    color: "var(--brass)",
-                    lineHeight: 1,
-                    opacity: 0.9,
-                  }}
-                >
-                  {m.n}
-                </div>
+                <ClockFace deg={m.hand} />
                 <div
                   className="display"
                   style={{ fontSize: 22, color: "var(--ink)", marginTop: 8 }}
@@ -720,6 +713,38 @@ const RegisterIllustration = () => (
     </g>
   </svg>
 );
+
+const ClockFace = ({ deg }: { deg: number }) => {
+  const r = 44;
+  const cx = 52, cy = 52;
+  const rad = (deg - 90) * (Math.PI / 180);
+  const hx = cx + Math.cos(rad) * r * 0.62;
+  const hy = cy + Math.sin(rad) * r * 0.62;
+  const ticks = Array.from({ length: 12 }, (_, i) => {
+    const a = (i / 12) * Math.PI * 2 - Math.PI / 2;
+    const major = i % 3 === 0;
+    const r1 = major ? r - 8 : r - 5;
+    return { x1: cx + Math.cos(a) * r, y1: cy + Math.sin(a) * r, x2: cx + Math.cos(a) * r1, y2: cy + Math.sin(a) * r1, major };
+  });
+  return (
+    <svg
+      width="72" height="72"
+      viewBox="0 0 104 104"
+      aria-hidden="true"
+      style={{ display: "block", marginBottom: 16 }}
+    >
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--brass)" strokeWidth="1.5"/>
+      <circle cx={cx} cy={cy} r={r - 6} fill="none" stroke="var(--brass)" strokeWidth="0.5" strokeOpacity="0.4"/>
+      {ticks.map((t, i) => (
+        <line key={i} x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2}
+          stroke="var(--brass)" strokeWidth={t.major ? 2 : 1} strokeOpacity={t.major ? 1 : 0.6}/>
+      ))}
+      <line x1={cx} y1={cy} x2={hx} y2={hy}
+        stroke="var(--brass-deep)" strokeWidth="2.5" strokeLinecap="round"/>
+      <circle cx={cx} cy={cy} r="3.5" fill="var(--brass)"/>
+    </svg>
+  );
+};
 
 const ExploreIllustration = () => (
   <svg width="200" height="200" viewBox="0 0 200 200" aria-hidden="true">
