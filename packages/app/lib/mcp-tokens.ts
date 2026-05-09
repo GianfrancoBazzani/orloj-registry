@@ -28,6 +28,22 @@ export const issueTokenForAgent = async (
   return { id, token, tokenPrefix };
 };
 
+export const getActiveTokenForAgent = async (
+  agentId: string,
+): Promise<string | null> => {
+  const pool = await getPool();
+  const { rows } = await pool.query<{ token: string }>(
+    `SELECT token
+       FROM mcp_api_key
+      WHERE agent_id = $1
+        AND revoked_at IS NULL
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [agentId],
+  );
+  return rows[0]?.token ?? null;
+};
+
 export const revokeAllTokensForAgent = async (
   agentId: string,
 ): Promise<number> => {

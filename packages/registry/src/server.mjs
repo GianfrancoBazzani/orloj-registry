@@ -123,6 +123,7 @@ app.post("/register", async (req, res) => {
       address,
       implementation,
       rpcUrl: rpcUrl || null,
+      contractName: built.meta.contractName,
       url: `/interface/${name}/mcp`,
     });
   } catch (err) {
