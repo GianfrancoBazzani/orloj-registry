@@ -1,4 +1,5 @@
 "use client";
+import { useState } from "react";
 import { OrlojMark, StainedPanel, Pill, Btn } from "./ornaments";
 
 export const LoginModal = ({
@@ -167,6 +168,127 @@ export const LoginModal = ({
   );
 };
 
+const UserMenu = ({
+  user,
+  route,
+  onNavigate,
+  onLogout,
+}: {
+  user: { name: string };
+  route: string;
+  onNavigate: (r: string) => void;
+  onLogout: () => void;
+}) => {
+  const [open, setOpen] = useState(false);
+  const onProfile = route === "profile";
+
+  return (
+    <div
+      style={{ position: "relative" }}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          padding: "6px 12px 6px 6px",
+          background: onProfile ? "var(--ink)" : "transparent",
+          color: onProfile ? "var(--parchment)" : "var(--ink)",
+          border: "1px solid var(--line)",
+          cursor: "pointer",
+          fontFamily: "var(--font-ui)",
+        }}
+      >
+        <div
+          style={{
+            width: 28,
+            height: 28,
+            background: "var(--brass)",
+            display: "grid",
+            placeItems: "center",
+            color: "var(--ink)",
+            fontSize: 12,
+            fontWeight: 700,
+          }}
+        >
+          {user.name
+            .split(" ")
+            .map((s: string) => s[0])
+            .join("")
+            .slice(0, 2)}
+        </div>
+        <span style={{ fontSize: 13 }}>{user.name.split(" ")[0]}</span>
+        <span className="mono" style={{ fontSize: 10, opacity: 0.7 }}>
+          ▾
+        </span>
+      </button>
+
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            top: "100%",
+            right: 0,
+            paddingTop: 4,
+            minWidth: 160,
+            zIndex: 50,
+          }}
+        >
+          <div
+            style={{
+              background: "var(--parchment)",
+              border: "1px solid var(--line)",
+              boxShadow: "4px 4px 0 var(--brass)",
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
+            {!onProfile && (
+              <button
+                onClick={() => { setOpen(false); onNavigate("profile"); }}
+                style={{
+                  padding: "11px 16px",
+                  background: "transparent",
+                  border: "none",
+                  borderBottom: "1px solid var(--line)",
+                  cursor: "pointer",
+                  fontFamily: "var(--font-ui)",
+                  fontSize: 13,
+                  color: "var(--ink)",
+                  textAlign: "left",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(184,137,58,0.1)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+              >
+                Profile
+              </button>
+            )}
+            <button
+              onClick={() => { setOpen(false); onLogout(); }}
+              style={{
+                padding: "11px 16px",
+                background: "transparent",
+                border: "none",
+                cursor: "pointer",
+                fontFamily: "var(--font-ui)",
+                fontSize: 13,
+                color: "var(--wine, #8c1e28)",
+                textAlign: "left",
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(140,30,40,0.08)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+            >
+              Sign out
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const TopNav = ({
   route,
   onNavigate,
@@ -301,45 +423,12 @@ export const TopNav = ({
           </span>
         </button>
         {user ? (
-          <button
-            onClick={() => onNavigate("profile")}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              padding: "6px 12px 6px 6px",
-              background:
-                route === "profile" ? "var(--ink)" : "transparent",
-              color:
-                route === "profile" ? "var(--parchment)" : "var(--ink)",
-              border: "1px solid var(--line)",
-              cursor: "pointer",
-              fontFamily: "var(--font-ui)",
-            }}
-          >
-            <div
-              style={{
-                width: 28,
-                height: 28,
-                background: "var(--brass)",
-                display: "grid",
-                placeItems: "center",
-                color: "var(--ink)",
-                fontSize: 12,
-                fontWeight: 700,
-              }}
-            >
-              {user.name
-                .split(" ")
-                .map((s: string) => s[0])
-                .join("")
-                .slice(0, 2)}
-            </div>
-            <span style={{ fontSize: 13 }}>{user.name.split(" ")[0]}</span>
-            <span className="mono" style={{ fontSize: 10, opacity: 0.7 }}>
-              ▾
-            </span>
-          </button>
+          <UserMenu
+            user={user}
+            route={route}
+            onNavigate={onNavigate}
+            onLogout={onLogout}
+          />
         ) : (
           <Btn kind="primary" size="sm" onClick={onLogin}>
             Sign in
