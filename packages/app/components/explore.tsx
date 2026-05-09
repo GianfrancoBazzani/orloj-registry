@@ -79,9 +79,6 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
           }}
         >
           <div>
-            <Pill tone="verdigris" style={{ marginBottom: 10 }}>
-              operators&apos; gate
-            </Pill>
             <h1
               className="display"
               style={{
@@ -716,25 +713,25 @@ const DetailDrawer = ({
           ))}
         </div>
 
-        <h4
-          className="smallcaps"
-          style={{ marginTop: 24, color: "var(--ink-soft)", fontSize: 11 }}
-        >
-          audits
-        </h4>
-        <div
-          style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}
-        >
-          {m.audits.length > 0 ? (
-            m.audits.map((a) => (
-              <Tag key={a} color="var(--verdigris-deep)">
-                ✓ {a}
-              </Tag>
-            ))
-          ) : (
-            <Tag color="var(--wine)">No audits filed</Tag>
-          )}
-        </div>
+        {m.audits.length > 0 && (
+          <>
+            <h4
+              className="smallcaps"
+              style={{ marginTop: 24, color: "var(--ink-soft)", fontSize: 11 }}
+            >
+              audits
+            </h4>
+            <div
+              style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}
+            >
+              {m.audits.map((a) => (
+                <Tag key={a} color="var(--verdigris-deep)">
+                  ✓ {a}
+                </Tag>
+              ))}
+            </div>
+          </>
+        )}
 
         <div style={{ display: "flex", gap: 12, marginTop: 32 }}>
           <Btn kind="brass" size="lg" onClick={onAddMcp}>

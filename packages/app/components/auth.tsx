@@ -1,9 +1,11 @@
 "use client";
 import { useState, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { StainedPanel, Pill, Btn } from "./ornaments";
-import { MCP_REGISTRY } from "./data";
+import { SHORT_ADDR, type Mcp } from "./data";
+import { LaunchModal, type RegisterResult } from "./launch-modal";
 
 export const LoginModal = ({
   onClose,
@@ -276,6 +278,8 @@ const UserMenu = ({
 const NavSearch = () => {
   const [q, setQ] = useState("");
   const [focused, setFocused] = useState(false);
+  const [mcps, setMcps] = useState<Mcp[]>([]);
+  const [launchMcp, setLaunchMcp] = useState<RegisterResult | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
 
@@ -290,13 +294,28 @@ const NavSearch = () => {
     return () => document.removeEventListener("keydown", handler);
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/mcps")
+      .then((res) => (res.ok ? res.json() : { mcps: [] }))
+      .then((data: { mcps?: Mcp[] }) => {
+        if (!cancelled && Array.isArray(data.mcps)) setMcps(data.mcps);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const trimmed = q.trim();
   const results = trimmed
-    ? MCP_REGISTRY.filter((m) =>
-        `${m.name} ${m.author} ${m.tags.join(" ")}`
-          .toLowerCase()
-          .includes(trimmed.toLowerCase())
-      ).slice(0, 6)
+    ? mcps
+        .filter((m) =>
+          `${m.name} ${m.author} ${m.tags.join(" ")}`
+            .toLowerCase()
+            .includes(trimmed.toLowerCase()),
+        )
+        .slice(0, 6)
     : [];
 
   const open = focused && trimmed.length > 0;
@@ -307,7 +326,20 @@ const NavSearch = () => {
     inputRef.current?.blur();
   };
 
+  const openLaunchModal = (m: Mcp) => {
+    setLaunchMcp({
+      name: m.id,
+      contractName: m.name,
+      mcpUrl: m.mcpUrl,
+      chainId: m.chainId,
+      address: m.contract || false,
+    });
+    setQ("");
+    inputRef.current?.blur();
+  };
+
   return (
+    <>
     <div style={{ position: "relative" }}>
       <div
         style={{
@@ -377,7 +409,7 @@ const NavSearch = () => {
             results.map((m) => (
               <button
                 key={m.id}
-                onMouseDown={go}
+                onMouseDown={(e) => { e.preventDefault(); openLaunchModal(m); }}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -398,8 +430,9 @@ const NavSearch = () => {
                   <div style={{ fontSize: 13, color: "var(--ink)", fontWeight: 600 }}>
                     {m.name}
                   </div>
-                  <div style={{ fontSize: 11, color: "var(--ink-soft)", marginTop: 2 }}>
-                    {m.author} · {m.tags[0]}
+                  <div className="mono" style={{ fontSize: 11, color: "var(--ink-soft)", marginTop: 2 }}>
+                    {m.author.startsWith("0x") ? SHORT_ADDR(m.author) : m.author}
+                    {m.tags[0] ? ` · ${m.tags[0]}` : ""}
                   </div>
                 </div>
                 <span className="mono" style={{ fontSize: 11, color: "var(--ink-soft)", flexShrink: 0 }}>
@@ -437,6 +470,12 @@ const NavSearch = () => {
         </div>
       )}
     </div>
+    {launchMcp &&
+      createPortal(
+        <LaunchModal result={launchMcp} onCloseAction={() => setLaunchMcp(null)} />,
+        document.body,
+      )}
+    </>
   );
 };
 
