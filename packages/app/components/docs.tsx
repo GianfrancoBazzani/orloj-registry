@@ -28,7 +28,7 @@ export const DocsPage = () => {
           {
             t: "Manifest schema",
             d: "EIP-712 typed data, optional capabilities tree, audit attestations.",
-            l: "orloj.manifest/v0.4",
+            l: "orloj.manifest",
           },
           {
             t: "Operator quickstart",

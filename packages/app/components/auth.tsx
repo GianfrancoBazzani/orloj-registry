@@ -1,7 +1,11 @@
 "use client";
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import Image from "next/image";
-import { OrlojMark, StainedPanel, Pill, Btn } from "./ornaments";
+import { useRouter } from "next/navigation";
+import { StainedPanel, Pill, Btn } from "./ornaments";
+import { SHORT_ADDR, type Mcp } from "./data";
+import { LaunchModal, type RegisterResult } from "./launch-modal";
 
 export const LoginModal = ({
   onClose,
@@ -44,20 +48,20 @@ export const LoginModal = ({
           style={{
             position: "relative",
             background: "var(--verdigris-deep)",
-            minHeight: 520,
+            minHeight: 0,
             color: "var(--parchment)",
-            padding: 32,
+            padding: 24,
             display: "flex",
             flexDirection: "column",
             justifyContent: "space-between",
           }}
         >
           <div style={{ position: "absolute", inset: 0, opacity: 0.4 }}>
-            <StainedPanel seed={11} width={440} height={520} />
+            <StainedPanel seed={11} width={440} height={320} />
           </div>
           <div style={{ position: "relative" }}>
             <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-              <OrlojMark size={36} />
+              <Image src="/logo.png" alt="Orloj" width={36} height={36} />
               <div
                 className="display"
                 style={{ fontSize: 22, letterSpacing: "0.18em" }}
@@ -66,7 +70,7 @@ export const LoginModal = ({
               </div>
             </div>
           </div>
-          <div style={{ position: "relative" }}>
+          <div style={{ position: "relative", paddingTop: 32 }}>
             <div className="poetic" style={{ fontSize: 30, lineHeight: 1.2 }}>
               "When the noon bell strikes, the apostles parade — and your agent
               signs."
@@ -85,7 +89,7 @@ export const LoginModal = ({
         </div>
 
         {/* right: form */}
-        <div style={{ padding: "32px 36px", position: "relative" }}>
+        <div style={{ padding: "24px 28px", position: "relative" }}>
           <button
             onClick={onClose}
             style={{
@@ -107,7 +111,7 @@ export const LoginModal = ({
           <Pill tone="brass">sign in</Pill>
           <h2
             className="display"
-            style={{ fontSize: 28, marginTop: 12, marginBottom: 4 }}
+            style={{ fontSize: 22, marginTop: 8, marginBottom: 2 }}
           >
             Welcome back to the square.
           </h2>
@@ -115,7 +119,7 @@ export const LoginModal = ({
             One identity, all your agents.
           </p>
 
-          <div style={{ display: "grid", gap: 10, marginTop: 24 }}>
+          <div style={{ display: "grid", gap: 8, marginTop: 16 }}>
             {providers.map((p) => (
               <button
                 key={p.id}
@@ -271,6 +275,210 @@ const UserMenu = ({
   );
 };
 
+const NavSearch = () => {
+  const [q, setQ] = useState("");
+  const [focused, setFocused] = useState(false);
+  const [mcps, setMcps] = useState<Mcp[]>([]);
+  const [launchMcp, setLaunchMcp] = useState<RegisterResult | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const router = useRouter();
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        inputRef.current?.focus();
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/mcps")
+      .then((res) => (res.ok ? res.json() : { mcps: [] }))
+      .then((data: { mcps?: Mcp[] }) => {
+        if (!cancelled && Array.isArray(data.mcps)) setMcps(data.mcps);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const trimmed = q.trim();
+  const results = trimmed
+    ? mcps
+        .filter((m) =>
+          `${m.name} ${m.author} ${m.tags.join(" ")}`
+            .toLowerCase()
+            .includes(trimmed.toLowerCase()),
+        )
+        .slice(0, 6)
+    : [];
+
+  const open = focused && trimmed.length > 0;
+
+  const go = () => {
+    router.push(`/explore?q=${encodeURIComponent(trimmed || "")}`);
+    setQ("");
+    inputRef.current?.blur();
+  };
+
+  const openLaunchModal = (m: Mcp) => {
+    setLaunchMcp({
+      name: m.id,
+      contractName: m.name,
+      mcpUrl: m.mcpUrl,
+      chainId: m.chainId,
+      address: m.contract || false,
+    });
+    setQ("");
+    inputRef.current?.blur();
+  };
+
+  return (
+    <>
+    <div style={{ position: "relative" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "6px 12px",
+          border: `1px solid ${focused ? "var(--brass)" : "var(--line)"}`,
+          background: "transparent",
+          transition: "border-color 0.15s",
+          width: focused ? 260 : 190,
+        }}
+      >
+        <span style={{ color: "var(--ink-soft)", fontSize: 14, flexShrink: 0 }}>⌕</span>
+        <input
+          ref={inputRef}
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setTimeout(() => setFocused(false), 150)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") { setQ(""); inputRef.current?.blur(); }
+            else if (e.key === "Enter") { go(); }
+          }}
+          placeholder="search the registry"
+          className="mono"
+          style={{
+            border: "none",
+            background: "transparent",
+            outline: "none",
+            fontSize: 12,
+            color: "var(--ink)",
+            width: "100%",
+            minWidth: 0,
+          }}
+        />
+        {!focused && (
+          <span
+            style={{
+              fontSize: 10,
+              padding: "2px 4px",
+              background: "var(--parchment-3)",
+              color: "var(--ink-soft)",
+              flexShrink: 0,
+              pointerEvents: "none",
+            }}
+          >
+            ⌘K
+          </span>
+        )}
+      </div>
+
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            right: 0,
+            width: 340,
+            background: "var(--parchment)",
+            border: "1px solid var(--line)",
+            boxShadow: "4px 4px 0 var(--brass)",
+            zIndex: 50,
+          }}
+        >
+          {results.length > 0 ? (
+            results.map((m) => (
+              <button
+                key={m.id}
+                onMouseDown={(e) => { e.preventDefault(); openLaunchModal(m); }}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  width: "100%",
+                  padding: "10px 14px",
+                  background: "transparent",
+                  border: "none",
+                  borderBottom: "1px solid rgba(0,0,0,0.06)",
+                  cursor: "pointer",
+                  textAlign: "left",
+                  fontFamily: "var(--font-ui)",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(184,137,58,0.1)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, color: "var(--ink)", fontWeight: 600 }}>
+                    {m.name}
+                  </div>
+                  <div className="mono" style={{ fontSize: 11, color: "var(--ink-soft)", marginTop: 2 }}>
+                    {m.author.startsWith("0x") ? SHORT_ADDR(m.author) : m.author}
+                    {m.tags[0] ? ` · ${m.tags[0]}` : ""}
+                  </div>
+                </div>
+                <span className="mono" style={{ fontSize: 11, color: "var(--ink-soft)", flexShrink: 0 }}>
+                  {m.chain}
+                </span>
+              </button>
+            ))
+          ) : (
+            <div style={{ padding: "14px 14px", fontSize: 13, color: "var(--ink-soft)" }}>
+              No interfaces found
+            </div>
+          )}
+          <button
+            onMouseDown={go}
+            className="smallcaps"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              width: "100%",
+              padding: "10px 14px",
+              background: "rgba(241,233,212,0.7)",
+              border: "none",
+              borderTop: "1px solid var(--line)",
+              cursor: "pointer",
+              fontSize: 11,
+              color: "var(--ink-soft)",
+              fontFamily: "var(--font-ui)",
+              letterSpacing: "0.14em",
+            }}
+          >
+            <span>See all results for &ldquo;{trimmed}&rdquo;</span>
+            <span>→</span>
+          </button>
+        </div>
+      )}
+    </div>
+    {launchMcp &&
+      createPortal(
+        <LaunchModal result={launchMcp} onCloseAction={() => setLaunchMcp(null)} />,
+        document.body,
+      )}
+    </>
+  );
+};
+
 export const TopNav = ({
   route,
   onNavigate,
@@ -333,12 +541,6 @@ export const TopNav = ({
             >
               ORLOJ
             </div>
-            <div
-              className="smallcaps"
-              style={{ fontSize: 9, color: "var(--ink-soft)", marginTop: 2 }}
-            >
-              registry · v0.4
-            </div>
           </div>
         </button>
         <nav style={{ display: "flex", gap: 4, marginLeft: 24 }}>
@@ -378,32 +580,7 @@ export const TopNav = ({
           })}
         </nav>
         <div style={{ flex: 1 }} />
-        <button
-          onClick={() => onNavigate("explore")}
-          className="mono"
-          style={{
-            padding: "6px 12px",
-            background: "transparent",
-            border: "1px solid var(--line)",
-            cursor: "pointer",
-            fontSize: 12,
-            color: "var(--ink-soft)",
-            display: "flex",
-            gap: 8,
-            alignItems: "center",
-          }}
-        >
-          ⌕ search the registry{" "}
-          <span
-            style={{
-              fontSize: 10,
-              padding: "2px 4px",
-              background: "var(--parchment-3)",
-            }}
-          >
-            ⌘K
-          </span>
-        </button>
+        <NavSearch />
         {user ? (
           <UserMenu
             user={user}

@@ -1,19 +1,13 @@
 "use client";
 import { useRouter } from "next/navigation";
-import {
-  Pill,
-  Btn,
-  Divider,
-  SectionHeader,
-  ArtNouveauArch,
-  StainedPanel,
-  OrlojMark,
-  GearIcon,
-} from "./ornaments";
+import { Pill, Btn, Divider, SectionHeader } from "./ornaments";
+import { useAuth } from "./auth-context";
 
 export const Landing = () => {
   const router = useRouter();
+  const { user, setShowLogin } = useAuth();
   const onNavigate = (r: string) => router.push(r === "home" ? "/" : `/${r}`);
+  const onRegister = () => { if (!user) { setShowLogin(true); return; } onNavigate("register"); };
 const stats = [
     { v: "142", l: "registered MCPs" },
     { v: "38", l: "chains indexed" },
@@ -30,8 +24,8 @@ const stats = [
             maxWidth: 1200,
             margin: "0 auto",
             display: "grid",
-            gridTemplateColumns: "minmax(0,1.2fr) minmax(0,1fr)",
-            gap: 56,
+            gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)",
+            gap: "clamp(48px, 8vw, 112px)",
             alignItems: "center",
           }}
         >
@@ -44,14 +38,13 @@ const stats = [
                 marginBottom: 22,
               }}
             >
-              <Pill tone="brass">✦ ethprague · 2026 cohort</Pill>
-              <Pill tone="verdigris">live on mainnet</Pill>
+              <Pill tone="verdigris">✦ ethprague · hackathon</Pill>
             </div>
             <h1
               className="display"
               style={{
-                fontSize: "clamp(44px, 7vw, 88px)",
-                lineHeight: 0.98,
+                fontSize: "clamp(38px, 5vw, 68px)",
+                lineHeight: 1.02,
                 margin: 0,
                 color: "var(--ink)",
                 letterSpacing: "0.01em",
@@ -96,7 +89,7 @@ const stats = [
                 flexWrap: "wrap",
               }}
             >
-              <Btn kind="primary" size="lg" onClick={() => onNavigate("register")}>
+              <Btn kind="primary" size="lg" onClick={onRegister}>
                 Register an MCP &nbsp;→
               </Btn>
               <Btn kind="ghost" size="lg" onClick={() => onNavigate("explore")}>
@@ -122,12 +115,24 @@ const stats = [
           <div
             style={{
               position: "relative",
-              height: 520,
-              display: "grid",
-              placeItems: "center",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
             }}
           >
             <ClockTableau />
+            <div
+              className="smallcaps"
+              style={{
+                fontSize: 10,
+                letterSpacing: "0.28em",
+                color: "var(--ink-soft)",
+                marginTop: 12,
+                textAlign: "center",
+              }}
+            >
+              · orloj · staré město ·
+            </div>
           </div>
         </div>
       </section>
@@ -164,7 +169,7 @@ const stats = [
                 "Public + private listings",
               ]}
               cta="Open the wizard"
-              onClick={() => onNavigate("register")}
+              onClick={onRegister}
               illustration={<RegisterIllustration />}
             />
             <ForkCard
@@ -252,18 +257,21 @@ const stats = [
             {[
               {
                 n: "I",
-                t: "Publish",
-                d: "Submit a contract address. We resolve the ABI, hash the manifest, and pin it to IPFS.",
+                t: "Create",
+                d: "Register your agent and seal their private keys in a vault — secure by default, never exposed.",
+                hand: 0,
               },
               {
                 n: "II",
-                t: "Bind",
-                d: "An operator picks an MCP, scopes a vault, and the agent receives a session‑signed credential.",
+                t: "Generate",
+                d: "Paste a contract address. We resolve the ABI and generate a ready‑to‑use MCP server in seconds.",
+                hand: 120,
               },
               {
                 n: "III",
-                t: "Strike",
-                d: "Each tool call is logged, rate‑limited, and revocable — like the bell at noon.",
+                t: "Act",
+                d: "Let the agent wield the MCPs and move onchain seamlessly — call by call, permission by permission.",
+                hand: 240,
               },
             ].map((m, i) => (
               <div
@@ -275,17 +283,7 @@ const stats = [
                   border: "1px solid var(--line)",
                 }}
               >
-                <div
-                  className="display"
-                  style={{
-                    fontSize: 56,
-                    color: "var(--brass)",
-                    lineHeight: 1,
-                    opacity: 0.9,
-                  }}
-                >
-                  {m.n}
-                </div>
+                <ClockFace deg={m.hand} />
                 <div
                   className="display"
                   style={{ fontSize: 22, color: "var(--ink)", marginTop: 8 }}
@@ -313,98 +311,246 @@ const stats = [
   );
 };
 
-const ClockTableau = () => (
-  <div
-    style={{ position: "relative", width: "100%", maxWidth: 480, height: 520 }}
-  >
-    <div
-      style={{ position: "absolute", inset: 0, color: "var(--brass)" }}
-    >
-      <ArtNouveauArch style={{ width: "100%", height: "100%" }} />
+const ClockTableau = () => {
+  const cx = 240, cy = 260;
+
+  // Crescent path: fat part faces LEFT (−x). Rotate to orient.
+  // Outer circle r=14 at origin; inner circle r=12 centered at (5,0).
+  // Intersection at x≈7.7, y≈±11.7.
+  const CP = "M 7.7,-11.7 A 14 14 0 1 0 7.7,11.7 A 12 12 0 0 0 7.7,-11.7 Z";
+  // Small crescent (ring C): r=8, inner r=6, offset d=3 → x≈6.2, y≈±5.1
+  const SCP = "M 6.2,-5.1 A 8 8 0 1 0 6.2,5.1 A 6 6 0 0 0 6.2,-5.1 Z";
+
+  return (
+    <div style={{ position: "relative", width: "100%", maxWidth: 480, height: 520 }}>
+      <svg viewBox="0 0 480 520" width="100%" height="100%" aria-hidden="true">
+        <defs>
+          <style>{`
+            @keyframes og-cw  { to { transform: rotate(360deg);  } }
+            @keyframes og-ccw { to { transform: rotate(-360deg); } }
+            .og-ra { transform-origin: 240px 260px; animation: og-cw  120s linear infinite; }
+            .og-rb { transform-origin: 240px 260px; animation: og-ccw  70s linear infinite; }
+            .og-rc { transform-origin: 240px 260px; animation: og-cw   40s linear infinite; }
+            .og-rh { transform-origin: 240px 260px; animation: og-cw   20s linear infinite; }
+          `}</style>
+
+          <radialGradient id="og-gold" cx="50%" cy="50%" r="50%">
+            <stop offset="0%"   stopColor="#F7EBB0"/>
+            <stop offset="40%"  stopColor="#C8913A"/>
+            <stop offset="100%" stopColor="#6A4818"/>
+          </radialGradient>
+          <radialGradient id="og-dark" cx="50%" cy="50%" r="50%">
+            <stop offset="0%"   stopColor="#252018"/>
+            <stop offset="100%" stopColor="#0D0B09"/>
+          </radialGradient>
+          <clipPath id="og-center-clip">
+            <circle cx={cx} cy={cy} r="33"/>
+          </clipPath>
+
+          <filter id="og-glow" x="-30%" y="-30%" width="160%" height="160%">
+            <feGaussianBlur stdDeviation="2.5" result="b"/>
+            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+        </defs>
+
+        {/* Background */}
+        <rect width="480" height="520" fill="#0D0B09"/>
+
+        {/* Art Deco chamfered frame */}
+        <path d="M52,12 H428 L468,52 V468 L428,508 H52 L12,468 V52 Z"
+          fill="none" stroke="#C8913A" strokeWidth="1.2" strokeOpacity="0.75"/>
+        <path d="M60,20 H420 L460,60 V460 L420,500 H60 L20,460 V60 Z"
+          fill="none" stroke="#C8913A" strokeWidth="0.4" strokeOpacity="0.3"/>
+
+        {/* Corner brackets */}
+        {([
+          [12, 52, 1, 1], [468, 52, -1, 1],
+          [12, 468, 1, -1], [468, 468, -1, -1],
+        ] as [number,number,number,number][]).map(([x,y,dx,dy], i) => (
+          <g key={i} stroke="#C8913A" strokeWidth="1" fill="none" strokeOpacity="0.85">
+            <line x1={x} y1={y} x2={x + dx*40} y2={y}/>
+            <line x1={x} y1={y} x2={x}         y2={y + dy*40}/>
+            <circle cx={x + dx*40} cy={y + dy*40} r="3" fill="#C8913A" stroke="none"/>
+          </g>
+        ))}
+
+        {/* Ambient halos */}
+        <circle cx={cx} cy={cy} r="195" fill="#C8913A" fillOpacity="0.025"/>
+        <circle cx={cx} cy={cy} r="130" fill="#C8913A" fillOpacity="0.04"/>
+        <circle cx={cx} cy={cy} r="70"  fill="#C8913A" fillOpacity="0.055"/>
+
+        {/* ── RING A: outermost, CW 120s ── */}
+        <g className="og-ra">
+          <circle cx={cx} cy={cy} r="198" fill="none" stroke="#C8913A" strokeWidth="0.7" strokeOpacity="0.6"/>
+          <circle cx={cx} cy={cy} r="185" fill="none" stroke="#C8913A" strokeWidth="0.7" strokeOpacity="0.6"/>
+          {Array.from({ length: 24 }, (_, i) => {
+            const a = (i/24)*Math.PI*2 - Math.PI/2;
+            const cos = Math.cos(a), sin = Math.sin(a);
+            const major = i%6===0, mid = i%3===0;
+            const r2 = major ? 167 : mid ? 176 : 181;
+            const r = (n: number) => Math.round(n * 1e6) / 1e6;
+            return (
+              <line key={i}
+                x1={r(cx + cos*185)} y1={r(cy + sin*185)}
+                x2={r(cx + cos*r2)}  y2={r(cy + sin*r2)}
+                stroke="#C8913A"
+                strokeWidth={major ? 2 : mid ? 1.2 : 0.6}
+                strokeOpacity={major ? 1 : mid ? 0.8 : 0.5}
+              />
+            );
+          })}
+          {/* Cardinal diamond markers */}
+          {Array.from({ length: 4 }, (_, i) => {
+            const a = (i/4)*Math.PI*2 - Math.PI/2;
+            const rx = Math.round((cx + Math.cos(a)*198) * 1e6) / 1e6;
+            const ry = Math.round((cy + Math.sin(a)*198) * 1e6) / 1e6;
+            return (
+              <g key={i} transform={`translate(${rx},${ry}) rotate(${i*90})`}>
+                <polygon points="0,-7 6,0 0,7 -6,0" fill="#F7EBB0"/>
+              </g>
+            );
+          })}
+          {/* 12 o'clock crescent — fat faces up (rotate 90°) */}
+          <g transform={`translate(${cx},${cy-190}) rotate(90)`}>
+            <path d={CP} fill="#C8913A" fillOpacity="0.55"/>
+          </g>
+          {/* 6 o'clock crescent — fat faces down (rotate −90°) */}
+          <g transform={`translate(${cx},${cy+190}) rotate(-90)`}>
+            <path d={CP} fill="#C8913A" fillOpacity="0.55"/>
+          </g>
+        </g>
+
+        {/* ── RING B: middle, CCW 70s ── */}
+        <g className="og-rb">
+          <circle cx={cx} cy={cy} r="152" fill="none" stroke="#C8913A" strokeWidth="1.5" strokeOpacity="0.9"/>
+          <circle cx={cx} cy={cy} r="142" fill="none" stroke="#C8913A" strokeWidth="0.5" strokeOpacity="0.35"/>
+          {Array.from({ length: 12 }, (_, i) => {
+            const a = (i/12)*Math.PI*2 - Math.PI/2;
+            const cos = Math.cos(a), sin = Math.sin(a);
+            const major = i%3===0;
+            const r = (n: number) => Math.round(n * 1e6) / 1e6;
+            return (
+              <g key={i}>
+                <line
+                  x1={r(cx + cos*142)} y1={r(cy + sin*142)}
+                  x2={r(cx + cos*(major ? 120 : 131))} y2={r(cy + sin*(major ? 120 : 131))}
+                  stroke="#C8913A" strokeWidth={major ? 2 : 1} strokeOpacity="0.9"
+                />
+                {major && <>
+                  <circle cx={r(cx + cos*158)} cy={r(cy + sin*158)}
+                    r="6.5" fill="none" stroke="#F7EBB0" strokeWidth="1" strokeOpacity="0.8"/>
+                  <circle cx={r(cx + cos*158)} cy={r(cy + sin*158)} r="2.5" fill="#F7EBB0"/>
+                </>}
+              </g>
+            );
+          })}
+          {/* Dashed elliptical orbit */}
+          <ellipse cx={cx} cy={cy} rx="135" ry="70"
+            fill="none" stroke="#C8913A" strokeWidth="0.8" strokeOpacity="0.35" strokeDasharray="3 5"/>
+          {/* Orbital body at top of ellipse */}
+          <g filter="url(#og-glow)">
+            <circle cx={cx} cy={cy-70} r="7"  fill="url(#og-gold)"/>
+            <circle cx={cx} cy={cy-70} r="11" fill="none" stroke="#F7EBB0" strokeWidth="0.8" strokeOpacity="0.55"/>
+          </g>
+          {/* 3 o'clock crescent — fat faces right (rotate 180°) */}
+          <g transform={`translate(${cx+152},${cy}) rotate(180)`}>
+            <path d={CP} fill="#C8913A" fillOpacity="0.5"/>
+          </g>
+          {/* 9 o'clock crescent — fat faces left (rotate 0°) */}
+          <g transform={`translate(${cx-152},${cy}) rotate(0)`}>
+            <path d={CP} fill="#C8913A" fillOpacity="0.5"/>
+          </g>
+        </g>
+
+        {/* ── RING C: inner, CW 40s ── */}
+        <g className="og-rc">
+          <circle cx={cx} cy={cy} r="100" fill="none" stroke="#C8913A" strokeWidth="2.2" strokeOpacity="0.95"
+            filter="url(#og-glow)"/>
+          {Array.from({ length: 8 }, (_, i) => {
+            const a = (i/8)*Math.PI*2 - Math.PI/2;
+            const cos = Math.cos(a), sin = Math.sin(a);
+            const major = i%2===0;
+            const r = (n: number) => Math.round(n * 1e6) / 1e6;
+            return (
+              <line key={i}
+                x1={r(cx + cos*100)} y1={r(cy + sin*100)}
+                x2={r(cx + cos*(major ? 81 : 89))} y2={r(cy + sin*(major ? 81 : 89))}
+                stroke={major ? "#F7EBB0" : "#C8913A"}
+                strokeWidth={major ? 2.2 : 1.2} strokeOpacity="1"
+              />
+            );
+          })}
+          {/* Small crescents at intercardinals, fat facing outward */}
+          {[45, 135, 225, 315].map((deg, i) => {
+            const a = (deg-90)*Math.PI/180;
+            const rx = Math.round((cx + Math.cos(a)*100) * 1e6) / 1e6;
+            const ry = Math.round((cy + Math.sin(a)*100) * 1e6) / 1e6;
+            return (
+              <g key={i} transform={`translate(${rx},${ry}) rotate(${deg+90})`}>
+                <path d={SCP} fill="#C8913A" fillOpacity="0.65"/>
+              </g>
+            );
+          })}
+        </g>
+
+        {/* ── COMPASS HAND: CW 20s ── */}
+        <g className="og-rh">
+          {[0, 90, 180, 270].map((deg, i) => {
+            const a = (deg-90)*Math.PI/180;
+            const cos = Math.cos(a), sin = Math.sin(a);
+            const perp = a + Math.PI/2;
+            const pc = Math.cos(perp), ps = Math.sin(perp);
+            return (
+              <g key={i}>
+                <line x1={cx} y1={cy} x2={cx + cos*85} y2={cy + sin*85}
+                  stroke="#C8913A" strokeWidth="1.5" strokeOpacity="0.85"/>
+                <polygon points={[
+                  `${cx + cos*85},${cy + sin*85}`,
+                  `${cx + cos*68 + pc*6.5},${cy + sin*68 + ps*6.5}`,
+                  `${cx + cos*68 - pc*6.5},${cy + sin*68 - ps*6.5}`,
+                ].join(" ")} fill="#F7EBB0" fillOpacity="0.9"/>
+              </g>
+            );
+          })}
+          {[45, 135, 225, 315].map((deg, i) => {
+            const a = (deg-90)*Math.PI/180;
+            return (
+              <line key={i}
+                x1={cx + Math.cos(a)*12} y1={cy + Math.sin(a)*12}
+                x2={cx + Math.cos(a)*62} y2={cy + Math.sin(a)*62}
+                stroke="#C8913A" strokeWidth="0.9" strokeOpacity="0.6"
+              />
+            );
+          })}
+        </g>
+
+        {/* ── CENTRAL DISC (static) ── */}
+        <circle cx={cx} cy={cy} r="35" fill="#0D0B09"/>
+        <image
+          href="/logo.png"
+          x={cx - 33} y={cy - 33}
+          width="66" height="66"
+          clipPath="url(#og-center-clip)"
+          preserveAspectRatio="xMidYMid meet"
+        />
+        <circle cx={cx} cy={cy} r="35" fill="none" stroke="#F7EBB0" strokeWidth="1.5"/>
+        <circle cx={cx} cy={cy} r="28" fill="none" stroke="#C8913A" strokeWidth="0.7" strokeOpacity="0.45"/>
+
+        {/* ── ART DECO TOP ORNAMENT ── */}
+        <g stroke="#C8913A" fill="none" strokeOpacity="0.7">
+          <path d={`M 172,22 Q ${cx},54 308,22`} strokeWidth="1"/>
+          <line x1="210" y1="22" x2="210" y2="48" strokeWidth="0.8"/>
+          <line x1={cx}  y1="22" x2={cx}  y2="54" strokeWidth="0.8"/>
+          <line x1="270" y1="22" x2="270" y2="48" strokeWidth="0.8"/>
+        </g>
+        <circle cx={cx}  cy="22" r="5"   fill="#C8913A"/>
+        <circle cx="210" cy="22" r="2.5" fill="#C8913A"/>
+        <circle cx="270" cy="22" r="2.5" fill="#C8913A"/>
+
+      </svg>
     </div>
-    <div
-      style={{
-        position: "absolute",
-        left: "50%",
-        top: 30,
-        transform: "translateX(-50%)",
-        width: 280,
-        height: 380,
-        border: "3px solid var(--brass)",
-        boxShadow: "6px 6px 0 var(--ink)",
-        clipPath:
-          'path("M140,0 Q280,0 280,140 L280,380 L0,380 L0,140 Q0,0 140,0 Z")',
-      }}
-    >
-      <StainedPanel seed={3} />
-    </div>
-    <div
-      style={{
-        position: "absolute",
-        left: "50%",
-        top: 220,
-        transform: "translateX(-50%)",
-        width: 200,
-        height: 200,
-        background: "radial-gradient(circle, var(--ink) 0%, var(--ink-2) 100%)",
-        borderRadius: "50%",
-        border: "4px solid var(--brass)",
-        boxShadow:
-          "0 16px 40px rgba(0,0,0,0.25), inset 0 0 0 8px var(--ink-2)",
-        display: "grid",
-        placeItems: "center",
-      }}
-    >
-      <OrlojMark size={160} />
-    </div>
-    <div
-      style={{
-        position: "absolute",
-        left: -20,
-        top: 100,
-        color: "var(--brass-deep)",
-      }}
-    >
-      <GearIcon size={64} spinning />
-    </div>
-    <div
-      style={{
-        position: "absolute",
-        right: -10,
-        top: 380,
-        color: "var(--verdigris)",
-      }}
-    >
-      <GearIcon size={48} spinning />
-    </div>
-    <div
-      style={{
-        position: "absolute",
-        right: 20,
-        top: 60,
-        color: "var(--wine)",
-      }}
-    >
-      <GearIcon size={36} spinning />
-    </div>
-    <div
-      style={{
-        position: "absolute",
-        bottom: 0,
-        left: 0,
-        right: 0,
-        textAlign: "center",
-      }}
-    >
-      <div
-        className="smallcaps"
-        style={{ fontSize: 11, color: "var(--ink-soft)" }}
-      >
-        · orloj v0.4 · staré město ·
-      </div>
-    </div>
-  </div>
-);
+  );
+};
 
 const ForkCard = ({
   tone,
@@ -570,6 +716,38 @@ const RegisterIllustration = () => (
     </g>
   </svg>
 );
+
+const ClockFace = ({ deg }: { deg: number }) => {
+  const r = 44;
+  const cx = 52, cy = 52;
+  const rad = (deg - 90) * (Math.PI / 180);
+  const hx = cx + Math.cos(rad) * r * 0.62;
+  const hy = cy + Math.sin(rad) * r * 0.62;
+  const ticks = Array.from({ length: 12 }, (_, i) => {
+    const a = (i / 12) * Math.PI * 2 - Math.PI / 2;
+    const major = i % 3 === 0;
+    const r1 = major ? r - 8 : r - 5;
+    return { x1: cx + Math.cos(a) * r, y1: cy + Math.sin(a) * r, x2: cx + Math.cos(a) * r1, y2: cy + Math.sin(a) * r1, major };
+  });
+  return (
+    <svg
+      width="72" height="72"
+      viewBox="0 0 104 104"
+      aria-hidden="true"
+      style={{ display: "block", marginBottom: 16 }}
+    >
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--brass)" strokeWidth="1.5"/>
+      <circle cx={cx} cy={cy} r={r - 6} fill="none" stroke="var(--brass)" strokeWidth="0.5" strokeOpacity="0.4"/>
+      {ticks.map((t, i) => (
+        <line key={i} x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2}
+          stroke="var(--brass)" strokeWidth={t.major ? 2 : 1} strokeOpacity={t.major ? 1 : 0.6}/>
+      ))}
+      <line x1={cx} y1={cy} x2={hx} y2={hy}
+        stroke="var(--brass-deep)" strokeWidth="2.5" strokeLinecap="round"/>
+      <circle cx={cx} cy={cy} r="3.5" fill="var(--brass)"/>
+    </svg>
+  );
+};
 
 const ExploreIllustration = () => (
   <svg width="200" height="200" viewBox="0 0 200 200" aria-hidden="true">
