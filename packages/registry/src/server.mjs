@@ -3,10 +3,43 @@ import cors from "cors";
 import path from "node:path";
 import { stat, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import * as registry from "./registry.mjs";
 import { loadMcp, isValidName } from "./loader.mjs";
 import { watchMcps } from "./watcher.mjs";
+
+const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
+
+function normalizeAddress(address) {
+  return address.toLowerCase();
+}
+
+function deriveName(networkId, address) {
+  return `${networkId}-${normalizeAddress(address)}`;
+}
+
+function buildContractMcp(name, { networkId, address }) {
+  const server = new McpServer({ name, version: "1.0.0" });
+  server.registerTool(
+    "info",
+    {
+      title: "Contract info",
+      description:
+        "Returns the network id and address this MCP was registered with.",
+      inputSchema: {},
+    },
+    async () => ({
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ networkId, address }, null, 2),
+        },
+      ],
+    }),
+  );
+  return server;
+}
 
 const PORT = Number.parseInt(process.env.PORT ?? "3001", 10);
 const PACKAGE_ROOT = path.resolve(fileURLToPath(import.meta.url), "../..");
@@ -57,12 +90,12 @@ app.get("/healthz", (_req, res) => {
 app.get("/mcp", (_req, res) => {
   const items = registry.list().map((name) => ({
     name,
-    url: `/${name}/mcp`,
+    url: `/interface/${name}/mcp`,
   }));
   res.json(items);
 });
 
-app.post("/:name/mcp", async (req, res) => {
+app.post("/interface/:name/mcp", async (req, res) => {
   const { name } = req.params;
   if (!isValidName(name)) {
     res.status(404).json({ error: "MCP not found" });
@@ -87,6 +120,40 @@ app.post("/:name/mcp", async (req, res) => {
       res.status(500).json({ error: "internal error" });
     }
   }
+});
+
+app.post("/register", async (req, res) => {
+  const { networkId, address } = req.body ?? {};
+  const networkIdNum =
+    typeof networkId === "number" ? networkId : Number.parseInt(networkId, 10);
+  if (!Number.isInteger(networkIdNum) || networkIdNum < 0) {
+    res
+      .status(400)
+      .json({ error: "networkId must be a non-negative integer" });
+    return;
+  }
+  if (typeof address !== "string" || !ADDRESS_RE.test(address)) {
+    res
+      .status(400)
+      .json({ error: "address must be a 0x-prefixed 40-char hex string" });
+    return;
+  }
+
+  const name = deriveName(networkIdNum, address);
+  if (!isValidName(name)) {
+    res.status(400).json({ error: `derived name "${name}" is invalid` });
+    return;
+  }
+
+  const meta = { networkId: networkIdNum, address: normalizeAddress(address) };
+  const server = buildContractMcp(name, meta);
+  await registry.set(name, server);
+  console.log(`[registry] registered "${name}"`);
+  res.status(201).json({
+    name,
+    url: `/interface/${name}/mcp`,
+    ...meta,
+  });
 });
 
 async function main() {
