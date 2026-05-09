@@ -49,7 +49,8 @@ function argsArray(fn, args) {
 }
 
 export async function getContract(address, chainId, options = {}) {
-  const url = `${BASE_URL}/v2/contract/${chainId}/${address}?fields=abi,userdoc,devdoc,compilation`;
+  const abiAddress = options.abiAddress ?? address;
+  const url = `${BASE_URL}/v2/contract/${chainId}/${abiAddress}?fields=abi,userdoc,devdoc,compilation`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
 

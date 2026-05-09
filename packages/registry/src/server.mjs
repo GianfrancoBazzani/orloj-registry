@@ -1,52 +1,23 @@
 import express from "express";
 import cors from "cors";
 import path from "node:path";
-import { stat, readdir } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import * as registry from "./registry.mjs";
-import { loadMcp, isValidName } from "./loader.mjs";
-import { watchMcps } from "./watcher.mjs";
-import { buildContractMcp } from "./mcpBuilder.mjs";
+import { buildMcp } from "./generate-mcp.js";
 
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
 
 const PORT = Number.parseInt(process.env.PORT ?? "3001", 10);
 const PACKAGE_ROOT = path.resolve(fileURLToPath(import.meta.url), "../..");
-const MCPS_DIR = path.resolve(
+const CONTRACTS_FILE = path.resolve(
   PACKAGE_ROOT,
-  process.env.MCPS_DIR ?? "./mcps",
+  process.env.CONTRACTS_FILE ?? "./contracts.json",
 );
 
-async function syncMcp(name) {
-  const folderStat = await stat(path.join(MCPS_DIR, name)).catch(() => null);
-  if (!folderStat?.isDirectory()) {
-    await removeMcp(name);
-    return;
-  }
-  try {
-    const server = await loadMcp(MCPS_DIR, name);
-    await registry.set(name, server);
-    console.log(`[registry] loaded "${name}"`);
-  } catch (err) {
-    if (registry.get(name)) {
-      console.error(
-        `[registry] reload failed for "${name}", keeping previous version:`,
-        err.message,
-      );
-    } else {
-      console.error(
-        `[registry] load failed for "${name}":`,
-        err.message,
-      );
-    }
-  }
-}
-
-async function removeMcp(name) {
-  if (await registry.remove(name)) {
-    console.log(`[registry] removed "${name}"`);
-  }
+function entryName({ chainId, address }) {
+  return `${chainId}-${address.toLowerCase()}`;
 }
 
 const app = express();
@@ -58,19 +29,92 @@ app.get("/healthz", (_req, res) => {
 });
 
 app.get("/mcp", (_req, res) => {
-  const items = registry.list().map((name) => ({
-    name,
-    url: `/interface/${name}/mcp`,
-  }));
+  const items = registry.list().map((name) => `/interface/${name}/mcp`);
   res.json(items);
+});
+
+app.post("/register", async (req, res) => {
+  const { chainId, address } = req.body ?? {};
+
+  if (!Number.isFinite(Number(chainId))) {
+    res.status(400).json({ error: "chainId must be a number" });
+    return;
+  }
+  if (!ADDRESS_RE.test(address ?? "")) {
+    res.status(400).json({ error: "address must be 0x-prefixed 20-byte hex" });
+    return;
+  }
+
+  const numericChainId = Number(chainId);
+
+  try {
+    const sourcifyUrl = `https://sourcify.dev/server/v2/contract/${numericChainId}/${address.toLowerCase()}?fields=proxyResolution`;
+    const sourcifyRes = await fetch(sourcifyUrl);
+    if (!sourcifyRes.ok) {
+      const body = await sourcifyRes.text();
+      res.status(502).json({
+        error: `Sourcify ${sourcifyRes.status}: ${body}`,
+      });
+      return;
+    }
+    const data = await sourcifyRes.json();
+    const proxyResolution = data?.proxyResolution ?? {};
+    const implAddress = proxyResolution?.implementations?.[0]?.address;
+    const implementation =
+      proxyResolution.isProxy && ADDRESS_RE.test(implAddress ?? "")
+        ? implAddress
+        : false;
+
+    const raw = await readFile(CONTRACTS_FILE, "utf8");
+    const contracts = JSON.parse(raw);
+    if (!Array.isArray(contracts)) {
+      throw new Error("contracts.json must be a JSON array");
+    }
+    const entry = { chainId: numericChainId, address, implementation };
+    const existingIdx = contracts.findIndex(
+      (c) =>
+        Number(c?.chainId) === numericChainId &&
+        typeof c?.address === "string" &&
+        c.address.toLowerCase() === address.toLowerCase(),
+    );
+    if (existingIdx >= 0) {
+      contracts[existingIdx] = entry;
+    } else {
+      contracts.push(entry);
+    }
+    await writeFile(
+      CONTRACTS_FILE,
+      `${JSON.stringify(contracts, null, 4)}\n`,
+      "utf8",
+    );
+
+    const impl = typeof implementation === "string" ? implementation : null;
+    const name = entryName({ chainId: numericChainId, address });
+    const server = await buildMcp({
+      chainId: numericChainId,
+      address,
+      implementation: impl,
+    });
+    await registry.set(name, server);
+    console.log(
+      `[registry] registered "${name}"${impl ? ` (proxy → ${impl})` : ""}`,
+    );
+
+    res.json({
+      name,
+      chainId: numericChainId,
+      address,
+      implementation,
+      url: `/interface/${name}/mcp`,
+    });
+  } catch (err) {
+    console.error(`[registry] /register error:`, err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post("/interface/:name/mcp", async (req, res) => {
   const { name } = req.params;
-  if (!isValidName(name)) {
-    res.status(404).json({ error: "MCP not found" });
-    return;
-  }
   const mcpServer = registry.get(name);
   if (!mcpServer) {
     res.status(404).json({ error: "MCP not found" });
@@ -92,68 +136,45 @@ app.post("/interface/:name/mcp", async (req, res) => {
   }
 });
 
-app.post("/register", async (req, res) => {
-  const { networkId, address } = req.body ?? {};
-  const networkIdNum =
-    typeof networkId === "number" ? networkId : Number.parseInt(networkId, 10);
-  if (!Number.isInteger(networkIdNum) || networkIdNum < 0) {
-    res
-      .status(400)
-      .json({ error: "networkId must be a non-negative integer" });
-    return;
-  }
-  if (typeof address !== "string" || !ADDRESS_RE.test(address)) {
-    res
-      .status(400)
-      .json({ error: "address must be a 0x-prefixed 40-char hex string" });
-    return;
+async function registerContracts() {
+  const raw = await readFile(CONTRACTS_FILE, "utf8");
+  const contracts = JSON.parse(raw);
+  if (!Array.isArray(contracts)) {
+    throw new Error("contracts.json must be a JSON array");
   }
 
-  let name;
-  try {
-    name = await buildContractMcp(MCPS_DIR, networkIdNum, address);
-  } catch (err) {
-    console.error(`[registry] build failed:`, err);
-    res.status(500).json({ error: "failed to build MCP package" });
-    return;
+  for (const entry of contracts) {
+    const { chainId, address, implementation } = entry ?? {};
+    if (!Number.isFinite(Number(chainId)) || !ADDRESS_RE.test(address ?? "")) {
+      console.error(`[registry] skipping invalid entry:`, entry);
+      continue;
+    }
+    const impl =
+      typeof implementation === "string" && ADDRESS_RE.test(implementation)
+        ? implementation
+        : null;
+    const name = entryName({ chainId, address });
+    try {
+      const server = await buildMcp({
+        chainId,
+        address,
+        implementation: impl,
+      });
+      await registry.set(name, server);
+      console.log(
+        `[registry] registered "${name}"${impl ? ` (proxy → ${impl})` : ""}`,
+      );
+    } catch (err) {
+      console.error(`[registry] failed to register "${name}":`, err.message);
+    }
   }
-  await syncMcp(name);
-  if (!registry.get(name)) {
-    res.status(500).json({ error: `failed to load MCP "${name}"` });
-    return;
-  }
-  console.log(`[registry] registered "${name}"`);
-  res.status(201).json({
-    name,
-    url: `/interface/${name}/mcp`,
-    networkId: networkIdNum,
-    address: address.toLowerCase(),
-  });
-});
+}
 
 async function main() {
-  const dirStat = await stat(MCPS_DIR).catch(() => null);
-  if (!dirStat?.isDirectory()) {
-    console.error(`[registry] MCPS_DIR does not exist: ${MCPS_DIR}`);
-    process.exit(1);
-  }
-
-  const initialEntries = await readdir(MCPS_DIR, { withFileTypes: true });
-  await Promise.all(
-    initialEntries
-      .filter((e) => e.isDirectory())
-      .map((e) => syncMcp(e.name)),
-  );
-
-  const watcher = watchMcps(MCPS_DIR, {
-    onSync: syncMcp,
-    onRemove: removeMcp,
-  });
-  await watcher.ready;
-
+  console.log(`[registry] contracts file: ${CONTRACTS_FILE}`);
+  await registerContracts();
   app.listen(PORT, () => {
     console.log(`[registry] listening on http://localhost:${PORT}`);
-    console.log(`[registry] watching ${MCPS_DIR}`);
     const loaded = registry.list();
     console.log(
       `[registry] ${loaded.length} MCP(s) loaded: ${loaded.join(", ") || "(none)"}`,
