@@ -27,20 +27,27 @@ function getConfig(
   name: string,
   url: string,
 ): { code: string; file?: string } {
-  const servers = { [name]: { url } };
+  const TOKEN = "<token>";
+  const auth = { Authorization: `Bearer ${TOKEN}` };
   switch (platform) {
     case "claude-code":
-      return { code: `claude mcp add --transport http ${name} ${url}` };
+      return {
+        code: `claude mcp add --transport http --header "Authorization: Bearer ${TOKEN}" ${name} ${url}`,
+      };
     case "cursor":
       return {
         file: "~/.cursor/mcp.json",
-        code: JSON.stringify({ mcpServers: servers }, null, 2),
+        code: JSON.stringify(
+          { mcpServers: { [name]: { url, headers: auth } } },
+          null,
+          2,
+        ),
       };
     case "vscode":
       return {
         file: ".vscode/mcp.json",
         code: JSON.stringify(
-          { servers: { [name]: { type: "http", url } } },
+          { servers: { [name]: { type: "http", url, headers: auth } } },
           null,
           2,
         ),
@@ -49,7 +56,7 @@ function getConfig(
       return {
         file: "~/.codeium/windsurf/mcp_config.json",
         code: JSON.stringify(
-          { mcpServers: { [name]: { serverUrl: url } } },
+          { mcpServers: { [name]: { serverUrl: url, headers: auth } } },
           null,
           2,
         ),
@@ -57,13 +64,13 @@ function getConfig(
     case "codex":
       return {
         file: "~/.codex/config.yaml",
-        code: `mcpServers:\n  - name: ${name}\n    url: ${url}`,
+        code: `mcpServers:\n  - name: ${name}\n    url: ${url}\n    headers:\n      Authorization: "Bearer ${TOKEN}"`,
       };
     case "gemini":
       return {
         file: "~/.gemini/settings.json",
         code: JSON.stringify(
-          { mcpServers: { [name]: { httpUrl: url } } },
+          { mcpServers: { [name]: { httpUrl: url, headers: auth } } },
           null,
           2,
         ),
@@ -193,6 +200,36 @@ export const LaunchModal = ({
             >
               {result.mcpUrl}
             </span>
+          </div>
+
+          {/* Token notice */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              marginBottom: 20,
+              padding: "9px 12px",
+              background: "rgba(184,137,58,0.1)",
+              border: "1px solid var(--brass)",
+              fontSize: 12,
+              color: "var(--ink-soft)",
+            }}
+          >
+            <span style={{ color: "var(--brass-deep)" }}>🔑</span>
+            Replace{" "}
+            <code
+              className="mono"
+              style={{
+                padding: "1px 5px",
+                background: "var(--ink)",
+                color: "var(--brass-bright)",
+                fontSize: 11,
+              }}
+            >
+              &lt;token&gt;
+            </code>{" "}
+            with your agent&apos;s API key before running.
           </div>
 
           {/* Platform tabs */}
