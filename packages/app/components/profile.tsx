@@ -9,7 +9,6 @@ import {
   Pill,
   Btn,
   Identicon,
-  Tag,
   Field,
   Input,
   Select,
@@ -18,7 +17,6 @@ import {
 } from "./ornaments";
 import {
   MCP_REGISTRY,
-  USER_AGENTS,
   SHORT_ADDR,
   type Vault,
   type Agent,
@@ -60,7 +58,91 @@ export const Profile = () => {
   const [vaultsLoading, setVaultsLoading] = useState(false);
   const [vaultsError, setVaultsError] = useState<string | null>(null);
   const [editingVaultId, setEditingVaultId] = useState<string | null>(null);
-  const [agents, setAgents] = useState<Agent[]>(USER_AGENTS);
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [agentsLoading, setAgentsLoading] = useState(false);
+  const [agentsError, setAgentsError] = useState<string | null>(null);
+
+  const reloadAgents = useCallback(async (signal?: AbortSignal) => {
+    setAgentsLoading(true);
+    setAgentsError(null);
+    try {
+      const res = await fetch("/api/agents", { signal });
+      const payload = (await res.json().catch(() => null)) as
+        | {
+            agents?: Array<{
+              id: string;
+              name: string;
+              is_active?: boolean;
+              created_at?: string;
+            }>;
+            error?: string;
+          }
+        | null;
+      if (!res.ok) {
+        throw new Error(payload?.error ?? `Request failed (${res.status})`);
+      }
+      const upstreamAgents = payload?.agents ?? [];
+
+      const vaultsRes = await fetch("/api/vaults", { signal });
+      const vaultsPayload = (await vaultsRes.json().catch(() => null)) as
+        | { vaults?: Vault[]; error?: string }
+        | null;
+      const knownVaults = vaultsRes.ok ? vaultsPayload?.vaults ?? [] : [];
+
+      type Grant = {
+        id: string;
+        vaultId: string;
+        principalType: string;
+        principalId: string;
+        secretPathPattern: string;
+      };
+      const grantLists = await Promise.all(
+        knownVaults.map(async (v) => {
+          const gres = await fetch(`/api/vaults/${v.id}/key-grants`, { signal });
+          if (!gres.ok) return [] as Grant[];
+          const gpayload = (await gres.json().catch(() => null)) as
+            | { grants?: Grant[] }
+            | null;
+          return gpayload?.grants ?? [];
+        }),
+      );
+      const agentToGrant = new Map<string, Grant & { vaultName: string }>();
+      grantLists.forEach((grants, i) => {
+        const vaultName = knownVaults[i]?.name ?? "";
+        for (const g of grants) {
+          if (g.principalType !== "agent") continue;
+          if (!agentToGrant.has(g.principalId)) {
+            agentToGrant.set(g.principalId, { ...g, vaultName });
+          }
+        }
+      });
+
+      const merged: Agent[] = upstreamAgents.map((a) => {
+        const g = agentToGrant.get(a.id);
+        return {
+          id: a.id,
+          name: a.name,
+          vault: g?.vaultName ?? "",
+          vaultId: g?.vaultId,
+          grantId: g?.id,
+          keyPath: g?.secretPathPattern,
+          mcps: [],
+          status: a.is_active === false ? "paused" : "active",
+          runs: 0,
+          lastRun: a.created_at ? "—" : "never",
+        };
+      });
+
+      if (!signal?.aborted) setAgents(merged);
+    } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      setAgentsError(
+        err instanceof Error ? err.message : "Failed to load agents",
+      );
+    } finally {
+      if (!signal?.aborted) setAgentsLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (!user) return;
@@ -87,8 +169,9 @@ export const Profile = () => {
       }
     };
     void Promise.resolve().then(run);
+    void Promise.resolve().then(() => reloadAgents(ac.signal));
     return () => ac.abort();
-  }, [user]);
+  }, [user, reloadAgents]);
 
   const tabs = [
     { id: "overview", l: "Overview" },
@@ -306,12 +389,14 @@ export const Profile = () => {
           {tab === "agents" && (
             <Agents
               agents={agents}
-              setAgents={setAgents}
               vaults={vaults}
               creating={creatingAgent}
               setCreating={setCreatingAgent}
               bindMcp={bindMcp}
               onClearBind={onClearBind}
+              loading={agentsLoading}
+              error={agentsError}
+              reload={reloadAgents}
             />
           )}
           {tab === "activity" && <Activity agents={agents} />}
@@ -1945,182 +2030,409 @@ const EditVault = ({
 
 const Agents = ({
   agents,
-  setAgents,
   vaults,
   creating,
   setCreating,
   bindMcp,
   onClearBind,
+  loading,
+  error,
+  reload,
 }: {
   agents: Agent[];
-  setAgents: React.Dispatch<React.SetStateAction<Agent[]>>;
   vaults: Vault[];
   creating: boolean;
   setCreating: (v: boolean) => void;
   bindMcp: Mcp | null;
   onClearBind: () => void;
-}) => (
-  <div>
-    <div
-      style={{
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "baseline",
-        marginBottom: 18,
-      }}
-    >
-      <div>
-        <h2 className="display" style={{ fontSize: 28, margin: 0 }}>
-          Agents
-        </h2>
-        <p
-          className="poetic"
-          style={{
-            fontSize: 17,
-            color: "var(--ink-soft)",
-            marginTop: 4,
-            marginBottom: 0,
-          }}
-        >
-          Each agent rings a different bell. Bind MCPs and set them off.
-        </p>
-      </div>
-      <Btn kind="primary" onClick={() => setCreating(true)}>
-        + Register agent
-      </Btn>
-    </div>
+  loading: boolean;
+  error: string | null;
+  reload: (signal?: AbortSignal) => Promise<void>;
+}) => {
+  const [revealing, setRevealing] = useState<Agent | null>(null);
+  const [changingKey, setChangingKey] = useState<Agent | null>(null);
+  const [newApiKey, setNewApiKey] = useState<{
+    agentName: string;
+    apiKey: string;
+  } | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
 
-    {creating && (
-      <CreateAgent
-        vaults={vaults}
-        bindMcp={bindMcp}
-        onCancel={() => {
-          setCreating(false);
-          onClearBind();
-        }}
-        onCreate={(a) => {
-          setAgents([{ ...a, id: "a-" + Date.now() }, ...agents]);
-          setCreating(false);
-          onClearBind();
-        }}
-      />
-    )}
+  const handleDelete = async (a: Agent) => {
+    if (
+      !window.confirm(
+        `Delete agent "${a.name}"? This revokes all key access and cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    setRemovingId(a.id);
+    try {
+      if (a.vaultId && a.grantId) {
+        await fetch(`/api/vaults/${a.vaultId}/key-grants/${a.grantId}`, {
+          method: "DELETE",
+        });
+      }
+      const res = await fetch(`/api/agents/${a.id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const payload = (await res.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        throw new Error(payload?.error ?? `Request failed (${res.status})`);
+      }
+      await reload();
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : "Failed to delete agent");
+    } finally {
+      setRemovingId(null);
+    }
+  };
 
-    <div style={{ display: "grid", gap: 14 }}>
-      {agents.map((a) => (
-        <div
-          key={a.id}
-          style={{
-            padding: 18,
-            background: "rgba(241,233,212,0.55)",
-            border: "1px solid var(--line)",
-            display: "grid",
-            gridTemplateColumns: "auto 1fr auto auto",
-            gap: 18,
-            alignItems: "center",
-          }}
-        >
-          <div
+  return (
+    <div>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "baseline",
+          marginBottom: 18,
+        }}
+      >
+        <div>
+          <h2 className="display" style={{ fontSize: 28, margin: 0 }}>
+            Agents
+          </h2>
+          <p
+            className="poetic"
             style={{
-              width: 56,
-              height: 56,
-              background: "var(--ink)",
-              display: "grid",
-              placeItems: "center",
-              border: "2px solid var(--brass)",
+              fontSize: 17,
+              color: "var(--ink-soft)",
+              marginTop: 4,
+              marginBottom: 0,
             }}
           >
-            <GearIcon
-              size={32}
-              color="var(--brass-bright)"
-              spinning={a.status === "active"}
-            />
-          </div>
-          <div>
-            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-              <div className="display" style={{ fontSize: 18 }}>
-                {a.name}
-              </div>
-              <Pill
-                tone={
-                  a.status === "active"
-                    ? "verdigris"
-                    : a.status === "paused"
-                    ? "ink"
-                    : "wine"
-                }
-              >
-                {a.status === "active"
-                  ? "● active"
-                  : a.status === "paused"
-                  ? "⏸ paused"
-                  : "⚠ review"}
-              </Pill>
-            </div>
+            Each agent rings a different bell. Bind MCPs and set them off.
+          </p>
+        </div>
+        <Btn kind="primary" onClick={() => setCreating(true)}>
+          + Register agent
+        </Btn>
+      </div>
+
+      {creating && (
+        <CreateAgent
+          vaults={vaults}
+          bindMcp={bindMcp}
+          onCancel={() => {
+            setCreating(false);
+            onClearBind();
+          }}
+          onCreated={async (apiKey, name) => {
+            setCreating(false);
+            onClearBind();
+            if (apiKey) setNewApiKey({ agentName: name, apiKey });
+            await reload();
+          }}
+        />
+      )}
+
+      {error && (
+        <div
+          style={{
+            marginBottom: 14,
+            padding: "10px 14px",
+            background: "rgba(140,30,40,0.08)",
+            border: "1px solid var(--wine)",
+            color: "var(--wine)",
+            fontSize: 13,
+          }}
+        >
+          {error}
+        </div>
+      )}
+
+      {loading && agents.length === 0 ? (
+        <div style={{ padding: 24, color: "var(--ink-soft)" }}>Loading agents…</div>
+      ) : agents.length === 0 ? (
+        <div
+          style={{
+            padding: 28,
+            background: "rgba(241,233,212,0.5)",
+            border: "1px dashed var(--line)",
+            color: "var(--ink-soft)",
+            textAlign: "center",
+          }}
+        >
+          No agents yet. Register one to grant it signing access to a key.
+        </div>
+      ) : (
+        <div style={{ display: "grid", gap: 14 }}>
+          {agents.map((a) => (
             <div
-              style={{ fontSize: 12.5, color: "var(--ink-soft)", marginTop: 4 }}
-            >
-              vault: <span style={{ color: "var(--ink)" }}>{a.vault}</span>
-              <span style={{ margin: "0 8px" }}>·</span>
-              {a.mcps.length} MCPs bound
-              <span style={{ margin: "0 8px" }}>·</span>
-              {a.runs} runs · last {a.lastRun}
-            </div>
-            <div
+              key={a.id}
               style={{
-                display: "flex",
-                gap: 6,
-                flexWrap: "wrap",
-                marginTop: 8,
+                padding: 18,
+                background: "rgba(241,233,212,0.55)",
+                border: "1px solid var(--line)",
+                display: "grid",
+                gridTemplateColumns: "auto 1fr auto",
+                gap: 18,
+                alignItems: "center",
               }}
             >
-              {a.mcps.map((m) => (
-                <Tag key={m}>⌘ {m}</Tag>
-              ))}
+              <div
+                style={{
+                  width: 56,
+                  height: 56,
+                  background: "var(--ink)",
+                  display: "grid",
+                  placeItems: "center",
+                  border: "2px solid var(--brass)",
+                }}
+              >
+                <GearIcon
+                  size={32}
+                  color="var(--brass-bright)"
+                  spinning={a.status === "active"}
+                />
+              </div>
+              <div>
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <div className="display" style={{ fontSize: 18 }}>
+                    {a.name}
+                  </div>
+                  <Pill
+                    tone={
+                      a.status === "active"
+                        ? "verdigris"
+                        : a.status === "paused"
+                        ? "ink"
+                        : "wine"
+                    }
+                  >
+                    {a.status === "active"
+                      ? "● active"
+                      : a.status === "paused"
+                      ? "⏸ paused"
+                      : "⚠ review"}
+                  </Pill>
+                </div>
+                <div
+                  style={{
+                    fontSize: 12.5,
+                    color: "var(--ink-soft)",
+                    marginTop: 4,
+                  }}
+                >
+                  vault:{" "}
+                  <span style={{ color: "var(--ink)" }}>
+                    {a.vault || "— not granted —"}
+                  </span>
+                </div>
+                {a.keyPath ? (
+                  <div
+                    className="mono"
+                    style={{
+                      fontSize: 12,
+                      color: "var(--ink-soft)",
+                      marginTop: 4,
+                      wordBreak: "break-all",
+                    }}
+                  >
+                    address:{" "}
+                    <span style={{ color: "var(--ink)" }}>{a.keyPath}</span>
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      fontSize: 12,
+                      color: "var(--wine)",
+                      marginTop: 4,
+                    }}
+                  >
+                    No key granted yet.
+                  </div>
+                )}
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  flexWrap: "wrap",
+                  justifyContent: "flex-end",
+                }}
+              >
+                <Btn
+                  size="sm"
+                  kind="ghost"
+                  onClick={() => setRevealing(a)}
+                >
+                  Reveal API key
+                </Btn>
+                <Btn
+                  size="sm"
+                  kind="ghost"
+                  onClick={() => setChangingKey(a)}
+                >
+                  {a.keyPath ? "Change key" : "Grant key"}
+                </Btn>
+                <Btn
+                  size="sm"
+                  kind="ghost"
+                  disabled={removingId === a.id}
+                  onClick={() => handleDelete(a)}
+                  style={{ color: "var(--wine)" }}
+                >
+                  {removingId === a.id ? "Deleting…" : "Delete"}
+                </Btn>
+              </div>
             </div>
-          </div>
-          <div style={{ textAlign: "right" }}>
-            <div
-              className="display"
-              style={{ fontSize: 22, color: "var(--brass-deep)" }}
-            >
-              {a.runs}
-            </div>
-            <div
-              className="smallcaps"
-              style={{ fontSize: 9, color: "var(--ink-soft)" }}
-            >
-              runs
-            </div>
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <Btn size="sm" kind="ghost">
-              Logs
-            </Btn>
-            <Btn size="sm" kind="primary">
-              {a.status === "active" ? "Pause" : "Resume"}
-            </Btn>
-          </div>
+          ))}
         </div>
-      ))}
+      )}
+
+      {revealing && (
+        <RevealAgentApiKeyModal
+          agentId={revealing.id}
+          agentName={revealing.name}
+          onClose={() => setRevealing(null)}
+        />
+      )}
+
+      {changingKey && (
+        <ChangeAgentKeyModal
+          agent={changingKey}
+          vaults={vaults}
+          onClose={() => setChangingKey(null)}
+          onChanged={async () => {
+            setChangingKey(null);
+            await reload();
+          }}
+        />
+      )}
+
+      {newApiKey && (
+        <NewAgentApiKeyModal
+          agentName={newApiKey.agentName}
+          apiKey={newApiKey.apiKey}
+          onClose={() => setNewApiKey(null)}
+        />
+      )}
     </div>
-  </div>
-);
+  );
+};
 
 const CreateAgent = ({
   vaults,
   bindMcp,
   onCancel,
-  onCreate,
+  onCreated,
 }: {
   vaults: Vault[];
   bindMcp: Mcp | null;
   onCancel: () => void;
-  onCreate: (a: Omit<Agent, "id">) => void;
+  onCreated: (apiKey: string | null, name: string) => Promise<void> | void;
 }) => {
   const [name, setName] = useState("");
-  const [vault, setVault] = useState(vaults[0]?.name || "");
-  const [model, setModel] = useState("Claude Sonnet 4.5");
+  const [vaultId, setVaultId] = useState(vaults[0]?.id ?? "");
+  const [keys, setKeys] = useState<VaultKey[]>([]);
+  const [keysLoading, setKeysLoading] = useState(false);
+  const [keysError, setKeysError] = useState<string | null>(null);
+  const [keyPath, setKeyPath] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const ac = new AbortController();
+    const run = async () => {
+      if (!vaultId) {
+        setKeys([]);
+        setKeyPath("");
+        return;
+      }
+      setKeysLoading(true);
+      setKeysError(null);
+      try {
+        const res = await fetch(`/api/vaults/${vaultId}/secrets`, {
+          signal: ac.signal,
+        });
+        const payload = (await res.json().catch(() => null)) as
+          | { secrets?: VaultKey[]; error?: string }
+          | null;
+        if (!res.ok) {
+          throw new Error(payload?.error ?? `Request failed (${res.status})`);
+        }
+        const list = payload?.secrets ?? [];
+        setKeys(list);
+        setKeyPath(list[0]?.key ?? "");
+      } catch (err: unknown) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        setKeysError(
+          err instanceof Error ? err.message : "Failed to load keys",
+        );
+      } finally {
+        if (!ac.signal.aborted) setKeysLoading(false);
+      }
+    };
+    void Promise.resolve().then(run);
+    return () => ac.abort();
+  }, [vaultId]);
+
+  const submit = async () => {
+    if (submitting) return;
+    if (!name.trim() || !vaultId || !keyPath) return;
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      const createRes = await fetch("/api/agents", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: name.trim() }),
+      });
+      const createPayload = (await createRes.json().catch(() => null)) as
+        | { agent?: { id: string }; api_key?: string; error?: string }
+        | null;
+      if (!createRes.ok || !createPayload?.agent?.id) {
+        throw new Error(
+          createPayload?.error ?? `Request failed (${createRes.status})`,
+        );
+      }
+      const agentId = createPayload.agent.id;
+      const apiKey = createPayload.api_key ?? null;
+
+      const grantRes = await fetch(`/api/vaults/${vaultId}/key-grants`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          agentId,
+          secretPathPattern: keyPath,
+          permissions: ["read"],
+        }),
+      });
+      if (!grantRes.ok) {
+        const grantPayload = (await grantRes.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        await fetch(`/api/agents/${agentId}`, { method: "DELETE" }).catch(
+          () => {},
+        );
+        throw new Error(
+          grantPayload?.error ?? `Failed to grant key (${grantRes.status})`,
+        );
+      }
+
+      await onCreated(apiKey, name.trim());
+    } catch (err: unknown) {
+      setSubmitError(
+        err instanceof Error ? err.message : "Failed to create agent",
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const canSubmit =
+    !!name.trim() && !!vaultId && !!keyPath && !submitting && !keysLoading;
+
   return (
     <div
       style={{
@@ -2140,13 +2452,11 @@ const CreateAgent = ({
       >
         <GearIcon size={20} />
         <h3 className="display" style={{ fontSize: 18, margin: 0 }}>
-          {bindMcp
-            ? `Bind "${bindMcp.name}" to a new agent`
-            : "New agent"}
+          {bindMcp ? `Bind "${bindMcp.name}" to a new agent` : "New agent"}
         </h3>
       </div>
       <div
-        style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 12 }}
+        style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12 }}
       >
         <Field label="Agent name" hint="A name your team will recognize.">
           <Input
@@ -2155,25 +2465,51 @@ const CreateAgent = ({
             placeholder="e.g. Karel — Yield Steward"
           />
         </Field>
-        <Field label="Operating vault">
+        <Field
+          label="Operating vault"
+          hint={
+            vaults.length === 0 ? "Create a vault first to grant a key." : undefined
+          }
+        >
           <Select
-            value={vault}
-            onChange={setVault}
+            value={vaults.find((v) => v.id === vaultId)?.name ?? ""}
+            onChange={(name) => {
+              const v = vaults.find((x) => x.name === name);
+              setVaultId(v?.id ?? "");
+            }}
             options={vaults.map((v) => v.name)}
           />
         </Field>
-        <Field label="Model">
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        <Field
+          label="Signing key"
+          hint={
+            keysLoading
+              ? "Loading keys…"
+              : keys.length === 0
+              ? "This vault has no keys yet. Add one in Vaults & Keys."
+              : "The agent will be granted read access to this key only."
+          }
+        >
           <Select
-            value={model}
-            onChange={setModel}
-            options={[
-              "Claude Sonnet 4.5",
-              "Claude Opus 4",
-              "GPT‑4o",
-              "Self-hosted",
-            ]}
+            value={keyPath}
+            onChange={setKeyPath}
+            options={keys.map((k) => k.key)}
           />
         </Field>
+        {keysError && (
+          <div
+            style={{
+              marginTop: 6,
+              fontSize: 12,
+              color: "var(--wine)",
+            }}
+          >
+            {keysError}
+          </div>
+        )}
       </div>
 
       {bindMcp && (
@@ -2207,6 +2543,21 @@ const CreateAgent = ({
         </div>
       )}
 
+      {submitError && (
+        <div
+          style={{
+            marginTop: 14,
+            padding: "10px 12px",
+            background: "rgba(140,30,40,0.08)",
+            border: "1px solid var(--wine)",
+            color: "var(--wine)",
+            fontSize: 13,
+          }}
+        >
+          {submitError}
+        </div>
+      )}
+
       <div
         style={{
           display: "flex",
@@ -2215,25 +2566,512 @@ const CreateAgent = ({
           justifyContent: "flex-end",
         }}
       >
-        <Btn kind="ghost" onClick={onCancel}>
+        <Btn kind="ghost" onClick={onCancel} disabled={submitting}>
           Cancel
         </Btn>
-        <Btn
-          kind="primary"
-          disabled={!name}
-          onClick={() =>
-            onCreate({
-              name,
-              vault,
-              mcps: bindMcp ? [bindMcp.name] : [],
-              status: "active",
-              runs: 0,
-              lastRun: "just now",
-            })
-          }
-        >
-          {bindMcp ? "Bind & deploy" : "Deploy agent"}
+        <Btn kind="primary" disabled={!canSubmit} onClick={submit}>
+          {submitting
+            ? "Registering…"
+            : bindMcp
+            ? "Bind & register"
+            : "Register agent"}
         </Btn>
+      </div>
+    </div>
+  );
+};
+
+const RevealAgentApiKeyModal = ({
+  agentId,
+  agentName,
+  onClose,
+}: {
+  agentId: string;
+  agentName: string;
+  onClose: () => void;
+}) => {
+  const [revealed, setRevealed] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [value, setValue] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const reveal = async () => {
+    if (loading) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/agents/${agentId}/rotate-key`, {
+        method: "POST",
+      });
+      const payload = (await res.json().catch(() => null)) as
+        | { api_key?: string; error?: string }
+        | null;
+      if (!res.ok || !payload?.api_key) {
+        throw new Error(payload?.error ?? `Request failed (${res.status})`);
+      }
+      setValue(payload.api_key);
+      setRevealed(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to rotate key");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const copy = async () => {
+    if (!value) return;
+    try {
+      if (navigator.clipboard) await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // clipboard unavailable
+    }
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      role="presentation"
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(28,24,16,0.65)",
+        backdropFilter: "blur(4px)",
+        display: "grid",
+        placeItems: "center",
+        zIndex: 100,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "var(--parchment-2)",
+          border: "2px solid var(--brass)",
+          padding: 28,
+          maxWidth: 520,
+          width: "calc(100vw - 48px)",
+          boxShadow: "5px 5px 0 var(--brass)",
+        }}
+      >
+        <h3
+          className="display"
+          style={{ fontSize: 18, margin: 0, marginBottom: 4 }}
+        >
+          Reveal agent API key
+        </h3>
+        <div
+          style={{
+            fontSize: 13,
+            color: "var(--ink-soft)",
+            marginBottom: 16,
+          }}
+        >
+          Agent: <span style={{ color: "var(--ink)", fontWeight: 600 }}>{agentName}</span>
+        </div>
+
+        <div
+          style={{
+            padding: "12px 14px",
+            background: "rgba(140,30,40,0.10)",
+            border: "1px solid var(--wine)",
+            borderLeft: "4px solid var(--wine)",
+            color: "var(--wine)",
+            fontSize: 13,
+            lineHeight: 1.5,
+            marginBottom: 16,
+          }}
+        >
+          <div
+            className="smallcaps"
+            style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}
+          >
+            ⚠ warning
+          </div>
+          Revealing the API key rotates it. The previous API key is immediately
+          invalidated and any agent using it will stop working until updated.
+        </div>
+
+        <div
+          className="smallcaps"
+          style={{ fontSize: 11, color: "var(--ink-soft)", marginBottom: 6 }}
+        >
+          api key
+        </div>
+        <div
+          className="mono"
+          style={{
+            padding: "12px 14px",
+            background: "var(--ink)",
+            color: revealed && value ? "var(--brass-bright)" : "var(--ink-soft)",
+            fontSize: 12,
+            wordBreak: "break-all",
+            userSelect: revealed ? "all" : "none",
+            minHeight: 44,
+            display: "flex",
+            alignItems: "center",
+          }}
+        >
+          {revealed && value ? value : REDACTED}
+        </div>
+
+        {error && (
+          <div
+            style={{
+              marginTop: 12,
+              padding: "10px 12px",
+              background: "rgba(140,30,40,0.08)",
+              border: "1px solid var(--wine)",
+              color: "var(--wine)",
+              fontSize: 13,
+            }}
+          >
+            {error}
+          </div>
+        )}
+
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            marginTop: 18,
+            justifyContent: "flex-end",
+          }}
+        >
+          {!revealed ? (
+            <>
+              <Btn kind="ghost" size="sm" onClick={onClose} disabled={loading}>
+                Cancel
+              </Btn>
+              <Btn
+                kind="primary"
+                size="sm"
+                onClick={reveal}
+                disabled={loading}
+                style={{
+                  background: "var(--wine)",
+                  border: "1px solid var(--wine)",
+                  color: "var(--parchment)",
+                }}
+              >
+                {loading ? "Rotating…" : "I understand, rotate & reveal"}
+              </Btn>
+            </>
+          ) : (
+            <>
+              <Btn kind="ghost" size="sm" onClick={copy}>
+                {copied ? "Copied!" : "Copy key"}
+              </Btn>
+              <Btn kind="primary" size="sm" onClick={onClose}>
+                Done
+              </Btn>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const ChangeAgentKeyModal = ({
+  agent,
+  vaults,
+  onClose,
+  onChanged,
+}: {
+  agent: Agent;
+  vaults: Vault[];
+  onClose: () => void;
+  onChanged: () => Promise<void> | void;
+}) => {
+  const [vaultId, setVaultId] = useState(agent.vaultId ?? vaults[0]?.id ?? "");
+  const [keys, setKeys] = useState<VaultKey[]>([]);
+  const [keysLoading, setKeysLoading] = useState(false);
+  const [keyPath, setKeyPath] = useState(agent.keyPath ?? "");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const ac = new AbortController();
+    const run = async () => {
+      if (!vaultId) {
+        setKeys([]);
+        return;
+      }
+      setKeysLoading(true);
+      try {
+        const res = await fetch(`/api/vaults/${vaultId}/secrets`, {
+          signal: ac.signal,
+        });
+        const payload = (await res.json().catch(() => null)) as
+          | { secrets?: VaultKey[]; error?: string }
+          | null;
+        if (!res.ok) {
+          throw new Error(payload?.error ?? `Request failed (${res.status})`);
+        }
+        const list = payload?.secrets ?? [];
+        setKeys(list);
+        if (
+          !list.find(
+            (k) => k.key === keyPath && vaultId === (agent.vaultId ?? vaultId),
+          )
+        ) {
+          setKeyPath(list[0]?.key ?? "");
+        }
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        setError(err instanceof Error ? err.message : "Failed to load keys");
+      } finally {
+        if (!ac.signal.aborted) setKeysLoading(false);
+      }
+    };
+    void Promise.resolve().then(run);
+    return () => ac.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vaultId]);
+
+  const submit = async () => {
+    if (submitting) return;
+    if (!vaultId || !keyPath) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      if (agent.vaultId && agent.grantId) {
+        const revokeRes = await fetch(
+          `/api/vaults/${agent.vaultId}/key-grants/${agent.grantId}`,
+          { method: "DELETE" },
+        );
+        if (!revokeRes.ok && revokeRes.status !== 204) {
+          const payload = (await revokeRes.json().catch(() => null)) as
+            | { error?: string }
+            | null;
+          throw new Error(
+            payload?.error ?? `Failed to revoke (${revokeRes.status})`,
+          );
+        }
+      }
+      const grantRes = await fetch(`/api/vaults/${vaultId}/key-grants`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          agentId: agent.id,
+          secretPathPattern: keyPath,
+          permissions: ["read"],
+        }),
+      });
+      if (!grantRes.ok) {
+        const payload = (await grantRes.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        throw new Error(
+          payload?.error ?? `Failed to grant key (${grantRes.status})`,
+        );
+      }
+      await onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to change key");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      role="presentation"
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(28,24,16,0.65)",
+        backdropFilter: "blur(4px)",
+        display: "grid",
+        placeItems: "center",
+        zIndex: 100,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "var(--parchment-2)",
+          border: "2px solid var(--brass)",
+          padding: 28,
+          maxWidth: 560,
+          width: "calc(100vw - 48px)",
+          boxShadow: "5px 5px 0 var(--brass)",
+        }}
+      >
+        <h3
+          className="display"
+          style={{ fontSize: 18, margin: 0, marginBottom: 4 }}
+        >
+          {agent.keyPath ? "Change signing key" : "Grant signing key"}
+        </h3>
+        <div
+          style={{ fontSize: 13, color: "var(--ink-soft)", marginBottom: 16 }}
+        >
+          Agent:{" "}
+          <span style={{ color: "var(--ink)", fontWeight: 600 }}>
+            {agent.name}
+          </span>
+        </div>
+
+        <div
+          style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}
+        >
+          <Field label="Vault">
+            <Select
+              value={vaults.find((v) => v.id === vaultId)?.name ?? ""}
+              onChange={(name) => {
+                const v = vaults.find((x) => x.name === name);
+                setVaultId(v?.id ?? "");
+              }}
+              options={vaults.map((v) => v.name)}
+            />
+          </Field>
+          <Field
+            label="Key"
+            hint={
+              keysLoading
+                ? "Loading…"
+                : keys.length === 0
+                ? "No keys in this vault."
+                : undefined
+            }
+          >
+            <Select
+              value={keyPath}
+              onChange={setKeyPath}
+              options={keys.map((k) => k.key)}
+            />
+          </Field>
+        </div>
+
+        {error && (
+          <div
+            style={{
+              marginTop: 14,
+              padding: "10px 12px",
+              background: "rgba(140,30,40,0.08)",
+              border: "1px solid var(--wine)",
+              color: "var(--wine)",
+              fontSize: 13,
+            }}
+          >
+            {error}
+          </div>
+        )}
+
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            marginTop: 18,
+            justifyContent: "flex-end",
+          }}
+        >
+          <Btn kind="ghost" size="sm" onClick={onClose} disabled={submitting}>
+            Cancel
+          </Btn>
+          <Btn
+            kind="primary"
+            size="sm"
+            disabled={!vaultId || !keyPath || submitting}
+            onClick={submit}
+          >
+            {submitting ? "Saving…" : agent.keyPath ? "Replace key" : "Grant key"}
+          </Btn>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const NewAgentApiKeyModal = ({
+  agentName,
+  apiKey,
+  onClose,
+}: {
+  agentName: string;
+  apiKey: string;
+  onClose: () => void;
+}) => {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      if (navigator.clipboard) await navigator.clipboard.writeText(apiKey);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // clipboard unavailable
+    }
+  };
+  return (
+    <div
+      onClick={onClose}
+      role="presentation"
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(28,24,16,0.65)",
+        backdropFilter: "blur(4px)",
+        display: "grid",
+        placeItems: "center",
+        zIndex: 100,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "var(--parchment-2)",
+          border: "2px solid var(--brass)",
+          padding: 28,
+          maxWidth: 560,
+          width: "calc(100vw - 48px)",
+          boxShadow: "5px 5px 0 var(--brass)",
+        }}
+      >
+        <h3
+          className="display"
+          style={{ fontSize: 18, margin: 0, marginBottom: 4 }}
+        >
+          Agent API key
+        </h3>
+        <div
+          style={{ fontSize: 13, color: "var(--ink-soft)", marginBottom: 12 }}
+        >
+          One-time display for{" "}
+          <span style={{ color: "var(--ink)", fontWeight: 600 }}>{agentName}</span>
+          . Save it now — it cannot be retrieved later.
+        </div>
+        <div
+          className="mono"
+          style={{
+            padding: "12px 14px",
+            background: "var(--ink)",
+            color: "var(--brass-bright)",
+            fontSize: 12,
+            wordBreak: "break-all",
+            userSelect: "all",
+          }}
+        >
+          {apiKey}
+        </div>
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            marginTop: 18,
+            justifyContent: "flex-end",
+          }}
+        >
+          <Btn kind="ghost" size="sm" onClick={copy}>
+            {copied ? "Copied!" : "Copy"}
+          </Btn>
+          <Btn kind="primary" size="sm" onClick={onClose}>
+            I&apos;ve saved it
+          </Btn>
+        </div>
       </div>
     </div>
   );

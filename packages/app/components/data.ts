@@ -28,6 +28,9 @@ export interface Agent {
   id: string;
   name: string;
   vault: string;
+  vaultId?: string;
+  grantId?: string;
+  keyPath?: string;
   mcps: string[];
   status: string;
   runs: number;

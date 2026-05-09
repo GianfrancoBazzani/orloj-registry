@@ -62,10 +62,7 @@ export async function POST(request: Request) {
     return Response.json({ error: "Invalid body" }, { status: 400 });
   }
 
-  const { name, description, scopes, intents_api_enabled } = body as Record<
-    string,
-    unknown
-  >;
+  const { name, description, scopes } = body as Record<string, unknown>;
 
   if (typeof name !== "string") {
     return Response.json(
@@ -116,8 +113,7 @@ export async function POST(request: Request) {
     name: trimmedName,
     description: trimmedDescription,
     scopes: scopes && Array.isArray(scopes) ? (scopes as string[]) : [],
-    intents_api_enabled:
-      typeof intents_api_enabled === "boolean" ? intents_api_enabled : false,
+    intents_api_enabled: true,
   });
 
   if (error || !data) {
