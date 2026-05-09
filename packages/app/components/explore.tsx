@@ -27,12 +27,7 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
       address: m.contract || false,
     });
   };
-  const [q, setQ] = useState(() => searchParams.get("q") ?? "");
-
-  useEffect(() => {
-    const param = searchParams.get("q");
-    if (param !== null) setQ(param);
-  }, [searchParams]);
+  const [q, setQ] = useState("");
   const [chain, setChain] = useState("All chains");
   const [tag, setTag] = useState("All capabilities");
   const [sort, setSort] = useState("Most active");
@@ -110,7 +105,7 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
               manifests, not promises.
             </p>
           </div>
-          <Btn kind="brass" onClick={() => { if (!user) { setShowLogin(true); return; } onNavigate("register"); }}>
+          <Btn kind="brass" onClick={() => { onNavigate("register"); }}>
             + Publish your own
           </Btn>
         </div>
