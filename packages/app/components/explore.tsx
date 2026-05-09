@@ -1,7 +1,6 @@
 "use client";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { useAuth } from "./auth-context";
 import {
   Pill,
   Btn,
@@ -17,12 +16,16 @@ import { LaunchModal, type RegisterResult } from "./launch-modal";
 
 export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
   const router = useRouter();
-  const { user, setShowLogin } = useAuth();
   const onNavigate = (r: string) => router.push(r === "home" ? "/" : `/${r}`);
   const [launchMcp, setLaunchMcp] = useState<RegisterResult | null>(null);
-  const onBind = (m: Mcp) => {
-    if (!user) { setShowLogin(true); return; }
-    router.push(`/profile?bind=${m.id}`);
+  const openLaunchModal = (m: Mcp) => {
+    setLaunchMcp({
+      name: m.id,
+      contractName: m.name,
+      mcpUrl: m.mcpUrl,
+      chainId: m.chainId,
+      address: m.contract || false,
+    });
   };
   const [q, setQ] = useState("");
   const [chain, setChain] = useState("All chains");
@@ -221,7 +224,7 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
                 key={m.id}
                 m={m}
                 onClick={() => setSelected(m)}
-                onBind={() => onBind(m)}
+                onAddMcp={() => openLaunchModal(m)}
               />
             ))}
           </div>
@@ -317,10 +320,10 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
                   kind="ghost"
                   onClick={(e) => {
                     e.stopPropagation();
-                    onBind(m);
+                    openLaunchModal(m);
                   }}
                 >
-                  Bind →
+                  Add MCP →
                 </Btn>
               </div>
             ))}
@@ -349,18 +352,8 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
         <DetailDrawer
           m={selected}
           onClose={() => setSelected(null)}
-          onBind={() => {
-            onBind(selected);
-            setSelected(null);
-          }}
           onAddMcp={() => {
-            setLaunchMcp({
-              name: selected.id,
-              contractName: selected.name,
-              mcpUrl: selected.mcpUrl,
-              chainId: selected.chainId,
-              address: selected.contract || false,
-            });
+            openLaunchModal(selected);
             setSelected(null);
           }}
         />
@@ -375,11 +368,11 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
 const MCPCard = ({
   m,
   onClick,
-  onBind,
+  onAddMcp,
 }: {
   m: Mcp;
   onClick: () => void;
-  onBind: () => void;
+  onAddMcp: () => void;
 }) => {
   const accent =
     m.color === "verdigris"
@@ -543,10 +536,10 @@ const MCPCard = ({
               kind="primary"
               onClick={(e) => {
                 e.stopPropagation();
-                onBind();
+                onAddMcp();
               }}
             >
-              Bind →
+              Add MCP →
             </Btn>
           </div>
         </div>
@@ -558,12 +551,10 @@ const MCPCard = ({
 const DetailDrawer = ({
   m,
   onClose,
-  onBind,
   onAddMcp,
 }: {
   m: Mcp;
   onClose: () => void;
-  onBind: () => void;
   onAddMcp: () => void;
 }) => (
   <div
@@ -746,9 +737,6 @@ const DetailDrawer = ({
         </div>
 
         <div style={{ display: "flex", gap: 12, marginTop: 32 }}>
-          <Btn kind="primary" size="lg" onClick={onBind}>
-            Bind to agent →
-          </Btn>
           <Btn kind="brass" size="lg" onClick={onAddMcp}>
             Add MCP →
           </Btn>
