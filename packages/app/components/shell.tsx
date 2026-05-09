@@ -121,9 +121,9 @@ const Footer = () => (
         fontSize: 12,
       }}
     >
-      <div>© 2026 ORLOJ Foundation · z.ú., Praha</div>
+      <div>© 2026 ORLOJ · z.ú., Praha</div>
       <div className="mono">
-        manifest_v0.4 · indexer 81f2a · hello@orloj.eth
+        spacecomputer · sourcify · ens
       </div>
     </div>
   </footer>

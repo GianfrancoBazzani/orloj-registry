@@ -2,7 +2,6 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Pill,
   Btn,
   Divider,
   Field,
@@ -74,9 +73,6 @@ export const Register = () => {
             }}
           >
             <div>
-              <Pill tone="brass" style={{ marginBottom: 10 }}>
-                builders&apos; gate
-              </Pill>
               <h1
                 className="display"
                 style={{
