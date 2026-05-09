@@ -1,25 +1,14 @@
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
-import { getOneclawClient } from "@/lib/oneclaw";
+import {
+  getProvider,
+  providerErrorToResponse,
+} from "@/lib/vault-providers";
 import { assertVaultOwner } from "@/lib/vault-ownership";
 
 const KEY_MAX = 256;
 const VALUE_MAX = 65536;
 const TYPE_MAX = 64;
-
-const initClient = async () => {
-  try {
-    return { client: await getOneclawClient() } as const;
-  } catch (err) {
-    console.error("[secrets] 1claw client init failed", err);
-    return {
-      response: Response.json(
-        { error: "Vault service is not configured" },
-        { status: 503 },
-      ),
-    } as const;
-  }
-};
 
 export async function GET(
   _request: Request,
@@ -36,29 +25,14 @@ export async function GET(
   }
 
   const ownership = await assertVaultOwner(id, session.user.id);
-  if (ownership !== true) return ownership;
+  if (ownership instanceof Response) return ownership;
 
-  const init = await initClient();
-  if ("response" in init) return init.response;
-
-  const { data, error } = await init.client.secrets.list(id);
-  if (error || !data) {
-    console.error("[secrets] 1claw list failed", error);
-    return Response.json(
-      { error: error?.message ?? "Failed to list secrets upstream" },
-      { status: 502 },
-    );
+  try {
+    const records = await getProvider(ownership.provider).listSecrets(id);
+    return Response.json({ secrets: records });
+  } catch (err) {
+    return providerErrorToResponse(err);
   }
-
-  const secrets = data.secrets.map((s) => ({
-    id: s.id,
-    key: s.path,
-    type: s.type,
-    version: s.version,
-    createdAt: s.created_at,
-  }));
-
-  return Response.json({ secrets });
 }
 
 export async function POST(
@@ -76,7 +50,7 @@ export async function POST(
   }
 
   const ownership = await assertVaultOwner(id, session.user.id);
-  if (ownership !== true) return ownership;
+  if (ownership instanceof Response) return ownership;
 
   let body: unknown;
   try {
@@ -84,7 +58,6 @@ export async function POST(
   } catch {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
-
   if (!body || typeof body !== "object") {
     return Response.json({ error: "Invalid body" }, { status: 400 });
   }
@@ -124,31 +97,14 @@ export async function POST(
     );
   }
 
-  const init = await initClient();
-  if ("response" in init) return init.response;
-
-  const { data, error } = await init.client.secrets.set(
-    id,
-    trimmedKey,
-    value,
-    type ? { type } : undefined,
-  );
-
-  if (error || !data) {
-    console.error("[secrets] 1claw set failed", error);
-    return Response.json(
-      { error: error?.message ?? "Failed to set secret upstream" },
-      { status: 502 },
-    );
+  try {
+    const secret = await getProvider(ownership.provider).setSecret(id, {
+      key: trimmedKey,
+      value,
+      type,
+    });
+    return Response.json({ secret }, { status: 201 });
+  } catch (err) {
+    return providerErrorToResponse(err);
   }
-
-  const secret = {
-    id: data.id,
-    key: data.path,
-    type: data.type,
-    version: data.version,
-    createdAt: data.created_at,
-  };
-
-  return Response.json({ secret }, { status: 201 });
 }

@@ -1,21 +1,10 @@
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
-import { getOneclawClient } from "@/lib/oneclaw";
+import {
+  getProvider,
+  providerErrorToResponse,
+} from "@/lib/vault-providers";
 import { assertVaultOwner } from "@/lib/vault-ownership";
-
-const initClient = async () => {
-  try {
-    return { client: await getOneclawClient() } as const;
-  } catch (err) {
-    console.error("[secrets] 1claw client init failed", err);
-    return {
-      response: Response.json(
-        { error: "Vault service is not configured" },
-        { status: 503 },
-      ),
-    } as const;
-  }
-};
 
 const resolveKey = (segments: string[] | undefined): string =>
   (segments ?? []).map((s) => decodeURIComponent(s)).join("/");
@@ -39,30 +28,14 @@ export async function GET(
   }
 
   const ownership = await assertVaultOwner(id, session.user.id);
-  if (ownership !== true) return ownership;
+  if (ownership instanceof Response) return ownership;
 
-  const init = await initClient();
-  if ("response" in init) return init.response;
-
-  const { data, error } = await init.client.secrets.get(id, secretKey);
-  if (error || !data) {
-    console.error("[secrets] 1claw get failed", error);
-    return Response.json(
-      { error: error?.message ?? "Failed to read secret upstream" },
-      { status: 502 },
-    );
+  try {
+    const secret = await getProvider(ownership.provider).getSecret(id, secretKey);
+    return Response.json({ secret });
+  } catch (err) {
+    return providerErrorToResponse(err);
   }
-
-  const secret = {
-    id: data.id,
-    key: data.path,
-    type: data.type,
-    value: data.value,
-    version: data.version,
-    createdAt: data.created_at,
-  };
-
-  return Response.json({ secret });
 }
 
 export async function DELETE(
@@ -84,19 +57,12 @@ export async function DELETE(
   }
 
   const ownership = await assertVaultOwner(id, session.user.id);
-  if (ownership !== true) return ownership;
+  if (ownership instanceof Response) return ownership;
 
-  const init = await initClient();
-  if ("response" in init) return init.response;
-
-  const { error } = await init.client.secrets.delete(id, secretKey);
-  if (error) {
-    console.error("[secrets] 1claw delete failed", error);
-    return Response.json(
-      { error: error.message ?? "Failed to delete secret upstream" },
-      { status: 502 },
-    );
+  try {
+    await getProvider(ownership.provider).deleteSecret(id, secretKey);
+    return new Response(null, { status: 204 });
+  } catch (err) {
+    return providerErrorToResponse(err);
   }
-
-  return new Response(null, { status: 204 });
 }
