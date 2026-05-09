@@ -1,21 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
-import pg from "pg";
-
-const { Pool } = pg;
-
-let pool = null;
-
-function getPool() {
-  if (pool) return pool;
-  if (!process.env.DATABASE_URL) {
-    throw new Error("DATABASE_URL is not set");
-  }
-  pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
-  });
-  return pool;
-}
+import { getPool } from "./db.mjs";
 
 const BEARER_RE = /^Bearer\s+(.+)$/i;
 const REALM = 'Bearer realm="orloj-registry"';

@@ -15,25 +15,9 @@ export function entriesList() {
 }
 
 export async function set(name, entry) {
-  const previous = entries.get(name);
   entries.set(name, entry);
-  if (previous) {
-    try {
-      await previous.server.close();
-    } catch (err) {
-      console.error(`[registry] failed closing previous "${name}":`, err);
-    }
-  }
 }
 
 export async function remove(name) {
-  const previous = entries.get(name);
-  if (!previous) return false;
-  entries.delete(name);
-  try {
-    await previous.server.close();
-  } catch (err) {
-    console.error(`[registry] failed closing "${name}":`, err);
-  }
-  return true;
+  return entries.delete(name);
 }
