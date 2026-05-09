@@ -366,7 +366,7 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
         />
       )}
       {launchMcp && (
-        <LaunchModal result={launchMcp} onClose={() => setLaunchMcp(null)} />
+        <LaunchModal result={launchMcp} onCloseAction={() => setLaunchMcp(null)} />
       )}
     </main>
   );

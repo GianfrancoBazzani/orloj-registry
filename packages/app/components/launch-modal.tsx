@@ -73,15 +73,16 @@ function getConfig(
 
 export const LaunchModal = ({
   result,
-  onClose,
+  onCloseAction,
 }: {
   result: RegisterResult;
-  onClose: () => void;
+  onCloseAction: () => void;
 }) => {
   const router = useRouter();
   const [tab, setTab] = useState<PlatformId>("claude-code");
   const [copied, setCopied] = useState(false);
   const config = getConfig(tab, result.contractName, result.mcpUrl);
+  const onClose = onCloseAction;
 
   const copy = () => {
     navigator.clipboard.writeText(config.code);

@@ -296,7 +296,7 @@ export const Register = () => {
       </main>
 
       {result && (
-        <LaunchModal result={result} onClose={() => setResult(null)} />
+        <LaunchModal result={result} onCloseAction={() => setResult(null)} />
       )}
     </>
   );
