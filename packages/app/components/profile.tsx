@@ -705,7 +705,6 @@ const Vaults = ({
                   flexShrink: 0,
                 }}
               >
-                <Pill tone="verdigris">● secured</Pill>
                 <Pill tone={v.provider === "orbitport" ? "blue" : "brass"}>
                   {v.provider === "orbitport" ? "spacecomputer" : "1claw"}
                 </Pill>
