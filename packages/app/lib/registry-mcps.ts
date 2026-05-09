@@ -51,11 +51,12 @@ function mapToMcp(item: RegistryMcp, registryUrl: string): Mcp {
 export async function fetchMcps(): Promise<Mcp[]> {
   const registryUrl = process.env.REGISTRY_URL;
   if (!registryUrl) return [];
+  const publicRegistryUrl = process.env.PUBLIC_REGISTRY_URL ?? registryUrl;
   try {
     const res = await fetch(`${registryUrl}/mcp`, { cache: "no-store" });
     if (!res.ok) return [];
     const data: RegistryMcp[] = await res.json();
-    return data.map((item) => mapToMcp(item, registryUrl));
+    return data.map((item) => mapToMcp(item, publicRegistryUrl));
   } catch {
     return [];
   }

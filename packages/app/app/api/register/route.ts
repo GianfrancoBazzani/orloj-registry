@@ -3,6 +3,7 @@ export async function POST(request: Request) {
   if (!registryUrl) {
     return Response.json({ error: "REGISTRY_URL not configured" }, { status: 500 });
   }
+  const publicRegistryUrl = process.env.PUBLIC_REGISTRY_URL ?? registryUrl;
   try {
     const body = await request.json();
     const res = await fetch(`${registryUrl}/register`, {
@@ -12,7 +13,7 @@ export async function POST(request: Request) {
     });
     const data = await res.json();
     if (res.ok && typeof data.url === "string") {
-      data.mcpUrl = `${registryUrl}${data.url}`;
+      data.mcpUrl = `${publicRegistryUrl}${data.url}`;
     }
     return Response.json(data, { status: res.status });
   } catch (err) {
