@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { OrlojMark, StainedPanel, Pill, Btn, Field, Input } from "./ornaments";
+import { OrlojMark, StainedPanel, Pill, Btn } from "./ornaments";
 
 export const LoginModal = ({
   onClose,
@@ -9,12 +9,8 @@ export const LoginModal = ({
   onClose: () => void;
   onLogin: (provider: string) => void;
 }) => {
-  const [mode, setMode] = useState<"login" | "signup">("login");
   const providers = [
-    { id: "github", label: "GitHub", icon: "⌥" },
-    { id: "google", label: "Google", icon: "◯" },
     { id: "wallet", label: "Ethereum wallet (SIWE)", icon: "◆" },
-    { id: "farcaster", label: "Farcaster", icon: "✦" },
   ];
 
   return (
@@ -107,16 +103,12 @@ export const LoginModal = ({
             ×
           </button>
 
-          <Pill tone="brass">
-            {mode === "login" ? "sign in" : "create account"}
-          </Pill>
+          <Pill tone="brass">sign in</Pill>
           <h2
             className="display"
             style={{ fontSize: 28, marginTop: 12, marginBottom: 4 }}
           >
-            {mode === "login"
-              ? "Welcome back to the square."
-              : "Take a seat in the square."}
+            Welcome back to the square.
           </h2>
           <p style={{ color: "var(--ink-soft)", fontSize: 14, marginTop: 4 }}>
             One identity, all your agents.
@@ -170,64 +162,129 @@ export const LoginModal = ({
             ))}
           </div>
 
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const UserMenu = ({
+  user,
+  route,
+  onNavigate,
+  onLogout,
+}: {
+  user: { name: string };
+  route: string;
+  onNavigate: (r: string) => void;
+  onLogout: () => void;
+}) => {
+  const [open, setOpen] = useState(false);
+  const onProfile = route === "profile";
+
+  return (
+    <div
+      style={{ position: "relative" }}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          padding: "6px 12px 6px 6px",
+          background: onProfile ? "var(--ink)" : "transparent",
+          color: onProfile ? "var(--parchment)" : "var(--ink)",
+          border: "1px solid var(--line)",
+          cursor: "pointer",
+          fontFamily: "var(--font-ui)",
+        }}
+      >
+        <div
+          style={{
+            width: 28,
+            height: 28,
+            background: "var(--brass)",
+            display: "grid",
+            placeItems: "center",
+            color: "var(--ink)",
+            fontSize: 12,
+            fontWeight: 700,
+          }}
+        >
+          {user.name
+            .split(" ")
+            .map((s: string) => s[0])
+            .join("")
+            .slice(0, 2)}
+        </div>
+        <span style={{ fontSize: 13 }}>{user.name.split(" ")[0]}</span>
+        <span className="mono" style={{ fontSize: 10, opacity: 0.7 }}>
+          ▾
+        </span>
+      </button>
+
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            top: "100%",
+            right: 0,
+            paddingTop: 4,
+            minWidth: 160,
+            zIndex: 50,
+          }}
+        >
           <div
             style={{
+              background: "var(--parchment)",
+              border: "1px solid var(--line)",
+              boxShadow: "4px 4px 0 var(--brass)",
               display: "flex",
-              alignItems: "center",
-              gap: 10,
-              margin: "24px 0",
+              flexDirection: "column",
             }}
           >
-            <div style={{ flex: 1, height: 1, background: "var(--line)" }} />
-            <span
-              className="smallcaps"
-              style={{ fontSize: 10, color: "var(--ink-soft)" }}
-            >
-              or
-            </span>
-            <div style={{ flex: 1, height: 1, background: "var(--line)" }} />
-          </div>
-
-          <Field label="Email">
-            <Input type="email" placeholder="you@studio.eth" />
-          </Field>
-          <div style={{ marginTop: 16 }}>
-            <Btn
-              kind="primary"
-              style={{ width: "100%" }}
-              onClick={() => onLogin("email")}
-            >
-              {mode === "login" ? "Sign in with magic link" : "Send signup link"}{" "}
-              →
-            </Btn>
-          </div>
-
-          <div
-            style={{
-              marginTop: 18,
-              fontSize: 13,
-              color: "var(--ink-soft)",
-              textAlign: "center",
-            }}
-          >
-            {mode === "login" ? "New to ORLOJ? " : "Already have an account? "}
+            {!onProfile && (
+              <button
+                onClick={() => { setOpen(false); onNavigate("profile"); }}
+                style={{
+                  padding: "11px 16px",
+                  background: "transparent",
+                  border: "none",
+                  borderBottom: "1px solid var(--line)",
+                  cursor: "pointer",
+                  fontFamily: "var(--font-ui)",
+                  fontSize: 13,
+                  color: "var(--ink)",
+                  textAlign: "left",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(184,137,58,0.1)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+              >
+                Profile
+              </button>
+            )}
             <button
-              onClick={() => setMode(mode === "login" ? "signup" : "login")}
+              onClick={() => { setOpen(false); onLogout(); }}
               style={{
-                background: "none",
+                padding: "11px 16px",
+                background: "transparent",
                 border: "none",
                 cursor: "pointer",
-                color: "var(--brass-deep)",
-                textDecoration: "underline",
-                fontSize: 13,
                 fontFamily: "var(--font-ui)",
+                fontSize: 13,
+                color: "var(--wine, #8c1e28)",
+                textAlign: "left",
               }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(140,30,40,0.08)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
             >
-              {mode === "login" ? "Create an account" : "Sign in"}
+              Sign out
             </button>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };
@@ -248,7 +305,6 @@ export const TopNav = ({
   const items = [
     { id: "explore", l: "Explore" },
     { id: "register", l: "Register" },
-    { id: "docs", l: "Docs" },
   ];
   return (
     <header
@@ -367,45 +423,12 @@ export const TopNav = ({
           </span>
         </button>
         {user ? (
-          <button
-            onClick={() => onNavigate("profile")}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              padding: "6px 12px 6px 6px",
-              background:
-                route === "profile" ? "var(--ink)" : "transparent",
-              color:
-                route === "profile" ? "var(--parchment)" : "var(--ink)",
-              border: "1px solid var(--line)",
-              cursor: "pointer",
-              fontFamily: "var(--font-ui)",
-            }}
-          >
-            <div
-              style={{
-                width: 28,
-                height: 28,
-                background: "var(--brass)",
-                display: "grid",
-                placeItems: "center",
-                color: "var(--ink)",
-                fontSize: 12,
-                fontWeight: 700,
-              }}
-            >
-              {user.name
-                .split(" ")
-                .map((s: string) => s[0])
-                .join("")
-                .slice(0, 2)}
-            </div>
-            <span style={{ fontSize: 13 }}>{user.name.split(" ")[0]}</span>
-            <span className="mono" style={{ fontSize: 10, opacity: 0.7 }}>
-              ▾
-            </span>
-          </button>
+          <UserMenu
+            user={user}
+            route={route}
+            onNavigate={onNavigate}
+            onLogout={onLogout}
+          />
         ) : (
           <Btn kind="primary" size="sm" onClick={onLogin}>
             Sign in
