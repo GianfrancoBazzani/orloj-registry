@@ -1,5 +1,7 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import type { Hex } from "viem";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "./auth-context";
 import { authClient } from "@/lib/auth-client";
@@ -167,7 +169,7 @@ export const Profile = () => {
                 style={{
                   background: "rgba(184,137,58,0.25)",
                   color: "var(--brass-bright)",
-                  borderColor: "var(--brass)",
+                  border: "1px solid var(--brass)",
                 }}
               >
                 {user.plan}
@@ -511,6 +513,21 @@ const Vaults = ({
   const editingVault = editingVaultId
     ? (vaults.find((v) => v.id === editingVaultId) ?? null)
     : null;
+  const onVaultDeleted = useCallback(
+    (id: string) => {
+      setVaults((vs) => vs.filter((x) => x.id !== id));
+      setEditingVaultId(null);
+    },
+    [setVaults, setEditingVaultId],
+  );
+  const onKeyCountChange = useCallback(
+    (id: string, count: number) => {
+      setVaults((vs) =>
+        vs.map((x) => (x.id === id ? { ...x, keyCount: count } : x)),
+      );
+    },
+    [setVaults],
+  );
   return (
   <div>
     <div
@@ -556,10 +573,8 @@ const Vaults = ({
       <EditVault
         vault={editingVault}
         onClose={() => setEditingVaultId(null)}
-        onDeleted={(id: string) => {
-          setVaults((vs) => vs.filter((x) => x.id !== id));
-          setEditingVaultId(null);
-        }}
+        onDeleted={onVaultDeleted}
+        onKeyCountChange={onKeyCountChange}
       />
     )}
 
@@ -667,7 +682,7 @@ const Vaults = ({
                 color: "var(--ink-soft)",
               }}
             >
-              3 keys
+              {v.keyCount} {v.keyCount === 1 ? "key" : "keys"}
             </div>
             <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
               <Btn
@@ -821,30 +836,722 @@ const CreateVault = ({
   );
 };
 
+type VaultKey = {
+  id: string;
+  key: string;
+  type: string;
+  version: number;
+  createdAt: string;
+};
+
+type AddMode = null | "menu" | "import";
+
+const PRIVATE_KEY_RE = /^0x[0-9a-fA-F]{64}$/;
+
+const CopyIcon = ({ size = 14 }: { size?: number }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={1.4}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <rect x="5" y="5" width="9" height="9" rx="1" />
+    <path d="M3 11V3a1 1 0 0 1 1-1h7" />
+  </svg>
+);
+
+const CheckIcon = ({ size = 14 }: { size?: number }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={1.6}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M3 8.5l3 3L13 4.5" />
+  </svg>
+);
+
+const QrIcon = ({ size = 14 }: { size?: number }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={1.2}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <rect x="2" y="2" width="4.5" height="4.5" />
+    <rect x="9.5" y="2" width="4.5" height="4.5" />
+    <rect x="2" y="9.5" width="4.5" height="4.5" />
+    <path d="M9.5 9.5h2.25v2.25M14 9.5v4.5M9.5 14h2.25" />
+  </svg>
+);
+
+const XIcon = ({ size = 14 }: { size?: number }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={1.6}
+    strokeLinecap="round"
+  >
+    <line x1="4" y1="4" x2="12" y2="12" />
+    <line x1="12" y1="4" x2="4" y2="12" />
+  </svg>
+);
+
+const KeyIcon = ({ size = 14 }: { size?: number }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={1.4}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <circle cx="5.5" cy="10.5" r="2.5" />
+    <path d="M7.7 9.3 13.5 3.5" />
+    <path d="M11.5 5.5 13 7" />
+    <path d="M10 7l1.25 1.25" />
+  </svg>
+);
+
+const IconBtn = ({
+  children,
+  onClick,
+  disabled,
+  label,
+  tone = "ink",
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+  label: string;
+  tone?: "ink" | "wine";
+}) => {
+  const base = tone === "wine" ? "var(--wine)" : "var(--ink)";
+  const hoverBg =
+    tone === "wine" ? "rgba(140,30,40,0.10)" : "rgba(184,137,58,0.18)";
+  const hoverBorder = tone === "wine" ? "var(--wine)" : "var(--brass)";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      title={label}
+      style={{
+        width: 32,
+        height: 32,
+        display: "grid",
+        placeItems: "center",
+        background: "rgba(255,255,255,0.6)",
+        border: "1px solid var(--line)",
+        cursor: disabled ? "not-allowed" : "pointer",
+        color: base,
+        opacity: disabled ? 0.4 : 1,
+        transition:
+          "background 0.18s ease, border-color 0.18s ease, color 0.18s ease",
+        flexShrink: 0,
+        padding: 0,
+        borderRadius: 0,
+      }}
+      onMouseEnter={(e) => {
+        if (disabled) return;
+        e.currentTarget.style.background = hoverBg;
+        e.currentTarget.style.borderColor = hoverBorder;
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.background = "rgba(255,255,255,0.6)";
+        e.currentTarget.style.borderColor = "var(--line)";
+      }}
+    >
+      {children}
+    </button>
+  );
+};
+
+const HoldDeleteBtn = ({
+  onConfirm,
+  disabled,
+  label = "Hold to delete",
+  duration = 1200,
+}: {
+  onConfirm: () => void;
+  disabled?: boolean;
+  label?: string;
+  duration?: number;
+}) => {
+  const [holding, setHolding] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    },
+    [],
+  );
+
+  const start = () => {
+    if (disabled || timerRef.current) return;
+    setHolding(true);
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null;
+      setHolding(false);
+      onConfirm();
+    }, duration);
+  };
+
+  const cancel = () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    setHolding(false);
+  };
+
+  return (
+    <button
+      type="button"
+      onMouseDown={start}
+      onMouseUp={cancel}
+      onMouseLeave={cancel}
+      onTouchStart={(e) => {
+        e.preventDefault();
+        start();
+      }}
+      onTouchEnd={cancel}
+      onTouchCancel={cancel}
+      onContextMenu={(e) => e.preventDefault()}
+      disabled={disabled}
+      aria-label={label}
+      title={label}
+      style={{
+        position: "relative",
+        width: 32,
+        height: 32,
+        background: "rgba(255,255,255,0.6)",
+        border: "1px solid var(--line)",
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.4 : 1,
+        flexShrink: 0,
+        padding: 0,
+        borderRadius: 0,
+        overflow: "hidden",
+        userSelect: "none",
+        touchAction: "none",
+        transition: "border-color 0.18s ease",
+      }}
+      onMouseEnter={(e) => {
+        if (disabled) return;
+        e.currentTarget.style.border = "1px solid var(--wine)";
+      }}
+    >
+      <span
+        aria-hidden
+        style={{
+          position: "absolute",
+          inset: 0,
+          background: "var(--wine)",
+          transformOrigin: "left center",
+          transform: holding ? "scaleX(1)" : "scaleX(0)",
+          transition: holding
+            ? `transform ${duration}ms linear`
+            : "transform 0.15s ease-out",
+          pointerEvents: "none",
+        }}
+      />
+      <span
+        style={{
+          position: "relative",
+          width: "100%",
+          height: "100%",
+          display: "grid",
+          placeItems: "center",
+          color: holding ? "var(--parchment)" : "var(--wine)",
+          transition: "color 0.18s ease",
+        }}
+      >
+        <XIcon />
+      </span>
+    </button>
+  );
+};
+
+const PaymentQrModal = ({
+  address,
+  onClose,
+}: {
+  address: string;
+  onClose: () => void;
+}) => {
+  const uri = `ethereum:${address}`;
+  const qrSrc = `https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=8&data=${encodeURIComponent(uri)}`;
+  return (
+    <div
+      onClick={onClose}
+      role="presentation"
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(28,24,16,0.65)",
+        backdropFilter: "blur(4px)",
+        display: "grid",
+        placeItems: "center",
+        zIndex: 100,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "var(--parchment-2)",
+          border: "2px solid var(--brass)",
+          padding: 28,
+          textAlign: "center",
+          maxWidth: 320,
+          boxShadow: "5px 5px 0 var(--brass)",
+        }}
+      >
+        <h3
+          className="display"
+          style={{ fontSize: 18, margin: 0, marginBottom: 4 }}
+        >
+          Payment QR
+        </h3>
+        <div
+          className="poetic"
+          style={{
+            fontSize: 13,
+            color: "var(--ink-soft)",
+            marginBottom: 16,
+          }}
+        >
+          Scan to send to this address.
+        </div>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={qrSrc}
+          alt={`Payment QR for ${address}`}
+          width={240}
+          height={240}
+          style={{
+            display: "block",
+            margin: "0 auto",
+            background: "var(--parchment)",
+            border: "1px solid var(--line)",
+          }}
+        />
+        <div
+          className="mono"
+          style={{
+            fontSize: 11,
+            color: "var(--ink-soft)",
+            marginTop: 14,
+            wordBreak: "break-all",
+          }}
+        >
+          {address}
+        </div>
+        <div style={{ marginTop: 18 }}>
+          <Btn kind="ghost" size="sm" onClick={onClose}>
+            Close
+          </Btn>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const REDACTED =
+  "0x" + "•".repeat(64);
+
+const BackupKeyModal = ({
+  vaultId,
+  vaultKey,
+  onClose,
+}: {
+  vaultId: string;
+  vaultKey: VaultKey;
+  onClose: () => void;
+}) => {
+  const [revealed, setRevealed] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [value, setValue] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const reveal = async () => {
+    if (loading) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const segments = vaultKey.key
+        .split("/")
+        .map(encodeURIComponent)
+        .join("/");
+      const res = await fetch(`/api/vaults/${vaultId}/secrets/${segments}`);
+      const payload = (await res.json().catch(() => null)) as
+        | { secret?: { value?: string }; error?: string }
+        | null;
+      if (!res.ok || !payload?.secret?.value) {
+        throw new Error(payload?.error ?? `Request failed (${res.status})`);
+      }
+      setValue(payload.secret.value);
+      setRevealed(true);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to load key");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const copy = async () => {
+    if (!value) return;
+    try {
+      if (navigator.clipboard) await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // clipboard unavailable
+    }
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      role="presentation"
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(28,24,16,0.65)",
+        backdropFilter: "blur(4px)",
+        display: "grid",
+        placeItems: "center",
+        zIndex: 100,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "var(--parchment-2)",
+          border: "2px solid var(--brass)",
+          padding: 28,
+          maxWidth: 520,
+          width: "calc(100vw - 48px)",
+          boxShadow: "5px 5px 0 var(--brass)",
+        }}
+      >
+        <h3
+          className="display"
+          style={{ fontSize: 18, margin: 0, marginBottom: 4 }}
+        >
+          Backup private key
+        </h3>
+        <div
+          className="mono"
+          style={{
+            fontSize: 12,
+            color: "var(--ink-soft)",
+            marginBottom: 16,
+            wordBreak: "break-all",
+          }}
+        >
+          {vaultKey.key}
+        </div>
+
+        <div
+          style={{
+            padding: "12px 14px",
+            background: "rgba(140,30,40,0.10)",
+            border: "1px solid var(--wine)",
+            borderLeft: "4px solid var(--wine)",
+            color: "var(--wine)",
+            fontSize: 13,
+            lineHeight: 1.5,
+            marginBottom: 16,
+          }}
+        >
+          <div
+            className="smallcaps"
+            style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}
+          >
+            ⚠ warning
+          </div>
+          Anyone with this private key has full control of this wallet. Never
+          share it. Store the backup in a secure password manager or hardware
+          wallet, and clear it from your clipboard when done.
+        </div>
+
+        <div
+          className="smallcaps"
+          style={{ fontSize: 11, color: "var(--ink-soft)", marginBottom: 6 }}
+        >
+          private key
+        </div>
+        <div
+          className="mono"
+          style={{
+            padding: "12px 14px",
+            background: "var(--ink)",
+            color: revealed && value ? "var(--brass-bright)" : "var(--ink-soft)",
+            fontSize: 12,
+            wordBreak: "break-all",
+            userSelect: revealed ? "all" : "none",
+            minHeight: 44,
+            display: "flex",
+            alignItems: "center",
+          }}
+        >
+          {revealed && value ? value : REDACTED}
+        </div>
+
+        {error && (
+          <div
+            style={{
+              marginTop: 12,
+              padding: "10px 12px",
+              background: "rgba(140,30,40,0.08)",
+              border: "1px solid var(--wine)",
+              color: "var(--wine)",
+              fontSize: 13,
+            }}
+          >
+            {error}
+          </div>
+        )}
+
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            marginTop: 18,
+            justifyContent: "flex-end",
+          }}
+        >
+          {!revealed ? (
+            <>
+              <Btn kind="ghost" size="sm" onClick={onClose} disabled={loading}>
+                Cancel
+              </Btn>
+              <Btn
+                kind="primary"
+                size="sm"
+                onClick={reveal}
+                disabled={loading}
+                style={{
+                  background: "var(--wine)",
+                  border: "1px solid var(--wine)",
+                  color: "var(--parchment)",
+                }}
+              >
+                {loading ? "Loading…" : "I understand, reveal key"}
+              </Btn>
+            </>
+          ) : (
+            <>
+              <Btn kind="ghost" size="sm" onClick={copy}>
+                {copied ? "Copied!" : "Copy key"}
+              </Btn>
+              <Btn kind="primary" size="sm" onClick={onClose}>
+                Done
+              </Btn>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const EditVault = ({
   vault,
   onClose,
   onDeleted,
+  onKeyCountChange,
 }: {
   vault: Vault;
   onClose: () => void;
   onDeleted: (id: string) => void;
+  onKeyCountChange: (id: string, count: number) => void;
 }) => {
-  const [keys, setKeys] = useState<string[]>([]);
-  const [newKey, setNewKey] = useState("");
+  const [keys, setKeys] = useState<VaultKey[]>([]);
+  const [keysLoading, setKeysLoading] = useState(false);
+  const [keysError, setKeysError] = useState<string | null>(null);
+
+  const [addMode, setAddMode] = useState<AddMode>(null);
+  const [importValue, setImportValue] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+
+  const [removingKey, setRemovingKey] = useState<string | null>(null);
+  const [qrAddress, setQrAddress] = useState<string | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [backupKey, setBackupKey] = useState<VaultKey | null>(null);
+
+  const copyAddress = async (addr: string) => {
+    try {
+      if (navigator.clipboard) {
+        await navigator.clipboard.writeText(addr);
+      }
+      setCopiedKey(addr);
+      setTimeout(() => {
+        setCopiedKey((cur) => (cur === addr ? null : cur));
+      }, 1500);
+    } catch {
+      // clipboard unavailable — silently no-op
+    }
+  };
+
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const addKey = () => {
-    const trimmed = newKey.trim();
-    if (!trimmed || keys.includes(trimmed)) return;
-    setKeys([...keys, trimmed]);
-    setNewKey("");
+  const busy = adding || deleting || !!removingKey;
+
+  useEffect(() => {
+    const ac = new AbortController();
+    const run = async () => {
+      setKeysLoading(true);
+      setKeysError(null);
+      try {
+        const res = await fetch(`/api/vaults/${vault.id}/secrets`, {
+          signal: ac.signal,
+        });
+        const payload = (await res.json().catch(() => null)) as
+          | { secrets?: VaultKey[]; error?: string }
+          | null;
+        if (!res.ok) {
+          throw new Error(payload?.error ?? `Request failed (${res.status})`);
+        }
+        const next = payload?.secrets ?? [];
+        setKeys(next);
+        onKeyCountChange(vault.id, next.length);
+      } catch (err: unknown) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        setKeysError(
+          err instanceof Error ? err.message : "Failed to load keys",
+        );
+      } finally {
+        if (!ac.signal.aborted) setKeysLoading(false);
+      }
+    };
+    void Promise.resolve().then(run);
+    return () => ac.abort();
+  }, [vault.id, onKeyCountChange]);
+
+  const submitSecret = async (privateKey: Hex, address: string) => {
+    const res = await fetch(`/api/vaults/${vault.id}/secrets`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        key: address,
+        value: privateKey,
+        type: "private_key",
+      }),
+    });
+    if (res.status === 401) {
+      throw new Error("Your session has expired. Please sign in again.");
+    }
+    const payload = (await res.json().catch(() => null)) as
+      | { secret?: VaultKey; error?: string }
+      | null;
+    if (!res.ok || !payload?.secret) {
+      throw new Error(payload?.error ?? `Request failed (${res.status})`);
+    }
+    return payload.secret;
   };
 
-  const removeKey = (k: string) => {
-    setKeys(keys.filter((x) => x !== k));
+  const createWallet = async () => {
+    if (busy) return;
+    setAdding(true);
+    setAddError(null);
+    try {
+      const privateKey = generatePrivateKey();
+      const account = privateKeyToAccount(privateKey);
+      const secret = await submitSecret(privateKey, account.address);
+      setKeys((prev) => [...prev, secret]);
+      onKeyCountChange(vault.id, keys.length + 1);
+      setAddMode(null);
+    } catch (err: unknown) {
+      setAddError(
+        err instanceof Error ? err.message : "Failed to create wallet",
+      );
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const importKey = async () => {
+    if (busy) return;
+    const trimmed = importValue.trim();
+    if (!PRIVATE_KEY_RE.test(trimmed)) {
+      setAddError("Private key must be 0x-prefixed and 64 hex characters.");
+      return;
+    }
+    setAdding(true);
+    setAddError(null);
+    try {
+      const privateKey = trimmed as Hex;
+      const account = privateKeyToAccount(privateKey);
+      const secret = await submitSecret(privateKey, account.address);
+      setKeys((prev) => [...prev, secret]);
+      onKeyCountChange(vault.id, keys.length + 1);
+      setImportValue("");
+      setAddMode(null);
+    } catch (err: unknown) {
+      setAddError(
+        err instanceof Error ? err.message : "Failed to import private key",
+      );
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const removeKey = async (k: VaultKey) => {
+    if (busy) return;
+    setRemovingKey(k.key);
+    setKeysError(null);
+    try {
+      const segments = k.key.split("/").map(encodeURIComponent).join("/");
+      const res = await fetch(
+        `/api/vaults/${vault.id}/secrets/${segments}`,
+        { method: "DELETE" },
+      );
+      if (!res.ok && res.status !== 204) {
+        const payload = (await res.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        throw new Error(payload?.error ?? `Request failed (${res.status})`);
+      }
+      setKeys((prev) => prev.filter((x) => x.id !== k.id));
+      onKeyCountChange(vault.id, keys.length - 1);
+    } catch (err: unknown) {
+      setKeysError(
+        err instanceof Error ? err.message : "Failed to remove key",
+      );
+    } finally {
+      setRemovingKey(null);
+    }
+  };
+
+  const closeAddMenu = () => {
+    setAddMode(null);
+    setImportValue("");
+    setAddError(null);
   };
 
   const deleteVault = async () => {
@@ -914,7 +1621,21 @@ const EditVault = ({
       >
         keys ({keys.length})
       </div>
-      {keys.length === 0 ? (
+      {keysLoading && keys.length === 0 ? (
+        <div
+          style={{
+            padding: "14px 12px",
+            background: "rgba(255,255,255,0.4)",
+            border: "1px dashed var(--line)",
+            color: "var(--ink-soft)",
+            fontSize: 13,
+            fontStyle: "italic",
+            marginBottom: 12,
+          }}
+        >
+          Loading keys…
+        </div>
+      ) : keys.length === 0 ? (
         <div
           style={{
             padding: "14px 12px",
@@ -939,60 +1660,195 @@ const EditVault = ({
         >
           {keys.map((k) => (
             <div
-              key={k}
+              key={k.id}
               style={{
                 display: "flex",
                 justifyContent: "space-between",
                 alignItems: "center",
+                gap: 12,
                 padding: "10px 12px",
                 background: "rgba(255,255,255,0.4)",
                 border: "1px solid var(--line)",
               }}
             >
-              <span className="mono" style={{ fontSize: 13 }}>
-                {k}
-              </span>
-              <button
-                onClick={() => removeKey(k)}
-                className="smallcaps"
+              <span
+                className="mono"
                 style={{
-                  background: "none",
-                  border: "none",
-                  cursor: "pointer",
-                  fontSize: 11,
-                  color: "var(--wine)",
-                  fontFamily: "var(--font-ui)",
+                  fontSize: 13,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  flex: 1,
+                  minWidth: 0,
                 }}
-                disabled={deleting}
               >
-                remove
-              </button>
+                {k.key}
+              </span>
+              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                <IconBtn
+                  label={copiedKey === k.key ? "Copied" : "Copy address"}
+                  onClick={() => void copyAddress(k.key)}
+                  disabled={busy}
+                >
+                  {copiedKey === k.key ? <CheckIcon /> : <CopyIcon />}
+                </IconBtn>
+                <IconBtn
+                  label="Show payment QR"
+                  onClick={() => setQrAddress(k.key)}
+                  disabled={busy}
+                >
+                  <QrIcon />
+                </IconBtn>
+                <IconBtn
+                  label="Backup private key"
+                  onClick={() => setBackupKey(k)}
+                  disabled={busy}
+                >
+                  <KeyIcon />
+                </IconBtn>
+                <HoldDeleteBtn
+                  label={
+                    removingKey === k.key
+                      ? "Removing…"
+                      : "Hold to delete key"
+                  }
+                  onConfirm={() => void removeKey(k)}
+                  disabled={busy}
+                />
+              </div>
             </div>
           ))}
         </div>
       )}
 
-      <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
-        <Input
-          value={newKey}
-          onChange={(e) => setNewKey(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              addKey();
-            }
+      {keysError && (
+        <div
+          style={{
+            marginBottom: 12,
+            padding: "10px 12px",
+            background: "rgba(140,30,40,0.08)",
+            border: "1px solid var(--wine)",
+            color: "var(--wine)",
+            fontSize: 13,
           }}
-          placeholder="new key name"
-          disabled={deleting}
-        />
+        >
+          {keysError}
+        </div>
+      )}
+
+      {addMode === null && (
         <Btn
           kind="ghost"
-          onClick={addKey}
-          disabled={!newKey.trim() || deleting}
+          onClick={() => setAddMode("menu")}
+          disabled={busy}
         >
-          + Add
+          + Add key
         </Btn>
-      </div>
+      )}
+
+      {addMode === "menu" && (
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 8,
+            padding: 12,
+            background: "rgba(255,255,255,0.45)",
+            border: "1px solid var(--line)",
+          }}
+        >
+          <Btn
+            kind="primary"
+            size="sm"
+            onClick={createWallet}
+            disabled={busy}
+          >
+            {adding ? "Creating…" : "Create new wallet"}
+          </Btn>
+          <Btn
+            kind="ghost"
+            size="sm"
+            onClick={() => {
+              setAddMode("import");
+              setAddError(null);
+            }}
+            disabled={busy}
+          >
+            Import private key
+          </Btn>
+          <Btn
+            kind="ghost"
+            size="sm"
+            onClick={closeAddMenu}
+            disabled={busy}
+          >
+            Cancel
+          </Btn>
+        </div>
+      )}
+
+      {addMode === "import" && (
+        <div
+          style={{
+            padding: 12,
+            background: "rgba(255,255,255,0.45)",
+            border: "1px solid var(--line)",
+          }}
+        >
+          <Field label="Private key (0x-prefixed, 64 hex chars)">
+            <Input
+              value={importValue}
+              onChange={(e) => setImportValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void importKey();
+                }
+              }}
+              placeholder="0x…"
+              autoComplete="off"
+              spellCheck={false}
+              type="password"
+              disabled={busy}
+            />
+          </Field>
+          <div
+            style={{
+              display: "flex",
+              gap: 8,
+              marginTop: 12,
+              justifyContent: "flex-end",
+            }}
+          >
+            <Btn kind="ghost" size="sm" onClick={closeAddMenu} disabled={busy}>
+              Cancel
+            </Btn>
+            <Btn
+              kind="primary"
+              size="sm"
+              onClick={importKey}
+              disabled={!importValue.trim() || busy}
+            >
+              {adding ? "Adding…" : "Add"}
+            </Btn>
+          </div>
+        </div>
+      )}
+
+      {addError && (
+        <div
+          style={{
+            marginTop: 12,
+            padding: "10px 12px",
+            background: "rgba(140,30,40,0.08)",
+            border: "1px solid var(--wine)",
+            color: "var(--wine)",
+            fontSize: 13,
+          }}
+        >
+          {addError}
+        </div>
+      )}
 
       {error && (
         <div
@@ -1049,7 +1905,7 @@ const EditVault = ({
               disabled={deleting}
               style={{
                 background: "var(--wine)",
-                borderColor: "var(--wine)",
+                border: "1px solid var(--wine)",
                 color: "var(--parchment)",
               }}
             >
@@ -1063,13 +1919,26 @@ const EditVault = ({
             disabled={deleting}
             style={{
               color: "var(--wine)",
-              borderColor: "var(--wine)",
+              border: "1px solid var(--wine)",
             }}
           >
             Delete vault
           </Btn>
         )}
       </div>
+      {qrAddress && (
+        <PaymentQrModal
+          address={qrAddress}
+          onClose={() => setQrAddress(null)}
+        />
+      )}
+      {backupKey && (
+        <BackupKeyModal
+          vaultId={vault.id}
+          vaultKey={backupKey}
+          onClose={() => setBackupKey(null)}
+        />
+      )}
     </div>
   );
 };

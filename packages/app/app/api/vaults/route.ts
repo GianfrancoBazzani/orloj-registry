@@ -33,10 +33,25 @@ export async function GET() {
     );
   }
 
-  const vaults: Vault[] = data.vaults.map((v) => ({
+  const counts = await Promise.all(
+    data.vaults.map(async (v) => {
+      const res = await client.secrets.list(v.id);
+      if (res.error || !res.data) {
+        console.error(
+          `[vaults] failed to count secrets for ${v.id}`,
+          res.error,
+        );
+        return 0;
+      }
+      return res.data.secrets.length;
+    }),
+  );
+
+  const vaults: Vault[] = data.vaults.map((v, i) => ({
     id: v.id,
     name: v.name,
     description: v.description ?? "",
+    keyCount: counts[i],
   }));
 
   return Response.json({ vaults });
@@ -113,6 +128,7 @@ export async function POST(request: Request) {
     id: data.id,
     name: data.name,
     description: data.description ?? "",
+    keyCount: 0,
   };
 
   return Response.json({ vault }, { status: 201 });
