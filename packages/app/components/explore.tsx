@@ -13,11 +13,13 @@ import {
   StainedPanel,
 } from "./ornaments";
 import { SHORT_ADDR, type Mcp } from "./data";
+import { LaunchModal, type RegisterResult } from "./launch-modal";
 
 export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
   const router = useRouter();
   const { user, setShowLogin } = useAuth();
   const onNavigate = (r: string) => router.push(r === "home" ? "/" : `/${r}`);
+  const [launchMcp, setLaunchMcp] = useState<RegisterResult | null>(null);
   const onBind = (m: Mcp) => {
     if (!user) { setShowLogin(true); return; }
     router.push(`/profile?bind=${m.id}`);
@@ -351,7 +353,20 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
             onBind(selected);
             setSelected(null);
           }}
+          onAddMcp={() => {
+            setLaunchMcp({
+              name: selected.id,
+              contractName: selected.name,
+              mcpUrl: selected.mcpUrl,
+              chainId: selected.chainId,
+              address: selected.contract || false,
+            });
+            setSelected(null);
+          }}
         />
+      )}
+      {launchMcp && (
+        <LaunchModal result={launchMcp} onClose={() => setLaunchMcp(null)} />
       )}
     </main>
   );
@@ -544,10 +559,12 @@ const DetailDrawer = ({
   m,
   onClose,
   onBind,
+  onAddMcp,
 }: {
   m: Mcp;
   onClose: () => void;
   onBind: () => void;
+  onAddMcp: () => void;
 }) => (
   <div
     onClick={onClose}
@@ -728,37 +745,12 @@ const DetailDrawer = ({
           )}
         </div>
 
-        <h4
-          className="smallcaps"
-          style={{ marginTop: 24, color: "var(--ink-soft)", fontSize: 11 }}
-        >
-          example tool
-        </h4>
-        <pre
-          className="mono"
-          style={{
-            padding: 16,
-            background: "var(--ink)",
-            color: "var(--parchment)",
-            fontSize: 12,
-            marginTop: 6,
-            lineHeight: 1.6,
-            overflow: "auto",
-            borderRadius: 0,
-          }}
-        >{`{
-  "name": "${m.tags[0]?.toLowerCase() || "execute"}.quote",
-  "params": { "tokenIn": "address", "tokenOut": "address", "amount": "uint256" },
-  "scope": "read",
-  "rate_limit": "30 / minute"
-}`}</pre>
-
         <div style={{ display: "flex", gap: 12, marginTop: 32 }}>
           <Btn kind="primary" size="lg" onClick={onBind}>
             Bind to agent →
           </Btn>
-          <Btn kind="ghost" size="lg">
-            View manifest
+          <Btn kind="brass" size="lg" onClick={onAddMcp}>
+            Add MCP →
           </Btn>
         </div>
       </div>

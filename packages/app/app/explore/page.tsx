@@ -28,14 +28,16 @@ interface RegistryMcp {
   decimals?: number;
 }
 
-function mapToMcp(item: RegistryMcp): Mcp {
+function mapToMcp(item: RegistryMcp, registryUrl: string): Mcp {
   return {
     id: item.name,
     name: item.contractName,
     author: typeof item.address === "string" ? item.address : item.name,
     summary: "",
     chain: CHAIN_NAMES[item.chainId] ?? `Chain ${item.chainId}`,
+    chainId: item.chainId,
     contract: typeof item.address === "string" ? item.address : "",
+    mcpUrl: `${registryUrl}${item.url}`,
     tags: item.nativeToken ? ["Native Token"] : [],
     interfaces: item.toolCount,
     callsLast24h: 0,
@@ -54,7 +56,7 @@ async function fetchMcps(): Promise<Mcp[]> {
     const res = await fetch(`${registryUrl}/mcp`, { cache: "no-store" });
     if (!res.ok) return [];
     const data: RegistryMcp[] = await res.json();
-    return data.map(mapToMcp);
+    return data.map((item) => mapToMcp(item, registryUrl));
   } catch {
     return [];
   }
