@@ -14,6 +14,17 @@ const ensureSchema = async (pool: Pool): Promise<void> => {
     CREATE INDEX IF NOT EXISTS vault_ownership_user_idx
       ON vault_ownership(user_id)
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS agent_ownership (
+      agent_id   TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS agent_ownership_user_idx
+      ON agent_ownership(user_id)
+  `);
 };
 
 export const getPool = (): Promise<Pool> => {

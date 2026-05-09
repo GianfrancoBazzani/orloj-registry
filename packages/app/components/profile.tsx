@@ -444,7 +444,7 @@ const Overview = ({
             view all →
           </button>
         </div>
-        <ActivityFeed compact agents={USER_AGENTS} />
+        <ActivityFeed compact agents={agents} />
       </div>
       <div>
         <h3 className="display" style={{ fontSize: 20, margin: 0 }}>

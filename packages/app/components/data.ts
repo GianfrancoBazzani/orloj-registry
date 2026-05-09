@@ -241,32 +241,4 @@ export const MCP_REGISTRY: Mcp[] = [
   },
 ];
 
-export const USER_AGENTS: Agent[] = [
-  {
-    id: "a-1",
-    name: "Karel — Yield Steward",
-    vault: "Daily Operations",
-    mcps: ["Aave Treasury Pilot", "Curve Stable Cellar"],
-    status: "active",
-    runs: 412,
-    lastRun: "6 min ago",
-  },
-  {
-    id: "a-2",
-    name: "Bohumil — DAO Scribe",
-    vault: "Research Sandbox",
-    mcps: ["Snapshot Quill", "ENS Resolver Mason"],
-    status: "paused",
-    runs: 88,
-    lastRun: "yesterday",
-  },
-  {
-    id: "a-3",
-    name: "Vlasta — Bridge Watcher",
-    vault: "Treasury Cold",
-    mcps: ["Optimism Bridge Wagon", "Safe Council Atelier"],
-    status: "review",
-    runs: 14,
-    lastRun: "3 hours ago",
-  },
-];
+export const USER_AGENTS: Agent[] = [];
