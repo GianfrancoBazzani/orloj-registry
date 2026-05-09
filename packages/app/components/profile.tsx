@@ -34,12 +34,8 @@ interface User {
 export const Profile = () => {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { user, setShowLogin, signOut } = useAuth();
+  const { user, setShowLogin } = useAuth();
   const onNavigate = (r: string) => router.push(r === "home" ? "/" : `/${r}`);
-  const handleSignOut = async () => {
-    await signOut();
-    router.push("/");
-  };
 
   const bindId = searchParams.get("bind");
   const [bindMcp, setBindMcp] = useState<Mcp | null>(
@@ -274,14 +270,6 @@ export const Profile = () => {
                 {agents.reduce((a, b) => a + b.runs, 0)} tool calls this month
               </span>
             </div>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <Btn kind="brass" onClick={() => onNavigate("register")}>
-              + Publish MCP
-            </Btn>
-            <Btn kind="verdigris" onClick={handleSignOut}>
-              Sign out
-            </Btn>
           </div>
         </div>
 
