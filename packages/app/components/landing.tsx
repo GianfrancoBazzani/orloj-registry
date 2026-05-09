@@ -347,6 +347,9 @@ const ClockTableau = () => {
             <stop offset="0%"   stopColor="#252018"/>
             <stop offset="100%" stopColor="#0D0B09"/>
           </radialGradient>
+          <clipPath id="og-center-clip">
+            <circle cx={cx} cy={cy} r="33"/>
+          </clipPath>
 
           <filter id="og-glow" x="-30%" y="-30%" width="160%" height="160%">
             <feGaussianBlur stdDeviation="2.5" result="b"/>
@@ -526,41 +529,16 @@ const ClockTableau = () => {
         </g>
 
         {/* ── CENTRAL DISC (static) ── */}
-        <circle cx={cx} cy={cy} r="35" fill="url(#og-dark)"/>
+        <circle cx={cx} cy={cy} r="35" fill="#0D0B09"/>
+        <image
+          href="/logo.png"
+          x={cx - 33} y={cy - 33}
+          width="66" height="66"
+          clipPath="url(#og-center-clip)"
+          preserveAspectRatio="xMidYMid meet"
+        />
         <circle cx={cx} cy={cy} r="35" fill="none" stroke="#F7EBB0" strokeWidth="1.5"/>
         <circle cx={cx} cy={cy} r="28" fill="none" stroke="#C8913A" strokeWidth="0.7" strokeOpacity="0.45"/>
-        {/* Main compass petals */}
-        {[0, 90, 180, 270].map((deg, i) => {
-          const a = (deg-90)*Math.PI/180;
-          const cos = Math.cos(a), sin = Math.sin(a);
-          const perp = a + Math.PI/2;
-          const pc = Math.cos(perp), ps = Math.sin(perp);
-          return (
-            <polygon key={i} points={[
-              `${cx + cos*30},${cy + sin*30}`,
-              `${cx + cos*18 + pc*7},${cy + sin*18 + ps*7}`,
-              `${cx},${cy}`,
-              `${cx + cos*18 - pc*7},${cy + sin*18 - ps*7}`,
-            ].join(" ")} fill="#C8913A" fillOpacity="0.95" filter="url(#og-glow)"/>
-          );
-        })}
-        {/* Secondary compass petals */}
-        {[45, 135, 225, 315].map((deg, i) => {
-          const a = (deg-90)*Math.PI/180;
-          const cos = Math.cos(a), sin = Math.sin(a);
-          const perp = a + Math.PI/2;
-          const pc = Math.cos(perp), ps = Math.sin(perp);
-          return (
-            <polygon key={i} points={[
-              `${cx + cos*22},${cy + sin*22}`,
-              `${cx + cos*12 + pc*5},${cy + sin*12 + ps*5}`,
-              `${cx},${cy}`,
-              `${cx + cos*12 - pc*5},${cy + sin*12 - ps*5}`,
-            ].join(" ")} fill="#F7EBB0" fillOpacity="0.72"/>
-          );
-        })}
-        <circle cx={cx} cy={cy} r="6.5" fill="#F7EBB0"/>
-        <circle cx={cx} cy={cy} r="3"   fill="#0D0B09"/>
 
         {/* ── ART DECO TOP ORNAMENT ── */}
         <g stroke="#C8913A" fill="none" strokeOpacity="0.7">

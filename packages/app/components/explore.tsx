@@ -103,7 +103,7 @@ export const Explore = () => {
               manifests, not promises.
             </p>
           </div>
-          <Btn kind="brass" onClick={() => onNavigate("register")}>
+          <Btn kind="brass" onClick={() => { if (!user) { setShowLogin(true); return; } onNavigate("register"); }}>
             + Publish your own
           </Btn>
         </div>
