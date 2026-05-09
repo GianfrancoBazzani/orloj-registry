@@ -1,7 +1,12 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Btn, StainedPanel, Tag } from "./ornaments";
+
+interface AgentOption {
+  id: string;
+  name: string;
+}
 
 export interface RegisterResult {
   name: string;
@@ -26,13 +31,13 @@ function getConfig(
   platform: PlatformId,
   name: string,
   url: string,
+  token: string,
 ): { code: string; file?: string } {
-  const TOKEN = "<token>";
-  const auth = { Authorization: `Bearer ${TOKEN}` };
+  const auth = { Authorization: `Bearer ${token}` };
   switch (platform) {
     case "claude-code":
       return {
-        code: `claude mcp add --transport http --header "Authorization: Bearer ${TOKEN}" ${name} ${url}`,
+        code: `claude mcp add ${name} --transport http ${url} --header "Authorization: Bearer ${token}"`,
       };
     case "cursor":
       return {
@@ -64,7 +69,7 @@ function getConfig(
     case "codex":
       return {
         file: "~/.codex/config.yaml",
-        code: `mcpServers:\n  - name: ${name}\n    url: ${url}\n    headers:\n      Authorization: "Bearer ${TOKEN}"`,
+        code: `mcpServers:\n  - name: ${name}\n    url: ${url}\n    headers:\n      Authorization: "Bearer ${token}"`,
       };
     case "gemini":
       return {
@@ -88,7 +93,45 @@ export const LaunchModal = ({
   const router = useRouter();
   const [tab, setTab] = useState<PlatformId>("claude-code");
   const [copied, setCopied] = useState(false);
-  const config = getConfig(tab, result.contractName, result.mcpUrl);
+
+  const [agents, setAgents] = useState<AgentOption[]>([]);
+  const [agentsLoading, setAgentsLoading] = useState(false);
+  const [agentsError, setAgentsError] = useState<string | null>(null);
+  const [selectedAgentId, setSelectedAgentId] = useState<string>("");
+  const [apiKey, setApiKey] = useState("");
+  const [rotateLoading, setRotateLoading] = useState(false);
+  const [rotateError, setRotateError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setAgentsLoading(true);
+    fetch("/api/agents")
+      .then((r) => r.json() as Promise<{ agents?: AgentOption[]; error?: string }>)
+      .then((payload) => {
+        setAgents(payload.agents ?? []);
+        if (payload.agents?.length) setSelectedAgentId(payload.agents[0].id);
+      })
+      .catch(() => setAgentsError("Failed to load agents"))
+      .finally(() => setAgentsLoading(false));
+  }, []);
+
+  const rotateAndUse = async () => {
+    if (!selectedAgentId || rotateLoading) return;
+    setRotateLoading(true);
+    setRotateError(null);
+    try {
+      const res = await fetch(`/api/agents/${selectedAgentId}/rotate-key`, { method: "POST" });
+      const payload = (await res.json().catch(() => null)) as { api_key?: string; error?: string } | null;
+      if (!res.ok || !payload?.api_key) throw new Error(payload?.error ?? `Request failed (${res.status})`);
+      setApiKey(payload.api_key);
+    } catch (err) {
+      setRotateError(err instanceof Error ? err.message : "Failed to rotate key");
+    } finally {
+      setRotateLoading(false);
+    }
+  };
+
+  const token = apiKey.trim() || "<token>";
+  const config = getConfig(tab, result.contractName, result.mcpUrl, token);
   const onClose = onCloseAction;
 
   const copy = () => {
@@ -202,34 +245,116 @@ export const LaunchModal = ({
             </span>
           </div>
 
-          {/* Token notice */}
+          {/* Agent selector + API key */}
           <div
             style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
               marginBottom: 20,
-              padding: "9px 12px",
-              background: "rgba(184,137,58,0.1)",
+              padding: "14px 14px 12px",
+              background: "rgba(184,137,58,0.07)",
               border: "1px solid var(--brass)",
-              fontSize: 12,
-              color: "var(--ink-soft)",
             }}
           >
-            <span style={{ color: "var(--brass-deep)" }}>🔑</span>
-            Replace{" "}
-            <code
-              className="mono"
-              style={{
-                padding: "1px 5px",
-                background: "var(--ink)",
-                color: "var(--brass-bright)",
-                fontSize: 11,
-              }}
+            <div
+              className="smallcaps"
+              style={{ fontSize: 10, letterSpacing: "0.16em", color: "var(--brass-deep)", marginBottom: 10 }}
             >
-              &lt;token&gt;
-            </code>{" "}
-            with your agent&apos;s API key before running.
+              ✦ select agent
+            </div>
+
+            {/* Agent dropdown */}
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
+              {agentsLoading ? (
+                <span className="mono" style={{ fontSize: 11, color: "var(--ink-soft)" }}>Loading agents…</span>
+              ) : agentsError ? (
+                <span className="mono" style={{ fontSize: 11, color: "var(--brass-deep)" }}>{agentsError}</span>
+              ) : agents.length === 0 ? (
+                <span className="mono" style={{ fontSize: 11, color: "var(--ink-soft)" }}>
+                  No agents found —{" "}
+                  <button
+                    onClick={() => { onClose(); router.push("/profile?tab=agents"); }}
+                    style={{ background: "none", border: "none", color: "var(--brass-deep)", cursor: "pointer", font: "inherit", padding: 0, textDecoration: "underline" }}
+                  >
+                    create one in your profile
+                  </button>
+                </span>
+              ) : (
+                <select
+                  value={selectedAgentId}
+                  onChange={(e) => { setSelectedAgentId(e.target.value); setApiKey(""); setRotateError(null); }}
+                  style={{
+                    flex: 1,
+                    padding: "7px 10px",
+                    background: "var(--parchment)",
+                    border: "1px solid var(--line)",
+                    fontFamily: "var(--font-ui)",
+                    fontSize: 13,
+                    color: "var(--ink)",
+                    cursor: "pointer",
+                  }}
+                >
+                  {agents.map((a) => (
+                    <option key={a.id} value={a.id}>{a.name}</option>
+                  ))}
+                </select>
+              )}
+            </div>
+
+            {/* API key input + rotate */}
+            {agents.length > 0 && (
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <input
+                  type="password"
+                  placeholder="Paste API key…"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  style={{
+                    flex: 1,
+                    padding: "7px 10px",
+                    background: "var(--ink)",
+                    border: `1px solid ${apiKey ? "var(--verdigris)" : "var(--line)"}`,
+                    fontFamily: "var(--font-mono, monospace)",
+                    fontSize: 12,
+                    color: "var(--brass-bright)",
+                  }}
+                />
+                <button
+                  onClick={rotateAndUse}
+                  disabled={!selectedAgentId || rotateLoading}
+                  className="smallcaps"
+                  style={{
+                    padding: "7px 12px",
+                    fontSize: 10,
+                    fontFamily: "var(--font-ui)",
+                    background: rotateLoading ? "rgba(184,137,58,0.15)" : "var(--ink)",
+                    color: "var(--brass-bright)",
+                    border: "1px solid var(--brass)",
+                    cursor: selectedAgentId && !rotateLoading ? "pointer" : "not-allowed",
+                    whiteSpace: "nowrap",
+                    letterSpacing: "0.1em",
+                    opacity: !selectedAgentId ? 0.5 : 1,
+                  }}
+                >
+                  {rotateLoading ? "Rotating…" : "Rotate & use"}
+                </button>
+              </div>
+            )}
+            {rotateError && (
+              <div className="mono" style={{ fontSize: 11, color: "var(--brass-deep)", marginTop: 6 }}>
+                {rotateError}
+              </div>
+            )}
+            {!apiKey && agents.length > 0 && (
+              <div style={{ fontSize: 11, color: "var(--ink-soft)", marginTop: 8 }}>
+                <span style={{ color: "var(--brass-deep)" }}>🔑</span>{" "}
+                Paste your API key or click{" "}
+                <em>Rotate &amp; use</em> to generate a new one (invalidates the previous key).
+              </div>
+            )}
+            {apiKey && (
+              <div style={{ fontSize: 11, color: "var(--verdigris-deep)", marginTop: 8 }}>
+                ✓ Token set — command is ready to run.
+              </div>
+            )}
           </div>
 
           {/* Platform tabs */}
