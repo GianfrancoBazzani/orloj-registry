@@ -183,7 +183,6 @@ export const TopNav = ({
   const items = [
     { id: "explore", l: "Explore" },
     { id: "register", l: "Register" },
-    { id: "docs", l: "Docs" },
   ];
   return (
     <header

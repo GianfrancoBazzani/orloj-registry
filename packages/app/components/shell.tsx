@@ -10,7 +10,6 @@ const ROUTE_MAP: Record<string, string> = {
   "/explore": "explore",
   "/register": "register",
   "/profile": "profile",
-  "/docs": "docs",
 };
 
 export const Shell = ({ children }: { children: React.ReactNode }) => {
@@ -40,7 +39,7 @@ export const Shell = ({ children }: { children: React.ReactNode }) => {
   };
 
   return (
-    <>
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
       <TopNav
         route={route}
         onNavigate={navigate}
@@ -50,7 +49,7 @@ export const Shell = ({ children }: { children: React.ReactNode }) => {
           void signOut();
         }}
       />
-      {children}
+      <div style={{ flex: 1 }}>{children}</div>
       <Footer />
       {showLogin && (
         <LoginModal
@@ -58,7 +57,7 @@ export const Shell = ({ children }: { children: React.ReactNode }) => {
           onLogin={handleLogin}
         />
       )}
-    </>
+    </div>
   );
 };
 
