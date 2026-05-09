@@ -1,7 +1,6 @@
 "use client";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { useAuth } from "./auth-context";
 import {
   Pill,
   Btn,
@@ -12,15 +11,21 @@ import {
   Select,
   StainedPanel,
 } from "./ornaments";
-import { MCP_REGISTRY, SHORT_ADDR, type Mcp } from "./data";
+import { SHORT_ADDR, type Mcp } from "./data";
+import { LaunchModal, type RegisterResult } from "./launch-modal";
 
-export const Explore = () => {
+export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
   const router = useRouter();
-  const { user, setShowLogin } = useAuth();
   const onNavigate = (r: string) => router.push(r === "home" ? "/" : `/${r}`);
-  const onBind = (m: Mcp) => {
-    if (!user) { setShowLogin(true); return; }
-    router.push(`/profile?bind=${m.id}`);
+  const [launchMcp, setLaunchMcp] = useState<RegisterResult | null>(null);
+  const openLaunchModal = (m: Mcp) => {
+    setLaunchMcp({
+      name: m.id,
+      contractName: m.name,
+      mcpUrl: m.mcpUrl,
+      chainId: m.chainId,
+      address: m.contract || false,
+    });
   };
   const [q, setQ] = useState("");
   const [chain, setChain] = useState("All chains");
@@ -31,14 +36,14 @@ export const Explore = () => {
 
   const allTags = [
     "All capabilities",
-    ...new Set(MCP_REGISTRY.flatMap((m) => m.tags)),
+    ...new Set(mcps.flatMap((m) => m.tags)),
   ];
   const allChains = [
     "All chains",
-    ...new Set(MCP_REGISTRY.map((m) => m.chain)),
+    ...new Set(mcps.map((m) => m.chain)),
   ];
 
-  let list = MCP_REGISTRY.filter((m) => {
+  let list = mcps.filter((m) => {
     if (
       q &&
       !`${m.name} ${m.summary} ${m.author} ${m.tags.join(" ")}`
@@ -50,6 +55,9 @@ export const Explore = () => {
     if (tag !== "All capabilities" && !m.tags.includes(tag)) return false;
     return true;
   });
+
+  console.log(list);
+
   if (sort === "Most active")
     list = [...list].sort((a, b) => b.callsLast24h - a.callsLast24h);
   if (sort === "Most starred")
@@ -93,7 +101,7 @@ export const Explore = () => {
                 marginBottom: 0,
               }}
             >
-              {list.length} of {MCP_REGISTRY.length} interfaces — bound by
+              {list.length} of {mcps.length} interfaces — bound by
               manifests, not promises.
             </p>
           </div>
@@ -216,7 +224,7 @@ export const Explore = () => {
                 key={m.id}
                 m={m}
                 onClick={() => setSelected(m)}
-                onBind={() => onBind(m)}
+                onAddMcp={() => openLaunchModal(m)}
               />
             ))}
           </div>
@@ -312,10 +320,10 @@ export const Explore = () => {
                   kind="ghost"
                   onClick={(e) => {
                     e.stopPropagation();
-                    onBind(m);
+                    openLaunchModal(m);
                   }}
                 >
-                  Bind →
+                  Add MCP →
                 </Btn>
               </div>
             ))}
@@ -344,11 +352,14 @@ export const Explore = () => {
         <DetailDrawer
           m={selected}
           onClose={() => setSelected(null)}
-          onBind={() => {
-            onBind(selected);
+          onAddMcp={() => {
+            openLaunchModal(selected);
             setSelected(null);
           }}
         />
+      )}
+      {launchMcp && (
+        <LaunchModal result={launchMcp} onCloseAction={() => setLaunchMcp(null)} />
       )}
     </main>
   );
@@ -357,11 +368,11 @@ export const Explore = () => {
 const MCPCard = ({
   m,
   onClick,
-  onBind,
+  onAddMcp,
 }: {
   m: Mcp;
   onClick: () => void;
-  onBind: () => void;
+  onAddMcp: () => void;
 }) => {
   const accent =
     m.color === "verdigris"
@@ -525,10 +536,10 @@ const MCPCard = ({
               kind="primary"
               onClick={(e) => {
                 e.stopPropagation();
-                onBind();
+                onAddMcp();
               }}
             >
-              Bind →
+              Add MCP →
             </Btn>
           </div>
         </div>
@@ -540,11 +551,11 @@ const MCPCard = ({
 const DetailDrawer = ({
   m,
   onClose,
-  onBind,
+  onAddMcp,
 }: {
   m: Mcp;
   onClose: () => void;
-  onBind: () => void;
+  onAddMcp: () => void;
 }) => (
   <div
     onClick={onClose}
@@ -667,25 +678,29 @@ const DetailDrawer = ({
           ))}
         </div>
 
-        <h4
-          className="smallcaps"
-          style={{ marginTop: 24, color: "var(--ink-soft)", fontSize: 11 }}
-        >
-          contract
-        </h4>
-        <div
-          className="mono"
-          style={{
-            padding: 12,
-            background: "var(--ink)",
-            color: "var(--brass-bright)",
-            fontSize: 12,
-            marginTop: 6,
-            wordBreak: "break-all",
-          }}
-        >
-          {m.contract}
-        </div>
+        {m.contract && (
+          <>
+            <h4
+              className="smallcaps"
+              style={{ marginTop: 24, color: "var(--ink-soft)", fontSize: 11 }}
+            >
+              contract
+            </h4>
+            <div
+              className="mono"
+              style={{
+                padding: 12,
+                background: "var(--ink)",
+                color: "var(--brass-bright)",
+                fontSize: 12,
+                marginTop: 6,
+                wordBreak: "break-all",
+              }}
+            >
+              {m.contract}
+            </div>
+          </>
+        )}
 
         <h4
           className="smallcaps"
@@ -721,37 +736,9 @@ const DetailDrawer = ({
           )}
         </div>
 
-        <h4
-          className="smallcaps"
-          style={{ marginTop: 24, color: "var(--ink-soft)", fontSize: 11 }}
-        >
-          example tool
-        </h4>
-        <pre
-          className="mono"
-          style={{
-            padding: 16,
-            background: "var(--ink)",
-            color: "var(--parchment)",
-            fontSize: 12,
-            marginTop: 6,
-            lineHeight: 1.6,
-            overflow: "auto",
-            borderRadius: 0,
-          }}
-        >{`{
-  "name": "${m.tags[0]?.toLowerCase() || "execute"}.quote",
-  "params": { "tokenIn": "address", "tokenOut": "address", "amount": "uint256" },
-  "scope": "read",
-  "rate_limit": "30 / minute"
-}`}</pre>
-
         <div style={{ display: "flex", gap: 12, marginTop: 32 }}>
-          <Btn kind="primary" size="lg" onClick={onBind}>
-            Bind to agent →
-          </Btn>
-          <Btn kind="ghost" size="lg">
-            View manifest
+          <Btn kind="brass" size="lg" onClick={onAddMcp}>
+            Add MCP →
           </Btn>
         </div>
       </div>

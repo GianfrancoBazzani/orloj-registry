@@ -1,5 +1,68 @@
 import { Explore } from "@/components/explore";
+import type { Mcp } from "@/components/data";
 
-export default function ExplorePage() {
-  return <Explore />;
+const CHAIN_NAMES: Record<number, string> = {
+  1: "Ethereum",
+  10: "Optimism",
+  56: "BSC",
+  100: "Gnosis",
+  137: "Polygon",
+  42161: "Arbitrum",
+  8453: "Base",
+  43114: "Avalanche",
+};
+
+const COLORS = ["verdigris", "brass", "wine", "blue"] as const;
+
+interface RegistryMcp {
+  name: string;
+  url: string;
+  chainId: number;
+  address: string | false;
+  implementation: string | null | false;
+  contractName: string;
+  version: string;
+  toolCount: number;
+  nativeToken?: boolean;
+  symbol?: string;
+  decimals?: number;
+}
+
+function mapToMcp(item: RegistryMcp, registryUrl: string): Mcp {
+  return {
+    id: item.name,
+    name: item.contractName,
+    author: typeof item.address === "string" ? item.address : item.name,
+    summary: "",
+    chain: CHAIN_NAMES[item.chainId] ?? `Chain ${item.chainId}`,
+    chainId: item.chainId,
+    contract: typeof item.address === "string" ? item.address : "",
+    mcpUrl: `${registryUrl}${item.url}`,
+    tags: item.nativeToken ? ["Native Token"] : [],
+    interfaces: item.toolCount,
+    callsLast24h: 0,
+    audited: false,
+    audits: [],
+    verified: false,
+    stars: 0,
+    color: COLORS[item.chainId % COLORS.length],
+  };
+}
+
+async function fetchMcps(): Promise<Mcp[]> {
+  const registryUrl = process.env.REGISTRY_URL;
+  if (!registryUrl) return [];
+  try {
+    const res = await fetch(`${registryUrl}/mcp`, { cache: "no-store" });
+    if (!res.ok) return [];
+    const data: RegistryMcp[] = await res.json();
+    return data.map((item) => mapToMcp(item, registryUrl));
+  } catch {
+    return [];
+  }
+}
+
+export default async function ExplorePage() {
+  const mcps = await fetchMcps();
+  return <Explore mcps={mcps} />;
 }
