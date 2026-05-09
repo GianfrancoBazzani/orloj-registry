@@ -24,6 +24,7 @@ const PLATFORMS = [
   { id: "windsurf",     label: "Windsurf"    },
   { id: "codex",        label: "Codex"       },
   { id: "gemini",       label: "Gemini CLI"  },
+  { id: "hermes",       label: "Hermes"      },
 ] as const;
 
 type PlatformId = (typeof PLATFORMS)[number]["id"];
@@ -80,6 +81,12 @@ function getConfig(
           null,
           2,
         ),
+      };
+
+    case "hermes":
+      return {
+        file: " ~/.hermes/config.yaml",
+        code: `mcp_servers:\n\tmcp_name:\n\t\turl: "${url}"\n\t\t\theaders: Authorization: "Bearer ${token}"\n\t\t\ttimeout: 120`,
       };
   }
 }
@@ -364,11 +371,10 @@ export const LaunchModal = ({
                   ? "var(--verdigris)"
                   : "rgba(241,233,212,0.1)",
                 color: copied ? "var(--parchment)" : "var(--ink-soft)",
-                border: `1px solid ${
-                  copied
-                    ? "var(--verdigris-deep)"
-                    : "rgba(241,233,212,0.22)"
-                }`,
+                border: `1px solid ${copied
+                  ? "var(--verdigris-deep)"
+                  : "rgba(241,233,212,0.22)"
+                  }`,
                 cursor: "pointer",
                 letterSpacing: "0.12em",
               }}
