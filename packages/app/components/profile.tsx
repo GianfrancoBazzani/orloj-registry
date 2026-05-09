@@ -64,14 +64,14 @@ export const Profile = () => {
       const res = await fetch("/api/agents", { signal });
       const payload = (await res.json().catch(() => null)) as
         | {
-            agents?: Array<{
-              id: string;
-              name: string;
-              is_active?: boolean;
-              created_at?: string;
-            }>;
-            error?: string;
-          }
+          agents?: Array<{
+            id: string;
+            name: string;
+            is_active?: boolean;
+            created_at?: string;
+          }>;
+          error?: string;
+        }
         | null;
       if (!res.ok) {
         throw new Error(payload?.error ?? `Request failed (${res.status})`);
@@ -295,9 +295,8 @@ export const Profile = () => {
                 fontSize: 12,
                 fontFamily: "var(--font-ui)",
                 color: tab === t.id ? "var(--ink)" : "var(--ink-soft)",
-                borderBottom: `2px solid ${
-                  tab === t.id ? "var(--brass)" : "transparent"
-                }`,
+                borderBottom: `2px solid ${tab === t.id ? "var(--brass)" : "transparent"
+                  }`,
                 fontWeight: tab === t.id ? 600 : 400,
               }}
             >
@@ -426,10 +425,10 @@ const Overview = ({
           s.tone === "verdigris"
             ? "var(--verdigris)"
             : s.tone === "brass"
-            ? "var(--brass)"
-            : s.tone === "blue"
-            ? "var(--stained-blue)"
-            : "var(--wine)";
+              ? "var(--brass)"
+              : s.tone === "blue"
+                ? "var(--stained-blue)"
+                : "var(--wine)";
         return (
           <div
             key={i}
@@ -564,203 +563,203 @@ const Vaults = ({
     [setVaults],
   );
   return (
-  <div>
-    <div
-      style={{
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "baseline",
-        marginBottom: 18,
-      }}
-    >
-      <div>
-        <h2 className="display" style={{ fontSize: 28, margin: 0 }}>
-          Vaults
-        </h2>
-        <p
-          className="poetic"
-          style={{
-            fontSize: 17,
-            color: "var(--ink-soft)",
-            marginTop: 4,
-            marginBottom: 0,
-          }}
-        >
-          Custody routed through KMS providers. Keys never leave the enclave.
-        </p>
-      </div>
-      <Btn kind="primary" onClick={() => setCreating(true)}>
-        + Create vault
-      </Btn>
-    </div>
-
-    {creating && (
-      <CreateVault
-        onCancel={() => setCreating(false)}
-        onCreate={(vault) => {
-          setVaults([...vaults, vault]);
-          setCreating(false);
-        }}
-      />
-    )}
-
-    {editingVault && (
-      <EditVault
-        vault={editingVault}
-        onClose={() => setEditingVaultId(null)}
-        onDeleted={onVaultDeleted}
-        onKeyCountChange={onKeyCountChange}
-      />
-    )}
-
-    {error && (
+    <div>
       <div
         style={{
-          padding: "12px 14px",
-          background: "rgba(140,30,40,0.08)",
-          border: "1px solid var(--wine)",
-          color: "var(--wine)",
-          fontSize: 13,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "baseline",
           marginBottom: 18,
         }}
       >
-        {error}
-      </div>
-    )}
-
-    {loading && vaults.length === 0 && !error ? (
-      <div
-        className="poetic"
-        style={{
-          padding: "40px 20px",
-          textAlign: "center",
-          color: "var(--ink-soft)",
-          fontSize: 16,
-        }}
-      >
-        Loading vaults…
-      </div>
-    ) : !loading && vaults.length === 0 && !error ? (
-      <div
-        className="poetic"
-        style={{
-          padding: "40px 20px",
-          textAlign: "center",
-          color: "var(--ink-soft)",
-          fontSize: 16,
-        }}
-      >
-        No vaults yet — create one to get started.
-      </div>
-    ) : (
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))",
-          gap: 18,
-        }}
-      >
-        {vaults.map((v) => (
-          <div
-            key={v.id}
+        <div>
+          <h2 className="display" style={{ fontSize: 28, margin: 0 }}>
+            Vaults
+          </h2>
+          <p
+            className="poetic"
             style={{
-              position: "relative",
-              padding: 20,
-              background: "rgba(241,233,212,0.55)",
-              border: "1px solid var(--line)",
-              borderLeft: "4px solid var(--brass)",
+              fontSize: 17,
+              color: "var(--ink-soft)",
+              marginTop: 4,
+              marginBottom: 0,
             }}
           >
+            Custody routed through KMS providers. Keys never leave the enclave.
+          </p>
+        </div>
+        <Btn kind="primary" onClick={() => setCreating(true)}>
+          + Create vault
+        </Btn>
+      </div>
+
+      {creating && (
+        <CreateVault
+          onCancel={() => setCreating(false)}
+          onCreate={(vault) => {
+            setVaults([...vaults, vault]);
+            setCreating(false);
+          }}
+        />
+      )}
+
+      {editingVault && (
+        <EditVault
+          vault={editingVault}
+          onClose={() => setEditingVaultId(null)}
+          onDeleted={onVaultDeleted}
+          onKeyCountChange={onKeyCountChange}
+        />
+      )}
+
+      {error && (
+        <div
+          style={{
+            padding: "12px 14px",
+            background: "rgba(140,30,40,0.08)",
+            border: "1px solid var(--wine)",
+            color: "var(--wine)",
+            fontSize: 13,
+            marginBottom: 18,
+          }}
+        >
+          {error}
+        </div>
+      )}
+
+      {loading && vaults.length === 0 && !error ? (
+        <div
+          className="poetic"
+          style={{
+            padding: "40px 20px",
+            textAlign: "center",
+            color: "var(--ink-soft)",
+            fontSize: 16,
+          }}
+        >
+          Loading vaults…
+        </div>
+      ) : !loading && vaults.length === 0 && !error ? (
+        <div
+          className="poetic"
+          style={{
+            padding: "40px 20px",
+            textAlign: "center",
+            color: "var(--ink-soft)",
+            fontSize: 16,
+          }}
+        >
+          No vaults yet — create one to get started.
+        </div>
+      ) : (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))",
+            gap: 18,
+          }}
+        >
+          {vaults.map((v) => (
             <div
+              key={v.id}
               style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "flex-start",
-                gap: 12,
+                position: "relative",
+                padding: 20,
+                background: "rgba(241,233,212,0.55)",
+                border: "1px solid var(--line)",
+                borderLeft: "4px solid var(--brass)",
               }}
             >
-              <div style={{ minWidth: 0 }}>
-                <div className="display" style={{ fontSize: 18 }}>
-                  {v.name}
-                </div>
-                {v.description && (
-                  <div
-                    style={{
-                      fontSize: 12.5,
-                      color: "var(--ink-soft)",
-                      marginTop: 4,
-                      lineHeight: 1.4,
-                    }}
-                  >
-                    {v.description}
-                  </div>
-                )}
-              </div>
               <div
                 style={{
                   display: "flex",
-                  flexDirection: "column",
-                  gap: 4,
-                  alignItems: "flex-end",
-                  flexShrink: 0,
+                  justifyContent: "space-between",
+                  alignItems: "flex-start",
+                  gap: 12,
                 }}
               >
-                <Pill tone={v.provider === "orbitport" ? "blue" : "brass"}>
-                  {v.provider === "orbitport" ? "spacecomputer" : "1claw"}
-                </Pill>
+                <div style={{ minWidth: 0 }}>
+                  <div className="display" style={{ fontSize: 18 }}>
+                    {v.name}
+                  </div>
+                  {v.description && (
+                    <div
+                      style={{
+                        fontSize: 12.5,
+                        color: "var(--ink-soft)",
+                        marginTop: 4,
+                        lineHeight: 1.4,
+                      }}
+                    >
+                      {v.description}
+                    </div>
+                  )}
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 4,
+                    alignItems: "flex-end",
+                    flexShrink: 0,
+                  }}
+                >
+                  <Pill tone={v.provider === "orbitport" ? "blue" : "brass"}>
+                    {v.provider === "orbitport" ? "spacecomputer" : "1claw"}
+                  </Pill>
+                </div>
               </div>
-            </div>
-            {v.address && (
+              {v.address && (
+                <div
+                  className="mono"
+                  style={{
+                    marginTop: 12,
+                    fontSize: 11,
+                    color: "var(--verdigris-deep)",
+                    wordBreak: "break-all",
+                  }}
+                  title={v.address}
+                >
+                  {v.address}
+                </div>
+              )}
               <div
                 className="mono"
                 style={{
-                  marginTop: 12,
+                  marginTop: 8,
                   fontSize: 11,
-                  color: "var(--verdigris-deep)",
+                  color: "var(--ink-soft)",
                   wordBreak: "break-all",
                 }}
-                title={v.address}
               >
-                {v.address}
+                {v.id}
               </div>
-            )}
-            <div
-              className="mono"
-              style={{
-                marginTop: 8,
-                fontSize: 11,
-                color: "var(--ink-soft)",
-                wordBreak: "break-all",
-              }}
-            >
-              {v.id}
-            </div>
-            <div
-              className="smallcaps"
-              style={{
-                marginTop: 14,
-                fontSize: 10,
-                color: "var(--ink-soft)",
-              }}
-            >
-              {v.provider === "orbitport"
-                ? "kms-managed wallet"
-                : `${v.keyCount} ${v.keyCount === 1 ? "key" : "keys"}`}
-            </div>
-            <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
-              <Btn
-                size="sm"
-                kind="ghost"
-                onClick={() => setEditingVaultId(v.id)}
+              <div
+                className="smallcaps"
+                style={{
+                  marginTop: 14,
+                  fontSize: 10,
+                  color: "var(--ink-soft)",
+                }}
               >
-                Edit
-              </Btn>
+                {v.provider === "orbitport"
+                  ? "kms-managed wallet"
+                  : `${v.keyCount} ${v.keyCount === 1 ? "key" : "keys"}`}
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+                <Btn
+                  size="sm"
+                  kind="ghost"
+                  onClick={() => setEditingVaultId(v.id)}
+                >
+                  Edit
+                </Btn>
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
-    )}
-  </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 };
 
@@ -1554,11 +1553,8 @@ const EditVault = ({
   const busy = adding || deleting || !!removingKey;
 
   useEffect(() => {
-    // Orbitport-backed vaults have a single KMS-managed signing wallet; the
-    // secrets KV is intentionally not surfaced as "keys" in the UI for them.
-    // Skip the fetch entirely.
     if (vault.provider === "orbitport") {
-      onKeyCountChange(vault.id, 0);
+      onKeyCountChange(vault.id, vault.address ? 1 : 0);
       return;
     }
     const ac = new AbortController();
@@ -1589,7 +1585,7 @@ const EditVault = ({
     };
     void Promise.resolve().then(run);
     return () => ac.abort();
-  }, [vault.id, vault.provider, onKeyCountChange]);
+  }, [vault.id, vault.provider, vault.address, onKeyCountChange]);
 
   const submitSecret = async (privateKey: Hex, address: string) => {
     const res = await fetch(`/api/vaults/${vault.id}/secrets`, {
@@ -1775,343 +1771,304 @@ const EditVault = ({
         {vault.name}
       </div>
 
-      {vault.provider !== "orbitport" && (
+      {vault.provider === "orbitport" ? (
         <>
-      <div
-        className="smallcaps"
-        style={{
-          fontSize: 11,
-          color: "var(--ink-soft)",
-          marginBottom: 8,
-        }}
-      >
-        keys ({keys.length})
-      </div>
-      {keysLoading && keys.length === 0 ? (
-        <div
-          style={{
-            padding: "14px 12px",
-            background: "rgba(255,255,255,0.4)",
-            border: "1px dashed var(--line)",
-            color: "var(--ink-soft)",
-            fontSize: 13,
-            fontStyle: "italic",
-            marginBottom: 12,
-          }}
-        >
-          Loading keys…
-        </div>
-      ) : keys.length === 0 ? (
-        <div
-          style={{
-            padding: "14px 12px",
-            background: "rgba(255,255,255,0.4)",
-            border: "1px dashed var(--line)",
-            color: "var(--ink-soft)",
-            fontSize: 13,
-            fontStyle: "italic",
-            marginBottom: 12,
-          }}
-        >
-          No keys in this vault yet.
-        </div>
-      ) : (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: 6,
-            marginBottom: 12,
-          }}
-        >
-          {keys.map((k) => (
-            <div
-              key={k.id}
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                gap: 12,
-                padding: "10px 12px",
-                background: "rgba(255,255,255,0.4)",
-                border: "1px solid var(--line)",
-              }}
-            >
-              <span
-                className="mono"
-                style={{
-                  fontSize: 13,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                  flex: 1,
-                  minWidth: 0,
-                }}
-              >
-                {k.key}
-              </span>
-              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                <IconBtn
-                  label={copiedKey === k.key ? "Copied" : "Copy address"}
-                  onClick={() => void copyAddress(k.key)}
-                  disabled={busy}
-                >
-                  {copiedKey === k.key ? <CheckIcon /> : <CopyIcon />}
-                </IconBtn>
-                <IconBtn
-                  label="Show payment QR"
-                  onClick={() => setQrAddress(k.key)}
-                  disabled={busy}
-                >
-                  <QrIcon />
-                </IconBtn>
-                <IconBtn
-                  label="Backup private key"
-                  onClick={() => setBackupKey(k)}
-                  disabled={busy}
-                >
-                  <KeyIcon />
-                </IconBtn>
-                <HoldDeleteBtn
-                  label={
-                    removingKey === k.key
-                      ? "Removing…"
-                      : "Hold to delete key"
-                  }
-                  onConfirm={() => void removeKey(k)}
-                  disabled={busy}
-                />
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {keysError && (
-        <div
-          style={{
-            marginBottom: 12,
-            padding: "10px 12px",
-            background: "rgba(140,30,40,0.08)",
-            border: "1px solid var(--wine)",
-            color: "var(--wine)",
-            fontSize: 13,
-          }}
-        >
-          {keysError}
-        </div>
-      )}
-
-      {addMode === null && (
-        <Btn
-          kind="ghost"
-          onClick={() => setAddMode("menu")}
-          disabled={busy}
-        >
-          + Add key
-        </Btn>
-      )}
-
-      {addMode === "menu" && (
-        <div
-          style={{
-            display: "flex",
-            flexWrap: "wrap",
-            gap: 8,
-            padding: 12,
-            background: "rgba(255,255,255,0.45)",
-            border: "1px solid var(--line)",
-          }}
-        >
-          <Btn
-            kind="primary"
-            size="sm"
-            onClick={createWallet}
-            disabled={busy}
+          <div
+            className="smallcaps"
+            style={{ fontSize: 11, color: "var(--ink-soft)", marginBottom: 8 }}
           >
-            {adding ? "Creating…" : "Create new wallet"}
-          </Btn>
-          <Btn
-            kind="ghost"
-            size="sm"
-            onClick={() => {
-              setAddMode("import");
-              setAddError(null);
-            }}
-            disabled={busy}
-          >
-            Import private key
-          </Btn>
-          <Btn
-            kind="ghost"
-            size="sm"
-            onClick={closeAddMenu}
-            disabled={busy}
-          >
-            Cancel
-          </Btn>
-        </div>
-      )}
-
-      {addMode === "import" && (
-        <div
-          style={{
-            padding: 12,
-            background: "rgba(255,255,255,0.45)",
-            border: "1px solid var(--line)",
-          }}
-        >
-          <Field label="Private key (0x-prefixed, 64 hex chars)">
-            <Input
-              value={importValue}
-              onChange={(e) => setImportValue(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  void importKey();
-                }
-              }}
-              placeholder="0x…"
-              autoComplete="off"
-              spellCheck={false}
-              type="password"
-              disabled={busy}
-            />
-          </Field>
+            keys (1)
+          </div>
           <div
             style={{
               display: "flex",
-              gap: 8,
-              marginTop: 12,
-              justifyContent: "flex-end",
+              flexDirection: "column",
+              gap: 6,
+              marginBottom: 12,
             }}
           >
-            <Btn kind="ghost" size="sm" onClick={closeAddMenu} disabled={busy}>
-              Cancel
-            </Btn>
-            <Btn
-              kind="primary"
-              size="sm"
-              onClick={importKey}
-              disabled={!importValue.trim() || busy}
-            >
-              {adding ? "Adding…" : "Add"}
-            </Btn>
+            {vault.address ? (
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: 12,
+                  padding: "10px 12px",
+                  background: "rgba(255,255,255,0.4)",
+                  border: "1px solid var(--line)",
+                }}
+              >
+                <span
+                  className="mono"
+                  style={{
+                    fontSize: 13,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                    flex: 1,
+                    minWidth: 0,
+                  }}
+                >
+                  {vault.address}
+                </span>
+                <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                  <IconBtn
+                    label={copiedKey === vault.address ? "Copied" : "Copy address"}
+                    onClick={() => void copyAddress(vault.address!)}
+                    disabled={busy}
+                  >
+                    {copiedKey === vault.address ? <CheckIcon /> : <CopyIcon />}
+                  </IconBtn>
+                  <IconBtn
+                    label="Show payment QR"
+                    onClick={() => setQrAddress(vault.address!)}
+                    disabled={busy}
+                  >
+                    <QrIcon />
+                  </IconBtn>
+                </div>
+              </div>
+            ) : (
+              <div
+                style={{
+                  padding: "14px 12px",
+                  background: "rgba(255,255,255,0.4)",
+                  border: "1px dashed var(--line)",
+                  color: "var(--ink-soft)",
+                  fontSize: 13,
+                  fontStyle: "italic",
+                  marginBottom: 12,
+                }}
+              >
+                No wallet address provisioned yet.
+              </div>
+            )}
           </div>
-        </div>
-      )}
-
-      {addError && (
-        <div
-          style={{
-            marginTop: 12,
-            padding: "10px 12px",
-            background: "rgba(140,30,40,0.08)",
-            border: "1px solid var(--wine)",
-            color: "var(--wine)",
-            fontSize: 13,
-          }}
-        >
-          {addError}
-        </div>
-      )}
         </>
-      )}
-
-      {vault.address && (
-        <div
-          style={{
-            marginTop: 18,
-            padding: 14,
-            background: "rgba(255,255,255,0.45)",
-            border: "1px solid var(--line)",
-          }}
-        >
+      ) : (
+        <>
           <div
             className="smallcaps"
-            style={{
-              fontSize: 11,
-              color: "var(--ink-soft)",
-              marginBottom: 6,
-            }}
+            style={{ fontSize: 11, color: "var(--ink-soft)", marginBottom: 8 }}
           >
-            vault wallet ·{" "}
-            {vault.provider === "orbitport"
-              ? "managed by spacecomputer kms"
-              : "managed by 1claw"}
+            keys ({keys.length})
           </div>
-          <div
-            className="mono"
-            style={{
-              fontSize: 12,
-              color: "var(--verdigris-deep)",
-              wordBreak: "break-all",
-              marginBottom: 6,
-            }}
-          >
-            {vault.address}
-          </div>
-          <div
-            style={{
-              fontSize: 11,
-              color: "var(--ink-soft)",
-              marginBottom: 12,
-              lineHeight: 1.45,
-            }}
-          >
-            The private key lives inside the KMS enclave — only digests cross
-            the wire. Fund this address on Sepolia to run a live signing demo
-            (e.g. via{" "}
-            <a
-              href="https://sepolia-faucet.pk910.de/"
-              target="_blank"
-              rel="noreferrer"
-              style={{ color: "var(--brass-deep)" }}
-            >
-              pk910 faucet
-            </a>
-            ).
-          </div>
-          <Btn
-            kind="ghost"
-            size="sm"
-            onClick={sendTestTx}
-            disabled={signing || busy}
-          >
-            {signing ? "Signing on Sepolia…" : "Send test tx (Sepolia, self-send)"}
-          </Btn>
-          {signTxHash && (
+          {keysLoading && keys.length === 0 ? (
             <div
               style={{
-                marginTop: 10,
-                fontSize: 12,
-                color: "var(--verdigris-deep)",
+                padding: "14px 12px",
+                background: "rgba(255,255,255,0.4)",
+                border: "1px dashed var(--line)",
+                color: "var(--ink-soft)",
+                fontSize: 13,
+                fontStyle: "italic",
+                marginBottom: 12,
               }}
             >
-              ✓ broadcast —{" "}
-              <a
-                className="mono"
-                href={`https://sepolia.etherscan.io/tx/${signTxHash}`}
-                target="_blank"
-                rel="noreferrer"
-                style={{ color: "var(--verdigris-deep)" }}
-              >
-                {signTxHash.slice(0, 10)}…{signTxHash.slice(-8)}
-              </a>
+              Loading keys…
             </div>
-          )}
-          {signError && (
+          ) : keys.length === 0 ? (
             <div
               style={{
-                marginTop: 10,
-                fontSize: 12,
+                padding: "14px 12px",
+                background: "rgba(255,255,255,0.4)",
+                border: "1px dashed var(--line)",
+                color: "var(--ink-soft)",
+                fontSize: 13,
+                fontStyle: "italic",
+                marginBottom: 12,
+              }}
+            >
+              No keys in this vault yet.
+            </div>
+          ) : (
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+                marginBottom: 12,
+              }}
+            >
+              {keys.map((k) => (
+                <div
+                  key={k.id}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: 12,
+                    padding: "10px 12px",
+                    background: "rgba(255,255,255,0.4)",
+                    border: "1px solid var(--line)",
+                  }}
+                >
+                  <span
+                    className="mono"
+                    style={{
+                      fontSize: 13,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      flex: 1,
+                      minWidth: 0,
+                    }}
+                  >
+                    {k.key}
+                  </span>
+                  <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                    <IconBtn
+                      label={copiedKey === k.key ? "Copied" : "Copy address"}
+                      onClick={() => void copyAddress(k.key)}
+                      disabled={busy}
+                    >
+                      {copiedKey === k.key ? <CheckIcon /> : <CopyIcon />}
+                    </IconBtn>
+                    <IconBtn
+                      label="Show payment QR"
+                      onClick={() => setQrAddress(k.key)}
+                      disabled={busy}
+                    >
+                      <QrIcon />
+                    </IconBtn>
+                    <IconBtn
+                      label="Backup private key"
+                      onClick={() => setBackupKey(k)}
+                      disabled={busy}
+                    >
+                      <KeyIcon />
+                    </IconBtn>
+                    <HoldDeleteBtn
+                      label={
+                        removingKey === k.key
+                          ? "Removing…"
+                          : "Hold to delete key"
+                      }
+                      onConfirm={() => void removeKey(k)}
+                      disabled={busy}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {keysError && (
+            <div
+              style={{
+                marginBottom: 12,
+                padding: "10px 12px",
+                background: "rgba(140,30,40,0.08)",
+                border: "1px solid var(--wine)",
                 color: "var(--wine)",
+                fontSize: 13,
               }}
             >
-              {signError}
+              {keysError}
             </div>
           )}
-        </div>
+
+          {addMode === null && (
+            <Btn kind="ghost" onClick={() => setAddMode("menu")} disabled={busy}>
+              + Add key
+            </Btn>
+          )}
+
+          {addMode === "menu" && (
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 8,
+                padding: 12,
+                background: "rgba(255,255,255,0.45)",
+                border: "1px solid var(--line)",
+              }}
+            >
+              <Btn kind="primary" size="sm" onClick={createWallet} disabled={busy}>
+                {adding ? "Creating…" : "Create new wallet"}
+              </Btn>
+              <Btn
+                kind="ghost"
+                size="sm"
+                onClick={() => {
+                  setAddMode("import");
+                  setAddError(null);
+                }}
+                disabled={busy}
+              >
+                Import private key
+              </Btn>
+              <Btn kind="ghost" size="sm" onClick={closeAddMenu} disabled={busy}>
+                Cancel
+              </Btn>
+            </div>
+          )}
+
+          {addMode === "import" && (
+            <div
+              style={{
+                padding: 12,
+                background: "rgba(255,255,255,0.45)",
+                border: "1px solid var(--line)",
+              }}
+            >
+              <Field label="Private key (0x-prefixed, 64 hex chars)">
+                <Input
+                  value={importValue}
+                  onChange={(e) => setImportValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void importKey();
+                    }
+                  }}
+                  placeholder="0x…"
+                  autoComplete="off"
+                  spellCheck={false}
+                  type="password"
+                  disabled={busy}
+                />
+              </Field>
+              <div
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  marginTop: 12,
+                  justifyContent: "flex-end",
+                }}
+              >
+                <Btn kind="ghost" size="sm" onClick={closeAddMenu} disabled={busy}>
+                  Cancel
+                </Btn>
+                <Btn
+                  kind="primary"
+                  size="sm"
+                  onClick={importKey}
+                  disabled={!importValue.trim() || busy}
+                >
+                  {adding ? "Adding…" : "Add"}
+                </Btn>
+              </div>
+            </div>
+          )}
+
+          {addError && (
+            <div
+              style={{
+                marginTop: 12,
+                padding: "10px 12px",
+                background: "rgba(140,30,40,0.08)",
+                border: "1px solid var(--wine)",
+                color: "var(--wine)",
+                fontSize: 13,
+              }}
+            >
+              {addError}
+            </div>
+          )}
+        </>
       )}
 
       {error && (
@@ -2384,15 +2341,15 @@ const Agents = ({
                       a.status === "active"
                         ? "verdigris"
                         : a.status === "paused"
-                        ? "ink"
-                        : "wine"
+                          ? "ink"
+                          : "wine"
                     }
                   >
                     {a.status === "active"
                       ? "● active"
                       : a.status === "paused"
-                      ? "⏸ paused"
-                      : "⚠ review"}
+                        ? "⏸ paused"
+                        : "⚠ review"}
                   </Pill>
                 </div>
                 <div
@@ -2612,7 +2569,7 @@ const CreateAgent = ({
           | { error?: string }
           | null;
         await fetch(`/api/agents/${agentId}`, { method: "DELETE" }).catch(
-          () => {},
+          () => { },
         );
         throw new Error(
           grantPayload?.error ?? `Failed to grant key (${grantRes.status})`,
@@ -2688,12 +2645,12 @@ const CreateAgent = ({
             keysLoading
               ? "Loading keys…"
               : keys.length === 0
-              ? selectedProvider === "orbitport"
-                ? "Open the vault and wait for its KMS wallet to be provisioned."
-                : "This vault has no keys yet. Add one in Vaults & Keys."
-              : selectedProvider === "orbitport"
-              ? "The agent will be granted signing access to this KMS-managed wallet."
-              : "The agent will be granted read access to this key only."
+                ? selectedProvider === "orbitport"
+                  ? "Open the vault and wait for its KMS wallet to be provisioned."
+                  : "This vault has no keys yet. Add one in Vaults & Keys."
+                : selectedProvider === "orbitport"
+                  ? "The agent will be granted signing access to this KMS-managed wallet."
+                  : "The agent will be granted read access to this key only."
           }
         >
           <Select
@@ -2776,8 +2733,8 @@ const CreateAgent = ({
           {submitting
             ? "Registering…"
             : bindMcp
-            ? "Bind & register"
-            : "Register agent"}
+              ? "Bind & register"
+              : "Register agent"}
         </Btn>
       </div>
     </div>
@@ -3138,8 +3095,8 @@ const ChangeAgentKeyModal = ({
               keysLoading
                 ? "Loading…"
                 : keys.length === 0
-                ? "No keys in this vault."
-                : undefined
+                  ? "No keys in this vault."
+                  : undefined
             }
           >
             <Select
@@ -3464,7 +3421,7 @@ const Settings = ({
             )}
           </div>
         </div>
+      </div>
     </div>
-  </div>
   );
 };
