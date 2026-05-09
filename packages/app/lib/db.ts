@@ -84,6 +84,24 @@ const ensureSchema = async (pool: Pool): Promise<void> => {
     CREATE INDEX IF NOT EXISTS agent_ownership_user_idx
       ON agent_ownership(user_id)
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mcp_api_key (
+      id           TEXT PRIMARY KEY,
+      agent_id     TEXT NOT NULL REFERENCES agent_ownership(agent_id) ON DELETE CASCADE,
+      token        TEXT NOT NULL UNIQUE,
+      token_prefix TEXT NOT NULL,
+      created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      revoked_at   TIMESTAMPTZ
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS mcp_api_key_token_idx
+      ON mcp_api_key(token)
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS mcp_api_key_agent_id_idx
+      ON mcp_api_key(agent_id)
+  `);
 };
 
 export const getPool = (): Promise<Pool> => {

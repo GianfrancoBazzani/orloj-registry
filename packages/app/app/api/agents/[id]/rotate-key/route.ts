@@ -1,7 +1,7 @@
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
-import { getOneclawClient } from "@/lib/oneclaw";
 import { assertAgentOwner } from "@/lib/agent-ownership";
+import { issueTokenForAgent, revokeAllTokensForAgent } from "@/lib/mcp-tokens";
 
 export async function POST(
   _request: Request,
@@ -19,26 +19,15 @@ export async function POST(
     return ownership;
   }
 
-  let client;
   try {
-    client = await getOneclawClient();
+    await revokeAllTokensForAgent(id);
+    const issued = await issueTokenForAgent(id);
+    return Response.json({ api_key: issued.token });
   } catch (err) {
-    console.error("[agents] 1claw client init failed", err);
+    console.error("[agents] mcp token rotation failed", err);
     return Response.json(
-      { error: "Agent service is not configured" },
-      { status: 503 },
+      { error: "Failed to rotate agent key" },
+      { status: 500 },
     );
   }
-
-  const { data, error } = await client.agents.rotateKey(id);
-
-  if (error || !data) {
-    console.error("[agents] 1claw rotateKey failed", error);
-    return Response.json(
-      { error: error?.message ?? "Failed to rotate agent key upstream" },
-      { status: 502 },
-    );
-  }
-
-  return Response.json({ api_key: data.api_key });
 }
