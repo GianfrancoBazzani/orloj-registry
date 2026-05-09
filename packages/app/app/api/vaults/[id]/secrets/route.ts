@@ -6,9 +6,9 @@ const KEY_MAX = 256;
 const VALUE_MAX = 65536;
 const TYPE_MAX = 64;
 
-const initClient = () => {
+const initClient = async () => {
   try {
-    return { client: getOneclawClient() } as const;
+    return { client: await getOneclawClient() } as const;
   } catch (err) {
     console.error("[secrets] 1claw client init failed", err);
     return {
@@ -34,7 +34,7 @@ export async function GET(
     return Response.json({ error: "Missing vault id" }, { status: 400 });
   }
 
-  const init = initClient();
+  const init = await initClient();
   if ("response" in init) return init.response;
 
   const { data, error } = await init.client.secrets.list(id);
@@ -117,7 +117,7 @@ export async function POST(
     );
   }
 
-  const init = initClient();
+  const init = await initClient();
   if ("response" in init) return init.response;
 
   const { data, error } = await init.client.secrets.set(

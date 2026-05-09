@@ -2,9 +2,9 @@ import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
 import { getOneclawClient } from "@/lib/oneclaw";
 
-const initClient = () => {
+const initClient = async () => {
   try {
-    return { client: getOneclawClient() } as const;
+    return { client: await getOneclawClient() } as const;
   } catch (err) {
     console.error("[secrets] 1claw client init failed", err);
     return {
@@ -37,7 +37,7 @@ export async function GET(
     );
   }
 
-  const init = initClient();
+  const init = await initClient();
   if ("response" in init) return init.response;
 
   const { data, error } = await init.client.secrets.get(id, secretKey);
@@ -79,7 +79,7 @@ export async function DELETE(
     );
   }
 
-  const init = initClient();
+  const init = await initClient();
   if ("response" in init) return init.response;
 
   const { error } = await init.client.secrets.delete(id, secretKey);

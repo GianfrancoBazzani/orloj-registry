@@ -14,7 +14,7 @@ export async function GET() {
 
   let client;
   try {
-    client = getOneclawClient();
+    client = await getOneclawClient();
   } catch (err) {
     console.error("[vaults] 1claw client init failed", err);
     return Response.json(
@@ -102,7 +102,7 @@ export async function POST(request: Request) {
 
   let client;
   try {
-    client = getOneclawClient();
+    client = await getOneclawClient();
   } catch (err) {
     console.error("[vaults] 1claw client init failed", err);
     return Response.json(

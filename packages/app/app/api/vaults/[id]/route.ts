@@ -18,7 +18,7 @@ export async function DELETE(
 
   let client;
   try {
-    client = getOneclawClient();
+    client = await getOneclawClient();
   } catch (err) {
     console.error("[vaults] 1claw client init failed", err);
     return Response.json(
