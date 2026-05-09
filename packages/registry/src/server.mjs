@@ -3,43 +3,13 @@ import cors from "cors";
 import path from "node:path";
 import { stat, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import * as registry from "./registry.mjs";
 import { loadMcp, isValidName } from "./loader.mjs";
 import { watchMcps } from "./watcher.mjs";
+import { buildContractMcp } from "./mcpBuilder.mjs";
 
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
-
-function normalizeAddress(address) {
-  return address.toLowerCase();
-}
-
-function deriveName(networkId, address) {
-  return `${networkId}-${normalizeAddress(address)}`;
-}
-
-function buildContractMcp(name, { networkId, address }) {
-  const server = new McpServer({ name, version: "1.0.0" });
-  server.registerTool(
-    "info",
-    {
-      title: "Contract info",
-      description:
-        "Returns the network id and address this MCP was registered with.",
-      inputSchema: {},
-    },
-    async () => ({
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({ networkId, address }, null, 2),
-        },
-      ],
-    }),
-  );
-  return server;
-}
 
 const PORT = Number.parseInt(process.env.PORT ?? "3001", 10);
 const PACKAGE_ROOT = path.resolve(fileURLToPath(import.meta.url), "../..");
@@ -139,20 +109,25 @@ app.post("/register", async (req, res) => {
     return;
   }
 
-  const name = deriveName(networkIdNum, address);
-  if (!isValidName(name)) {
-    res.status(400).json({ error: `derived name "${name}" is invalid` });
+  let name;
+  try {
+    name = await buildContractMcp(MCPS_DIR, networkIdNum, address);
+  } catch (err) {
+    console.error(`[registry] build failed:`, err);
+    res.status(500).json({ error: "failed to build MCP package" });
     return;
   }
-
-  const meta = { networkId: networkIdNum, address: normalizeAddress(address) };
-  const server = buildContractMcp(name, meta);
-  await registry.set(name, server);
+  await syncMcp(name);
+  if (!registry.get(name)) {
+    res.status(500).json({ error: `failed to load MCP "${name}"` });
+    return;
+  }
   console.log(`[registry] registered "${name}"`);
   res.status(201).json({
     name,
     url: `/interface/${name}/mcp`,
-    ...meta,
+    networkId: networkIdNum,
+    address: address.toLowerCase(),
   });
 });
 
