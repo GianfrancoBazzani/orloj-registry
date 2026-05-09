@@ -1,4 +1,3 @@
-import { Suspense } from "react";
 import { Explore } from "@/components/explore";
 import type { Mcp } from "@/components/data";
 
