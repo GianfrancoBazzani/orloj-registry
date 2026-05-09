@@ -177,7 +177,6 @@ export const Profile = () => {
     { id: "overview", l: "Overview" },
     { id: "vaults", l: "Vaults & Keys" },
     { id: "agents", l: "Agents" },
-    { id: "activity", l: "Activity" },
     { id: "settings", l: "Settings" },
   ];
 
@@ -370,7 +369,6 @@ export const Profile = () => {
               user={user ?? undefined}
               vaults={vaults}
               agents={agents}
-              setTab={setTab}
               onNavigate={onNavigate}
             />
           )}
@@ -399,9 +397,8 @@ export const Profile = () => {
               reload={reloadAgents}
             />
           )}
-          {tab === "activity" && <Activity agents={agents} />}
           {tab === "settings" && (
-            <Settings user={user!} onSignOut={handleSignOut} />
+            <Settings user={user!} />
           )}
         </div>
       </div>
@@ -412,13 +409,11 @@ export const Profile = () => {
 const Overview = ({
   vaults,
   agents,
-  setTab,
   onNavigate,
 }: {
   user?: User;
   vaults: Vault[];
   agents: Agent[];
-  setTab: (t: string) => void;
   onNavigate: (r: string) => void;
 }) => (
   <div>
@@ -504,32 +499,10 @@ const Overview = ({
       }}
     >
       <div>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "baseline",
-          }}
-        >
-          <h3 className="display" style={{ fontSize: 20, margin: 0 }}>
-            Recent activity
-          </h3>
-          <button
-            onClick={() => setTab("activity")}
-            className="smallcaps"
-            style={{
-              background: "none",
-              border: "none",
-              cursor: "pointer",
-              fontSize: 11,
-              color: "var(--brass-deep)",
-              fontFamily: "var(--font-ui)",
-            }}
-          >
-            view all →
-          </button>
-        </div>
-        <ActivityFeed compact agents={agents} />
+        <h3 className="display" style={{ fontSize: 20, margin: 0 }}>
+          Recent activity
+        </h3>
+        <ActivityFeed compact />
       </div>
       <div>
         <h3 className="display" style={{ fontSize: 20, margin: 0 }}>
@@ -3081,7 +3054,6 @@ const ActivityFeed = ({
   compact,
 }: {
   compact?: boolean;
-  agents?: Agent[];
 }) => {
   const events = [
     {
@@ -3175,27 +3147,11 @@ const ActivityFeed = ({
   );
 };
 
-const Activity = ({ agents }: { agents: Agent[] }) => (
-  <div>
-    <h2 className="display" style={{ fontSize: 28, margin: 0 }}>
-      Activity
-    </h2>
-    <p
-      className="poetic"
-      style={{ fontSize: 17, color: "var(--ink-soft)", marginTop: 4 }}
-    >
-      Every bell that rang. Every one that didn&apos;t.
-    </p>
-    <ActivityFeed agents={agents} />
-  </div>
-);
 
 const Settings = ({
   user,
-  onSignOut,
 }: {
   user: User;
-  onSignOut: () => Promise<void>;
 }) => {
   const [name, setName] = useState(user.name);
   const [saving, setSaving] = useState(false);
@@ -3225,9 +3181,6 @@ const Settings = ({
       </h2>
       <div
         style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          gap: 24,
           marginTop: 18,
         }}
       >
@@ -3280,57 +3233,7 @@ const Settings = ({
               <span style={{ fontSize: 12, color: "#a14545" }}>{error}</span>
             )}
           </div>
-          <div
-            style={{
-              marginTop: 22,
-              paddingTop: 18,
-              borderTop: "1px solid var(--line)",
-            }}
-          >
-            <Btn kind="primary" size="sm" onClick={onSignOut}>
-              Sign out of this device
-            </Btn>
-          </div>
         </div>
-      <div
-        style={{
-          padding: 22,
-          background: "rgba(241,233,212,0.55)",
-          border: "1px solid var(--line)",
-        }}
-      >
-        <h3 className="display" style={{ fontSize: 18, margin: 0 }}>
-          API & webhooks
-        </h3>
-        <div
-          style={{
-            marginTop: 14,
-            padding: 12,
-            background: "var(--ink)",
-            color: "var(--brass-bright)",
-          }}
-        >
-          <div className="smallcaps" style={{ fontSize: 9, opacity: 0.5 }}>
-            orloj api key
-          </div>
-          <div className="mono" style={{ fontSize: 12, marginTop: 4 }}>
-            orloj_pk_•••••••••••••••••••••
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-          <Btn size="sm" kind="ghost">
-            Reveal
-          </Btn>
-          <Btn size="sm" kind="ghost">
-            Rotate
-          </Btn>
-        </div>
-        <div style={{ marginTop: 18 }}>
-          <Field label="Webhook URL">
-            <Input placeholder="https://your-server.com/orloj-events" />
-          </Field>
-        </div>
-      </div>
     </div>
   </div>
   );
