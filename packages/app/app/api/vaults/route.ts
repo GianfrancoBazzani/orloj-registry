@@ -1,15 +1,46 @@
 import { headers } from "next/headers";
-import { randomBytes } from "node:crypto";
 import { auth } from "@/lib/auth";
+import { getOneclawClient } from "@/lib/oneclaw";
 import type { Vault } from "@/components/data";
 
 const NAME_MAX = 80;
 const DESCRIPTION_MAX = 500;
 
-const randomHex = (bytes: number) => randomBytes(bytes).toString("hex");
+export async function GET() {
+  const session = await auth.api.getSession({ headers: await headers() });
+  if (!session) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
 
-const mockAddress = () =>
-  "0x" + randomHex(4) + "..." + randomHex(2);
+  let client;
+  try {
+    client = getOneclawClient();
+  } catch (err) {
+    console.error("[vaults] 1claw client init failed", err);
+    return Response.json(
+      { error: "Vault service is not configured" },
+      { status: 503 },
+    );
+  }
+
+  const { data, error } = await client.vault.list();
+
+  if (error || !data) {
+    console.error("[vaults] 1claw list failed", error);
+    return Response.json(
+      { error: error?.message ?? "Failed to list vaults upstream" },
+      { status: 502 },
+    );
+  }
+
+  const vaults: Vault[] = data.vaults.map((v) => ({
+    id: v.id,
+    name: v.name,
+    description: v.description ?? "",
+  }));
+
+  return Response.json({ vaults });
+}
 
 export async function POST(request: Request) {
   const session = await auth.api.getSession({ headers: await headers() });
@@ -54,16 +85,34 @@ export async function POST(request: Request) {
     );
   }
 
-  const vault: Vault = {
-    id: "v-" + randomHex(6),
+  let client;
+  try {
+    client = getOneclawClient();
+  } catch (err) {
+    console.error("[vaults] 1claw client init failed", err);
+    return Response.json(
+      { error: "Vault service is not configured" },
+      { status: 503 },
+    );
+  }
+
+  const { data, error } = await client.vault.create({
     name: trimmedName,
     description: trimmedDescription,
-    address: mockAddress(),
-    kms: "Turnkey",
-    policy: "no policy",
-    keys: 1,
-    lastUsed: "just now",
-    color: "brass",
+  });
+
+  if (error || !data) {
+    console.error("[vaults] 1claw create failed", error);
+    return Response.json(
+      { error: error?.message ?? "Failed to create vault upstream" },
+      { status: 502 },
+    );
+  }
+
+  const vault: Vault = {
+    id: data.id,
+    name: data.name,
+    description: data.description ?? "",
   };
 
   return Response.json({ vault }, { status: 201 });

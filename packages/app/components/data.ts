@@ -21,12 +21,6 @@ export interface Vault {
   id: string;
   name: string;
   description: string;
-  address: string;
-  kms: string;
-  policy: string;
-  keys: number;
-  lastUsed: string;
-  color: string;
 }
 
 export interface Agent {

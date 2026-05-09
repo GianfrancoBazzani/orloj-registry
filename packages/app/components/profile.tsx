@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "./auth-context";
 import { authClient } from "@/lib/auth-client";
@@ -55,7 +55,38 @@ export const Profile = () => {
   const [creatingVault, setCreatingVault] = useState(false);
   const [creatingAgent, setCreatingAgent] = useState(!!bindMcp);
   const [vaults, setVaults] = useState<Vault[]>([]);
+  const [vaultsLoading, setVaultsLoading] = useState(false);
+  const [vaultsError, setVaultsError] = useState<string | null>(null);
+  const [editingVaultId, setEditingVaultId] = useState<string | null>(null);
   const [agents, setAgents] = useState<Agent[]>(USER_AGENTS);
+
+  useEffect(() => {
+    if (!user) return;
+    const ac = new AbortController();
+    const run = async () => {
+      setVaultsLoading(true);
+      setVaultsError(null);
+      try {
+        const res = await fetch("/api/vaults", { signal: ac.signal });
+        const payload = (await res.json().catch(() => null)) as
+          | { vaults?: Vault[]; error?: string }
+          | null;
+        if (!res.ok) {
+          throw new Error(payload?.error ?? `Request failed (${res.status})`);
+        }
+        setVaults(payload?.vaults ?? []);
+      } catch (err: unknown) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        setVaultsError(
+          err instanceof Error ? err.message : "Failed to load vaults",
+        );
+      } finally {
+        if (!ac.signal.aborted) setVaultsLoading(false);
+      }
+    };
+    void Promise.resolve().then(run);
+    return () => ac.abort();
+  }, [user]);
 
   const tabs = [
     { id: "overview", l: "Overview" },
@@ -264,6 +295,10 @@ export const Profile = () => {
               setVaults={setVaults}
               creating={creatingVault}
               setCreating={setCreatingVault}
+              loading={vaultsLoading}
+              error={vaultsError}
+              editingVaultId={editingVaultId}
+              setEditingVaultId={setEditingVaultId}
             />
           )}
           {tab === "agents" && (
@@ -459,54 +494,115 @@ const Vaults = ({
   setVaults,
   creating,
   setCreating,
+  loading,
+  error,
+  editingVaultId,
+  setEditingVaultId,
 }: {
   vaults: Vault[];
   setVaults: React.Dispatch<React.SetStateAction<Vault[]>>;
   creating: boolean;
   setCreating: (v: boolean) => void;
+  loading: boolean;
+  error: string | null;
+  editingVaultId: string | null;
+  setEditingVaultId: (id: string | null) => void;
 }) => {
-  const [revealed, setRevealed] = useState<Record<string, boolean>>({});
+  const editingVault = editingVaultId
+    ? (vaults.find((v) => v.id === editingVaultId) ?? null)
+    : null;
   return (
-    <div>
+  <div>
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "baseline",
+        marginBottom: 18,
+      }}
+    >
+      <div>
+        <h2 className="display" style={{ fontSize: 28, margin: 0 }}>
+          Vaults
+        </h2>
+        <p
+          className="poetic"
+          style={{
+            fontSize: 17,
+            color: "var(--ink-soft)",
+            marginTop: 4,
+            marginBottom: 0,
+          }}
+        >
+          Custody routed through KMS providers. Keys never leave the enclave.
+        </p>
+      </div>
+      <Btn kind="primary" onClick={() => setCreating(true)}>
+        + Create vault
+      </Btn>
+    </div>
+
+    {creating && (
+      <CreateVault
+        onCancel={() => setCreating(false)}
+        onCreate={(vault) => {
+          setVaults([...vaults, vault]);
+          setCreating(false);
+        }}
+      />
+    )}
+
+    {editingVault && (
+      <EditVault
+        vault={editingVault}
+        onClose={() => setEditingVaultId(null)}
+        onDeleted={(id: string) => {
+          setVaults((vs) => vs.filter((x) => x.id !== id));
+          setEditingVaultId(null);
+        }}
+      />
+    )}
+
+    {error && (
       <div
         style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "baseline",
+          padding: "12px 14px",
+          background: "rgba(140,30,40,0.08)",
+          border: "1px solid var(--wine)",
+          color: "var(--wine)",
+          fontSize: 13,
           marginBottom: 18,
         }}
       >
-        <div>
-          <h2 className="display" style={{ fontSize: 28, margin: 0 }}>
-            Vaults & private keys
-          </h2>
-          <p
-            className="poetic"
-            style={{
-              fontSize: 17,
-              color: "var(--ink-soft)",
-              marginTop: 4,
-              marginBottom: 0,
-            }}
-          >
-            Custody routed through KMS providers. Keys never leave the enclave.
-          </p>
-        </div>
-        <Btn kind="primary" onClick={() => setCreating(true)}>
-          + Create vault
-        </Btn>
+        {error}
       </div>
+    )}
 
-      {creating && (
-        <CreateVault
-          onCancel={() => setCreating(false)}
-          onCreate={(vault) => {
-            setVaults([...vaults, vault]);
-            setCreating(false);
-          }}
-        />
-      )}
-
+    {loading && vaults.length === 0 && !error ? (
+      <div
+        className="poetic"
+        style={{
+          padding: "40px 20px",
+          textAlign: "center",
+          color: "var(--ink-soft)",
+          fontSize: 16,
+        }}
+      >
+        Loading vaults…
+      </div>
+    ) : !loading && vaults.length === 0 && !error ? (
+      <div
+        className="poetic"
+        style={{
+          padding: "40px 20px",
+          textAlign: "center",
+          color: "var(--ink-soft)",
+          fontSize: 16,
+        }}
+      >
+        No vaults yet — create one to get started.
+      </div>
+    ) : (
       <div
         style={{
           display: "grid",
@@ -514,166 +610,81 @@ const Vaults = ({
           gap: 18,
         }}
       >
-        {vaults.map((v) => {
-          const accent =
-            v.color === "verdigris"
-              ? "var(--verdigris)"
-              : v.color === "brass"
-              ? "var(--brass)"
-              : "var(--stained-blue)";
-          return (
+        {vaults.map((v) => (
+          <div
+            key={v.id}
+            style={{
+              position: "relative",
+              padding: 20,
+              background: "rgba(241,233,212,0.55)",
+              border: "1px solid var(--line)",
+              borderLeft: "4px solid var(--brass)",
+            }}
+          >
             <div
-              key={v.id}
               style={{
-                position: "relative",
-                padding: 20,
-                background: "rgba(241,233,212,0.55)",
-                border: "1px solid var(--line)",
-                borderLeft: `4px solid ${accent}`,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                gap: 12,
               }}
             >
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "flex-start",
-                }}
-              >
-                <div style={{ minWidth: 0, paddingRight: 12 }}>
-                  <div className="display" style={{ fontSize: 18 }}>
-                    {v.name}
-                  </div>
-                  {v.description && (
-                    <div
-                      style={{
-                        fontSize: 12.5,
-                        color: "var(--ink-soft)",
-                        marginTop: 4,
-                        lineHeight: 1.4,
-                      }}
-                    >
-                      {v.description}
-                    </div>
-                  )}
+              <div style={{ minWidth: 0 }}>
+                <div className="display" style={{ fontSize: 18 }}>
+                  {v.name}
+                </div>
+                {v.description && (
                   <div
-                    className="smallcaps"
                     style={{
-                      fontSize: 10,
+                      fontSize: 12.5,
                       color: "var(--ink-soft)",
-                      marginTop: 6,
+                      marginTop: 4,
+                      lineHeight: 1.4,
                     }}
                   >
-                    kms · {v.kms}
+                    {v.description}
                   </div>
-                </div>
-                <Pill tone="verdigris">● secured</Pill>
+                )}
               </div>
-              <div
-                style={{
-                  marginTop: 14,
-                  padding: 10,
-                  background: "var(--ink)",
-                  color: "var(--brass-bright)",
-                }}
-              >
-                <div
-                  className="smallcaps"
-                  style={{ fontSize: 9, color: "rgba(241,233,212,0.5)" }}
-                >
-                  address
-                </div>
-                <div className="mono" style={{ fontSize: 12 }}>
-                  {v.address}
-                </div>
-              </div>
-              <div
-                style={{
-                  marginTop: 12,
-                  padding: 10,
-                  background: "rgba(255,255,255,0.4)",
-                  border: "1px solid var(--line)",
-                }}
-              >
-                <div
-                  className="smallcaps"
-                  style={{ fontSize: 9, color: "var(--ink-soft)" }}
-                >
-                  private key
-                </div>
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    marginTop: 4,
-                  }}
-                >
-                  <div
-                    className="mono"
-                    style={{
-                      fontSize: 12,
-                      color: "var(--ink)",
-                      letterSpacing: "0.04em",
-                    }}
-                  >
-                    {revealed[v.id]
-                      ? "0x4f3a2c...e1d8b9 (last 6 of 64)"
-                      : "•••• •••• •••• •••• •••• •••• ••••"}
-                  </div>
-                  <button
-                    onClick={() =>
-                      setRevealed((r) => ({ ...r, [v.id]: !r[v.id] }))
-                    }
-                    className="smallcaps"
-                    style={{
-                      background: "none",
-                      border: "none",
-                      cursor: "pointer",
-                      fontSize: 10,
-                      color: "var(--brass-deep)",
-                      fontFamily: "var(--font-ui)",
-                    }}
-                  >
-                    {revealed[v.id] ? "hide" : "reveal"}
-                  </button>
-                </div>
-              </div>
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(3, 1fr)",
-                  gap: 8,
-                  marginTop: 14,
-                }}
-              >
-                <KV l="policy" v={v.policy} />
-                <KV l="keys" v={v.keys} />
-                <KV l="last used" v={v.lastUsed} />
-              </div>
-              <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
-                <Btn size="sm" kind="ghost">
-                  Edit policy
-                </Btn>
-                <Btn size="sm" kind="ghost">
-                  Rotate
-                </Btn>
-              </div>
+              <Pill tone="verdigris">● secured</Pill>
             </div>
-          );
-        })}
+            <div
+              className="mono"
+              style={{
+                marginTop: 14,
+                fontSize: 11,
+                color: "var(--ink-soft)",
+                wordBreak: "break-all",
+              }}
+            >
+              {v.id}
+            </div>
+            <div
+              className="smallcaps"
+              style={{
+                marginTop: 14,
+                fontSize: 10,
+                color: "var(--ink-soft)",
+              }}
+            >
+              3 keys
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+              <Btn
+                size="sm"
+                kind="ghost"
+                onClick={() => setEditingVaultId(v.id)}
+              >
+                Edit
+              </Btn>
+            </div>
+          </div>
+        ))}
       </div>
-    </div>
+    )}
+  </div>
   );
 };
-
-const KV = ({ l, v }: { l: string; v: string | number }) => (
-  <div>
-    <div className="smallcaps" style={{ fontSize: 9, color: "var(--ink-soft)" }}>
-      {l}
-    </div>
-    <div style={{ fontSize: 12, color: "var(--ink)", marginTop: 2 }}>{v}</div>
-  </div>
-);
 
 const CreateVault = ({
   onCancel,
@@ -803,8 +814,261 @@ const CreateVault = ({
           disabled={!name.trim() || submitting}
           onClick={submit}
         >
-          {submitting ? "Creating…" : "Generate keypair"}
+          {submitting ? "Creating…" : "Generate vault"}
         </Btn>
+      </div>
+    </div>
+  );
+};
+
+const EditVault = ({
+  vault,
+  onClose,
+  onDeleted,
+}: {
+  vault: Vault;
+  onClose: () => void;
+  onDeleted: (id: string) => void;
+}) => {
+  const [keys, setKeys] = useState<string[]>([]);
+  const [newKey, setNewKey] = useState("");
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const addKey = () => {
+    const trimmed = newKey.trim();
+    if (!trimmed || keys.includes(trimmed)) return;
+    setKeys([...keys, trimmed]);
+    setNewKey("");
+  };
+
+  const removeKey = (k: string) => {
+    setKeys(keys.filter((x) => x !== k));
+  };
+
+  const deleteVault = async () => {
+    if (deleting) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/vaults/${vault.id}`, { method: "DELETE" });
+      if (res.status === 401) {
+        setError("Your session has expired. Please sign in again.");
+        return;
+      }
+      if (!res.ok && res.status !== 204) {
+        const payload = (await res.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        setError(payload?.error ?? `Request failed (${res.status})`);
+        return;
+      }
+      onDeleted(vault.id);
+    } catch {
+      setError("Network error. Please try again.");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        padding: 24,
+        marginBottom: 20,
+        background: "var(--parchment-2)",
+        border: "2px solid var(--brass)",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          gap: 10,
+          alignItems: "center",
+          marginBottom: 4,
+        }}
+      >
+        <GearIcon size={20} />
+        <h3 className="display" style={{ fontSize: 18, margin: 0 }}>
+          Edit vault
+        </h3>
+      </div>
+      <div
+        style={{
+          fontSize: 13,
+          color: "var(--ink-soft)",
+          marginBottom: 18,
+        }}
+      >
+        {vault.name}
+      </div>
+
+      <div
+        className="smallcaps"
+        style={{
+          fontSize: 11,
+          color: "var(--ink-soft)",
+          marginBottom: 8,
+        }}
+      >
+        keys ({keys.length})
+      </div>
+      {keys.length === 0 ? (
+        <div
+          style={{
+            padding: "14px 12px",
+            background: "rgba(255,255,255,0.4)",
+            border: "1px dashed var(--line)",
+            color: "var(--ink-soft)",
+            fontSize: 13,
+            fontStyle: "italic",
+            marginBottom: 12,
+          }}
+        >
+          No keys in this vault yet.
+        </div>
+      ) : (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
+            marginBottom: 12,
+          }}
+        >
+          {keys.map((k) => (
+            <div
+              key={k}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                padding: "10px 12px",
+                background: "rgba(255,255,255,0.4)",
+                border: "1px solid var(--line)",
+              }}
+            >
+              <span className="mono" style={{ fontSize: 13 }}>
+                {k}
+              </span>
+              <button
+                onClick={() => removeKey(k)}
+                className="smallcaps"
+                style={{
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  fontSize: 11,
+                  color: "var(--wine)",
+                  fontFamily: "var(--font-ui)",
+                }}
+                disabled={deleting}
+              >
+                remove
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
+        <Input
+          value={newKey}
+          onChange={(e) => setNewKey(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addKey();
+            }
+          }}
+          placeholder="new key name"
+          disabled={deleting}
+        />
+        <Btn
+          kind="ghost"
+          onClick={addKey}
+          disabled={!newKey.trim() || deleting}
+        >
+          + Add
+        </Btn>
+      </div>
+
+      {error && (
+        <div
+          style={{
+            marginTop: 14,
+            padding: "10px 12px",
+            background: "rgba(140,30,40,0.08)",
+            border: "1px solid var(--wine)",
+            color: "var(--wine)",
+            fontSize: 13,
+          }}
+        >
+          {error}
+        </div>
+      )}
+
+      <div
+        style={{
+          display: "flex",
+          gap: 12,
+          marginTop: 22,
+          paddingTop: 18,
+          borderTop: "1px solid var(--line)",
+          justifyContent: "space-between",
+          alignItems: "center",
+        }}
+      >
+        <Btn kind="ghost" onClick={onClose} disabled={deleting}>
+          Close
+        </Btn>
+        {confirmingDelete ? (
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <span
+              style={{
+                fontSize: 13,
+                color: "var(--ink-soft)",
+                marginRight: 4,
+              }}
+            >
+              Delete this vault?
+            </span>
+            <Btn
+              size="sm"
+              kind="ghost"
+              onClick={() => setConfirmingDelete(false)}
+              disabled={deleting}
+            >
+              Cancel
+            </Btn>
+            <Btn
+              size="sm"
+              kind="primary"
+              onClick={deleteVault}
+              disabled={deleting}
+              style={{
+                background: "var(--wine)",
+                borderColor: "var(--wine)",
+                color: "var(--parchment)",
+              }}
+            >
+              {deleting ? "Deleting…" : "Yes, delete"}
+            </Btn>
+          </div>
+        ) : (
+          <Btn
+            kind="ghost"
+            onClick={() => setConfirmingDelete(true)}
+            disabled={deleting}
+            style={{
+              color: "var(--wine)",
+              borderColor: "var(--wine)",
+            }}
+          >
+            Delete vault
+          </Btn>
+        )}
       </div>
     </div>
   );
