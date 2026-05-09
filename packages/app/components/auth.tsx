@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import Image from "next/image";
 import { OrlojMark, StainedPanel, Pill, Btn } from "./ornaments";
 
 export const LoginModal = ({
@@ -338,7 +339,7 @@ export const TopNav = ({
             cursor: "pointer",
           }}
         >
-          <OrlojMark size={36} />
+          <Image src="/logo.png" alt="Orloj" width={36} height={36} />
           <div>
             <div
               className="display"

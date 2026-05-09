@@ -1,6 +1,5 @@
 "use client";
 import { useRouter } from "next/navigation";
-import { useAuth } from "./auth-context";
 import {
   Pill,
   Btn,
@@ -14,10 +13,8 @@ import {
 
 export const Landing = () => {
   const router = useRouter();
-  const { setShowLogin } = useAuth();
   const onNavigate = (r: string) => router.push(r === "home" ? "/" : `/${r}`);
-  const onLogin = () => setShowLogin(true);
-  const stats = [
+const stats = [
     { v: "142", l: "registered MCPs" },
     { v: "38", l: "chains indexed" },
     { v: "1.2M", l: "tool calls / day" },
@@ -312,40 +309,6 @@ export const Landing = () => {
         </div>
       </section>
 
-      {/* FOOTER STRIP */}
-      <section style={{ padding: "64px 32px 80px" }}>
-        <div
-          style={{
-            maxWidth: 1200,
-            margin: "0 auto",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-end",
-            flexWrap: "wrap",
-            gap: 24,
-          }}
-        >
-          <div>
-            <div className="poetic" style={{ fontSize: 28, color: "var(--ink)" }}>
-              Built in the shadow of Týn,
-            </div>
-            <div
-              className="poetic"
-              style={{ fontSize: 28, color: "var(--ink-soft)" }}
-            >
-              for the agents that come after us.
-            </div>
-          </div>
-          <div style={{ display: "flex", gap: 12 }}>
-            <Btn kind="brass" onClick={() => onLogin()}>
-              Sign in to begin
-            </Btn>
-            <Btn kind="ghost" onClick={() => onNavigate("explore")}>
-              Or peek inside
-            </Btn>
-          </div>
-        </div>
-      </section>
     </main>
   );
 };
