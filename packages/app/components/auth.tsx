@@ -352,12 +352,6 @@ export const TopNav = ({
             >
               ORLOJ
             </div>
-            <div
-              className="smallcaps"
-              style={{ fontSize: 9, color: "var(--ink-soft)", marginTop: 2 }}
-            >
-              registry · v0.4
-            </div>
           </div>
         </button>
         <nav style={{ display: "flex", gap: 4, marginLeft: 24 }}>

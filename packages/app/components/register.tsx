@@ -764,7 +764,7 @@ const Step3 = ({
         className="mono"
         style={{ fontSize: 11.5, lineHeight: 1.6, margin: 0 }}
       >{`{
-  "schema": "orloj.manifest/v0.4",
+  "schema": "orloj.manifest",
   "name":   "${form.name || "Untitled MCP"}",
   "summary":"${form.summary || ""}",
   "chain":  "${form.chain}",
@@ -793,10 +793,6 @@ ${(abi || [])
       }}
     >
       <span style={{ color: "var(--brass-deep)", fontSize: 18 }}>⚠</span>
-      <span>
-        Once struck, the manifest hash is immutable. Future revisions are
-        append-only — operators can pin to v0.4 indefinitely.
-      </span>
     </div>
   </div>
 );
