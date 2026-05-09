@@ -44,7 +44,7 @@ app.get("/mcp", (_req, res) => {
 });
 
 app.post("/register", async (req, res) => {
-  const { chainId, address } = req.body ?? {};
+  const { chainId, address, rpcUrl } = req.body ?? {};
 
   if (!Number.isFinite(Number(chainId))) {
     res.status(400).json({ error: "chainId must be a number" });
@@ -52,6 +52,10 @@ app.post("/register", async (req, res) => {
   }
   if (!ADDRESS_RE.test(address ?? "")) {
     res.status(400).json({ error: "address must be 0x-prefixed 20-byte hex" });
+    return;
+  }
+  if (rpcUrl != null && (typeof rpcUrl !== "string" || rpcUrl.length === 0)) {
+    res.status(400).json({ error: "rpcUrl must be a non-empty string" });
     return;
   }
 
@@ -81,6 +85,7 @@ app.post("/register", async (req, res) => {
       throw new Error("contracts.json must be a JSON array");
     }
     const entry = { chainId: numericChainId, address, implementation };
+    if (rpcUrl) entry.rpcUrl = rpcUrl;
     const existingIdx = contracts.findIndex(
       (c) =>
         Number(c?.chainId) === numericChainId &&
@@ -104,6 +109,7 @@ app.post("/register", async (req, res) => {
       chainId: numericChainId,
       address,
       implementation: impl,
+      rpcUrl: rpcUrl || undefined,
     });
     await registry.set(name, built);
     console.log(
@@ -115,6 +121,7 @@ app.post("/register", async (req, res) => {
       chainId: numericChainId,
       address,
       implementation,
+      rpcUrl: rpcUrl || null,
       url: `/interface/${name}/mcp`,
     });
   } catch (err) {
@@ -154,7 +161,7 @@ async function registerContracts() {
   }
 
   for (const entry of contracts) {
-    const { chainId, address, implementation } = entry ?? {};
+    const { chainId, address, implementation, rpcUrl } = entry ?? {};
     if (!Number.isFinite(Number(chainId))) {
       console.error(`[registry] skipping invalid entry:`, entry);
       continue;
@@ -174,6 +181,7 @@ async function registerContracts() {
         chainId,
         address: isNative ? false : address,
         implementation: isNative ? false : impl,
+        rpcUrl: typeof rpcUrl === "string" && rpcUrl.length > 0 ? rpcUrl : undefined,
       });
       await registry.set(name, built);
       console.log(

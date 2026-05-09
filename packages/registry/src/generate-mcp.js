@@ -1,9 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { createPublicClient, createWalletClient, http } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
+import { createPublicClient, http, webSocket } from "viem";
 import * as viemChains from "viem/chains";
 import { z } from "zod";
 import { getContract } from "./get-contract.js";
+import { signTransaction } from "./sign-transaction.js";
 
 function findChain(chainId) {
   const id = Number(chainId);
@@ -25,7 +25,7 @@ const WEI_SCHEMA = z
   .regex(/^\d+$/)
   .describe("Amount in wei (decimal string)");
 
-function buildNativeTokenMcp({ chain, publicClient, walletClient, account }) {
+function buildNativeTokenMcp({ chain, publicClient }) {
   const chainId = chain.id;
   const name = `native_token_chain_id_${chainId}`;
   const symbol = chain.nativeCurrency?.symbol ?? "ETH";
@@ -62,35 +62,18 @@ function buildNativeTokenMcp({ chain, publicClient, walletClient, account }) {
     transferDoc,
     { to: ADDRESS_SCHEMA, value: WEI_SCHEMA },
     async ({ to, value }) => {
-      if (!walletClient || !account) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: "Error: PRIVATE_KEY env var required to sign transactions",
-            },
-          ],
-          isError: true,
-        };
-      }
       try {
-        const request = await walletClient.prepareTransactionRequest({
+        const serializedTransaction = await signTransaction({
+          chain,
           to,
           value: BigInt(value),
-          account,
-          chain,
         });
-        const signedTx = await walletClient.signTransaction(request);
+        const hash = await publicClient.sendRawTransaction({
+          serializedTransaction,
+        });
         return {
           content: [
-            {
-              type: "text",
-              text: JSON.stringify(
-                { signedTransaction: signedTx },
-                serialize,
-                2,
-              ),
-            },
+            { type: "text", text: JSON.stringify({ hash }, serialize, 2) },
           ],
         };
       } catch (e) {
@@ -129,17 +112,14 @@ export async function buildMcp({ chainId, address, implementation, rpcUrl }) {
     throw new Error(`unknown chainId ${chainId}: not found in viem/chains`);
   }
 
-  const transport = http(rpcUrl || undefined, { timeout: 10_000 });
+  const isWs = typeof rpcUrl === "string" && /^wss?:\/\//i.test(rpcUrl);
+  const transport = isWs
+    ? webSocket(rpcUrl)
+    : http(rpcUrl || undefined, { timeout: 10_000 });
   const publicClient = createPublicClient({ chain, transport });
 
-  const PRIVATE_KEY = process.env.PRIVATE_KEY;
-  const account = PRIVATE_KEY ? privateKeyToAccount(PRIVATE_KEY) : null;
-  const walletClient = account
-    ? createWalletClient({ account, chain, transport })
-    : null;
-
   if (!address && !implementation) {
-    return buildNativeTokenMcp({ chain, publicClient, walletClient, account });
+    return buildNativeTokenMcp({ chain, publicClient });
   }
 
   const abiAddress = implementation || address;
@@ -197,35 +177,18 @@ export async function buildMcp({ chainId, address, implementation, rpcUrl }) {
         fn.doc || fn.name,
         fn.input.shape,
         async (args) => {
-          if (!walletClient || !account) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: "Error: PRIVATE_KEY env var required to sign transactions",
-                },
-              ],
-              isError: true,
-            };
-          }
           try {
-            const request = await walletClient.prepareTransactionRequest({
+            const serializedTransaction = await signTransaction({
+              chain,
               to: address,
               data: fn.encodeData(args),
-              account,
-              chain,
             });
-            const signedTx = await walletClient.signTransaction(request);
+            const hash = await publicClient.sendRawTransaction({
+              serializedTransaction,
+            });
             return {
               content: [
-                {
-                  type: "text",
-                  text: JSON.stringify(
-                    { signedTransaction: signedTx },
-                    serialize,
-                    2,
-                  ),
-                },
+                { type: "text", text: JSON.stringify({ hash }, serialize, 2) },
               ],
             };
           } catch (e) {

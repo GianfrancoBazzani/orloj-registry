@@ -81,7 +81,10 @@ export async function getContract(address, chainId, options = {}) {
         outputShape[p.name || `result${i}`] = solidityTypeToZod(p);
       });
 
-      const isView = fn.stateMutability === "view" || fn.stateMutability === "pure";
+      const isView =
+        fn.stateMutability === "view" ||
+        fn.stateMutability === "pure" ||
+        (fn.stateMutability == null && fn.constant === true);
 
       if (isView) {
         return {
