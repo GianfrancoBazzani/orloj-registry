@@ -2271,23 +2271,10 @@ const Agents = ({
             onClearBind();
           }}
           onCreated={async (apiKey, name) => {
-            const mcpToBind = bindMcp?.id;
             setCreating(false);
             onClearBind();
             if (apiKey) setNewApiKey({ agentName: name, apiKey });
             await reload();
-            if (mcpToBind) {
-              try {
-                await fetch("/api/mcps/bind", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ mcpName: mcpToBind }),
-                });
-                await reloadMetrics();
-              } catch (err) {
-                console.error("[bind] failed", err);
-              }
-            }
           }}
         />
       )}
