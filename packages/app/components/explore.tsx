@@ -459,12 +459,6 @@ const MCPCard = ({
           >
             {m.name}
           </div>
-          <div
-            className="mono"
-            style={{ fontSize: 11, color: "var(--ink-soft)" }}
-          >
-            ★ {m.stars.toLocaleString()}
-          </div>
         </div>
         <div
           style={{
