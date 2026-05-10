@@ -12,13 +12,13 @@ To our knowledge nobody has built this category of consumer on top of Sourcify b
 
 Every MCP we serve is built from **five distinct fields** of the Sourcify v2 contract response, each load-bearing:
 
-| Field             | What we do with it                                                                                                                                                    |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `abi`             | Recursively translated into Zod input/output schemas — including `tuple`, dynamic arrays (`T[]`), fixed-size arrays (`T[N]`), all integer widths, and `bytesN`        |
-| `userdoc`         | Function `notice` strings (NatSpec) become the **tool description an LLM reads when deciding whether to call the function**                                           |
-| `devdoc`          | Function `details` strings used as the fallback description when no `userdoc.notice` exists                                                                            |
-| `compilation`     | `compilation.name` becomes the MCP server name — agents see `WstETH` or `UniswapV3Pool`, not a hex address                                                            |
-| `proxyResolution` | Detects proxies at registration time and points the ABI fetch at the implementation, so upgrades are transparent                                                      |
+| Field               | What we do with it                                                                                                                                                |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **abi**             | Recursively translated into Zod input/output schemas — including tuple types, dynamic arrays, fixed-size arrays, all integer widths, and fixed-size byte types    |
+| **userdoc**         | Function "notice" strings (NatSpec) become the tool description an LLM reads when deciding whether to call the function                                           |
+| **devdoc**          | Function "details" strings used as a fallback description when no userdoc notice exists                                                                            |
+| **compilation**     | The contract name field becomes the MCP server name — agents see "WstETH" or "UniswapV3Pool", not a hex address                                                   |
+| **proxyResolution** | Detects proxies at registration time and points the ABI fetch at the implementation, so upgrades are transparent                                                  |
 
 The two requests we make per registration:
 

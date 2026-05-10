@@ -12,14 +12,14 @@ What's unusual about it: Orbitport isn't an optional plug-in. The wallet's priva
 
 Most KMS integrations stop at "create a key, ask it to sign once." Orloj uses **both** Orbitport key schemes, **four distinct KMS operations**, in **two services** across the codebase:
 
-| Where                                                | KMS operation     | Scheme / key                       | Why                                                                                            |
-| ---------------------------------------------------- | ----------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------- |
-| App / `createVault`                                  | `kms.createKey`   | `ETHEREUM` / `ECC_SECG_P256K1`     | Per-vault wallet signing key — Orbitport returns the derived Ethereum address                  |
-| App / `createVault`                                  | `kms.createKey`   | `TRANSIT` / `AES_256_GCM96`        | Per-vault envelope-encryption key, in the same security domain as the wallet                   |
-| App / `setSecret`                                    | `kms.encrypt`     | TRANSIT                            | Encrypts secret-store plaintext — only the ciphertext blob is persisted to Postgres            |
-| App / `getSecret`                                    | `kms.decrypt`     | TRANSIT                            | Decrypts on read — cleartext never lives on disk on our side                                   |
-| Registry / on every agent write-tool call            | `kms.sign`        | ETHEREUM, `messageType: DIGEST`    | Signs the keccak256 of an EIP-1559 unsigned tx; `(r,s,v)` is reassembled and broadcast         |
-| App / `signDigest`                                   | `kms.sign`        | ETHEREUM, `messageType: DIGEST`    | Same primitive exposed through the vault-provider abstraction for control-plane use            |
+| Where                                          | KMS operation   | Scheme / key                     | Why                                                                                                  |
+| ---------------------------------------------- | --------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| App / createVault                              | kms.createKey   | ETHEREUM / ECC_SECG_P256K1       | Per-vault wallet signing key — Orbitport returns the derived Ethereum address                        |
+| App / createVault                              | kms.createKey   | TRANSIT / AES_256_GCM96          | Per-vault envelope-encryption key, in the same security domain as the wallet                         |
+| App / setSecret                                | kms.encrypt    | TRANSIT                          | Encrypts secret-store plaintext — only the ciphertext blob is persisted to Postgres                  |
+| App / getSecret                                | kms.decrypt    | TRANSIT                          | Decrypts on read — cleartext never lives on disk on our side                                         |
+| Registry / on every agent write-tool call      | kms.sign       | ETHEREUM, messageType DIGEST     | Signs the keccak256 of an EIP-1559 unsigned tx; the (r, s, v) signature is reassembled and broadcast |
+| App / signDigest                               | kms.sign       | ETHEREUM, messageType DIGEST     | Same primitive exposed through the vault-provider abstraction for control-plane use                  |
 
 **The signing path is the live transaction broadcast path, not a demo button.** When an AI agent calls a write function on any Sourcify-generated MCP, Orloj builds the EIP-1559 tx with viem, hashes it, sends *only the digest* to Orbitport, gets back `(r, s, v)`, reassembles with `serializeTransaction`, and broadcasts. Every state-changing on-chain call an agent makes through Orloj transits Orbitport.
 
