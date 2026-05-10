@@ -76,7 +76,7 @@ The provider is recorded per vault, so a single deployment can run both side-by-
 **On-chain & infra**
 
 - [Sourcify](https://sourcify.dev/) — verified contract metadata / ABIs (source of truth for MCP generation)
-- 1Claw — key vaults, intent-based signing, HSM-backed keys, TEE signing
+- [1Claw](https://1claw.xyz/) — key vaults, intent-based signing, HSM-backed keys, TEE signing
 - [SpaceComputer Orbitport](https://docs.spacecomputer.io/) — orbital HSM-backed KMS (`@spacecomputer-io/orbitport-sdk-ts`) for secp256k1 signing keys + AES-256-GCM envelope-encryption keys
 - viem — local tx construction, digest hashing, signature recovery, broadcasting
 
