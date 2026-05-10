@@ -2,6 +2,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Btn, StainedPanel, Tag } from "./ornaments";
+import { useT, useLocale } from "./i18n-context";
 
 interface AgentOption {
   id: string;
@@ -99,6 +100,8 @@ export const LaunchModal = ({
   onCloseAction: () => void;
 }) => {
   const router = useRouter();
+  const locale = useLocale();
+  const t = useT();
   const [tab, setTab] = useState<PlatformId>("claude-code");
   const [copied, setCopied] = useState(false);
 
@@ -186,13 +189,13 @@ export const LaunchModal = ({
                   marginBottom: 4,
                 }}
               >
-                ✦ interface registered ✦
+                {t("launch.registeredBadge")}
               </div>
               <h2
                 className="display"
                 style={{ margin: 0, fontSize: 24, color: "var(--parchment)" }}
               >
-                Bind to your agent
+                {t("launch.title")}
               </h2>
             </div>
             <button
@@ -248,23 +251,23 @@ export const LaunchModal = ({
               className="smallcaps"
               style={{ fontSize: 10, letterSpacing: "0.16em", color: "var(--brass-deep)", marginBottom: 10 }}
             >
-              ✦ select agent
+              {t("launch.selectAgentLabel")}
             </div>
 
             {/* Agent dropdown */}
             <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
               {agentsLoading ? (
-                <span className="mono" style={{ fontSize: 11, color: "var(--ink-soft)" }}>Loading agents…</span>
+                <span className="mono" style={{ fontSize: 11, color: "var(--ink-soft)" }}>{t("launch.loadingAgents")}</span>
               ) : agentsError ? (
                 <span className="mono" style={{ fontSize: 11, color: "var(--brass-deep)" }}>{agentsError}</span>
               ) : agents.length === 0 ? (
                 <span className="mono" style={{ fontSize: 11, color: "var(--ink-soft)" }}>
-                  No agents found —{" "}
+                  {t("launch.noAgents").split("—")[0]}—{" "}
                   <button
-                    onClick={() => { onClose(); router.push("/profile?tab=agents"); }}
+                    onClick={() => { onClose(); router.push(`/${locale}/profile?tab=agents`); }}
                     style={{ background: "none", border: "none", color: "var(--brass-deep)", cursor: "pointer", font: "inherit", padding: 0, textDecoration: "underline" }}
                   >
-                    create one in your profile
+                    {t("launch.noAgents").split("— ")[1]}
                   </button>
                 </span>
               ) : (
@@ -379,7 +382,7 @@ export const LaunchModal = ({
                 letterSpacing: "0.12em",
               }}
             >
-              {copied ? "✓ copied" : "copy"}
+              {copied ? t("launch.copied") : t("launch.copy")}
             </button>
           </div>
 
@@ -393,16 +396,16 @@ export const LaunchModal = ({
             }}
           >
             <Btn kind="ghost" onClick={onClose}>
-              Close
+              {t("launch.close")}
             </Btn>
             <Btn
               kind="brass"
               onClick={() => {
                 onClose();
-                router.push("/explore");
+                router.push(`/${locale}/explore`);
               }}
             >
-              View in registry →
+              {t("launch.viewInRegistry")}
             </Btn>
           </div>
         </div>

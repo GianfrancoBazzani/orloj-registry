@@ -13,10 +13,14 @@ import {
 } from "./ornaments";
 import { SHORT_ADDR, type Mcp } from "./data";
 import { LaunchModal, type RegisterResult } from "./launch-modal";
+import { useT, useLocale } from "./i18n-context";
 
 export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
   const router = useRouter();
-  const onNavigate = (r: string) => router.push(r === "home" ? "/" : `/${r}`);
+  const locale = useLocale();
+  const t = useT();
+  const onNavigate = (r: string) =>
+    router.push(r === "home" ? `/${locale}` : `/${locale}/${r}`);
   const [launchMcp, setLaunchMcp] = useState<RegisterResult | null>(null);
   const openLaunchModal = (m: Mcp) => {
     setLaunchMcp({
@@ -27,21 +31,22 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
       address: m.contract || false,
     });
   };
+
+  const ALL_CHAINS = t("explore.allChains");
+  const ALL_CAPS = t("explore.allCapabilities");
+  const SORT_ACTIVE = t("explore.sortActive");
+  const SORT_STARRED = t("explore.sortStarred");
+  const SORT_RECENT = t("explore.sortRecent");
+
   const [q, setQ] = useState("");
-  const [chain, setChain] = useState("All chains");
-  const [tag, setTag] = useState("All capabilities");
-  const [sort, setSort] = useState("Most active");
+  const [chain, setChain] = useState(ALL_CHAINS);
+  const [tag, setTag] = useState(ALL_CAPS);
+  const [sort, setSort] = useState(SORT_ACTIVE);
   const [view, setView] = useState<"grid" | "list">("grid");
   const [selected, setSelected] = useState<Mcp | null>(null);
 
-  const allTags = [
-    "All capabilities",
-    ...new Set(mcps.flatMap((m) => m.tags)),
-  ];
-  const allChains = [
-    "All chains",
-    ...new Set(mcps.map((m) => m.chain)),
-  ];
+  const allTags = [ALL_CAPS, ...new Set(mcps.flatMap((m) => m.tags))];
+  const allChains = [ALL_CHAINS, ...new Set(mcps.map((m) => m.chain))];
 
   let list = mcps.filter((m) => {
     if (
@@ -51,18 +56,18 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
         .includes(q.toLowerCase())
     )
       return false;
-    if (chain !== "All chains" && m.chain !== chain) return false;
-    if (tag !== "All capabilities" && !m.tags.includes(tag)) return false;
+    if (chain !== ALL_CHAINS && m.chain !== chain) return false;
+    if (tag !== ALL_CAPS && !m.tags.includes(tag)) return false;
     return true;
   });
 
   console.log(list);
 
-  if (sort === "Most active")
+  if (sort === SORT_ACTIVE)
     list = [...list].sort((a, b) => b.callsLast24h - a.callsLast24h);
-  if (sort === "Most starred")
+  if (sort === SORT_STARRED)
     list = [...list].sort((a, b) => b.stars - a.stars);
-  if (sort === "Recently added") list = [...list].reverse();
+  if (sort === SORT_RECENT) list = [...list].reverse();
 
   return (
     <main style={{ padding: "40px 32px 80px" }}>
@@ -87,7 +92,7 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
                 lineHeight: 1,
               }}
             >
-              The Registry
+              {t("explore.title")}
             </h1>
             <p
               className="poetic"
@@ -98,12 +103,11 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
                 marginBottom: 0,
               }}
             >
-              {list.length} of {mcps.length} interfaces — bound by
-              manifests, not promises.
+              {t("explore.subtitle", { count: list.length, total: mcps.length })}
             </p>
           </div>
           <Btn kind="brass" onClick={() => { onNavigate("register"); }}>
-            + Publish your own
+            {t("explore.publishOwn")}
           </Btn>
         </div>
 
@@ -121,7 +125,7 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
         >
           <div style={{ position: "relative" }}>
             <Input
-              placeholder="Search by name, ENS, capability…"
+              placeholder={t("explore.searchPlaceholder")}
               value={q}
               onChange={(e) => setQ(e.target.value)}
             />
@@ -142,7 +146,7 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
           <Select
             value={sort}
             onChange={setSort}
-            options={["Most active", "Most starred", "Recently added"]}
+            options={[SORT_ACTIVE, SORT_STARRED, SORT_RECENT]}
           />
           <div
             style={{
@@ -169,7 +173,7 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
                   fontFamily: "var(--font-ui)",
                 }}
               >
-                {v}
+                {v === "grid" ? t("explore.viewGrid") : t("explore.viewList")}
               </button>
             ))}
           </div>

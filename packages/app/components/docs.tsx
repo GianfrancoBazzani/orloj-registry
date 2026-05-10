@@ -1,17 +1,30 @@
+"use client";
 import { Pill, Divider } from "./ornaments";
+import { useT } from "./i18n-context";
 
 export const DocsPage = () => {
+  const t = useT();
+
+  const cards = [
+    { t: t("docs.card1Title"), d: t("docs.card1Desc"), l: "orloj.manifest" },
+    { t: t("docs.card2Title"), d: t("docs.card2Desc"), l: "/quickstart" },
+    { t: t("docs.card3Title"), d: t("docs.card3Desc"), l: "/builders" },
+    { t: t("docs.card4Title"), d: t("docs.card4Desc"), l: "/vaults" },
+    { t: t("docs.card5Title"), d: t("docs.card5Desc"), l: "/api" },
+    { t: t("docs.card6Title"), d: t("docs.card6Desc"), l: "/glossary" },
+  ];
+
   return (
     <main style={{ padding: "60px 32px 80px", maxWidth: 900, margin: "0 auto" }}>
-      <Pill tone="brass">documentation</Pill>
+      <Pill tone="brass">{t("docs.pill")}</Pill>
       <h1 className="display" style={{ fontSize: 56, margin: "14px 0 8px" }}>
-        Manuals & Manifests
+        {t("docs.title")}
       </h1>
       <p
         className="poetic"
         style={{ fontSize: 22, color: "var(--ink-soft)", margin: 0 }}
       >
-        The mechanism, written down.
+        {t("docs.subtitle")}
       </p>
 
       <Divider />
@@ -24,38 +37,7 @@ export const DocsPage = () => {
           marginTop: 32,
         }}
       >
-        {[
-          {
-            t: "Manifest schema",
-            d: "EIP-712 typed data, optional capabilities tree, audit attestations.",
-            l: "orloj.manifest",
-          },
-          {
-            t: "Operator quickstart",
-            d: "Bind your first MCP, set spend policies, watch the trace.",
-            l: "/quickstart",
-          },
-          {
-            t: "Builder quickstart",
-            d: "From verified address to public listing in 90 seconds.",
-            l: "/builders",
-          },
-          {
-            t: "Vault providers",
-            d: "Turnkey, Fireblocks, Lit Protocol, Privy, self-custody.",
-            l: "/vaults",
-          },
-          {
-            t: "API reference",
-            d: "REST + JSON-RPC over the indexer. Webhooks & EventSource.",
-            l: "/api",
-          },
-          {
-            t: "Glossary",
-            d: "MCP, manifest, vault, agent, scope, strike.",
-            l: "/glossary",
-          },
-        ].map((d) => (
+        {cards.map((d) => (
           <div
             key={d.t}
             style={{

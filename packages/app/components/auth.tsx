@@ -2,11 +2,152 @@
 import { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
 import Image from "next/image";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import { StainedPanel, Pill, Btn, Input } from "./ornaments";
 import { authClient } from "@/lib/auth-client";
 import { SHORT_ADDR, type Mcp } from "./data";
 import { LaunchModal, type RegisterResult } from "./launch-modal";
+import { useT, useLocale } from "./i18n-context";
+import type { Locale } from "@/app/[lang]/dictionaries";
+
+const LOCALE_OPTIONS: { code: Locale; badge: string; name: string }[] = [
+  { code: "en", badge: "EN", name: "English" },
+  { code: "cs", badge: "CS", name: "Čeština" },
+  { code: "de", badge: "DE", name: "Deutsch" },
+  { code: "fr", badge: "FR", name: "Français" },
+  { code: "es", badge: "ES", name: "Español" },
+  { code: "zh", badge: "中文", name: "中文" },
+];
+
+const LanguageSwitcher = () => {
+  const locale = useLocale();
+  const router = useRouter();
+  const pathname = usePathname();
+  const [open, setOpen] = useState(false);
+
+  const current = LOCALE_OPTIONS.find((o) => o.code === locale) ?? LOCALE_OPTIONS[0];
+
+  const switchTo = (code: Locale) => {
+    setOpen(false);
+    if (code === locale) return;
+    const segments = pathname.split("/"); // ["", "en", ...]
+    const rest = segments.slice(2).join("/");
+    router.push(`/${code}${rest ? `/${rest}` : ""}`);
+  };
+
+  return (
+    <div
+      style={{ position: "relative" }}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="smallcaps"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 5,
+          padding: "6px 10px",
+          background: "transparent",
+          border: "1px solid var(--line)",
+          cursor: "pointer",
+          fontFamily: "var(--font-ui)",
+          fontSize: 11,
+          letterSpacing: "0.16em",
+          color: "var(--ink)",
+          transition: "border-color 0.15s",
+          whiteSpace: "nowrap",
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.borderColor = "var(--brass)";
+        }}
+        onMouseLeave={(e) => {
+          if (!open) e.currentTarget.style.borderColor = "var(--line)";
+        }}
+      >
+        {current.badge}
+        <span style={{ opacity: 0.5, fontSize: 9 }}>▾</span>
+      </button>
+
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            right: 0,
+            zIndex: 50,
+            background: "var(--parchment)",
+            border: "1px solid var(--line)",
+            boxShadow: "4px 4px 0 var(--brass)",
+            minWidth: 140,
+          }}
+        >
+          {LOCALE_OPTIONS.map((opt, i) => {
+            const active = opt.code === locale;
+            return (
+              <button
+                key={opt.code}
+                onClick={() => switchTo(opt.code)}
+                className="smallcaps"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  width: "100%",
+                  padding: "9px 14px",
+                  background: active ? "rgba(184,137,58,0.10)" : "transparent",
+                  border: "none",
+                  borderBottom:
+                    i < LOCALE_OPTIONS.length - 1
+                      ? "1px solid rgba(0,0,0,0.05)"
+                      : "none",
+                  cursor: "pointer",
+                  fontFamily: "var(--font-ui)",
+                  fontSize: 11,
+                  color: active ? "var(--brass-deep)" : "var(--ink)",
+                  letterSpacing: "0.14em",
+                  textAlign: "left",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = "rgba(184,137,58,0.08)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = active
+                    ? "rgba(184,137,58,0.10)"
+                    : "transparent";
+                }}
+              >
+                <span
+                  style={{
+                    width: 22,
+                    fontWeight: 700,
+                    flexShrink: 0,
+                    color: active ? "var(--brass-deep)" : "var(--ink-soft)",
+                  }}
+                >
+                  {opt.badge}
+                </span>
+                <span style={{ opacity: active ? 1 : 0.7 }}>{opt.name}</span>
+                {active && (
+                  <span
+                    style={{
+                      marginLeft: "auto",
+                      color: "var(--brass)",
+                      fontSize: 9,
+                    }}
+                  >
+                    ✦
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
 
 export const LoginModal = ({
   onClose,
@@ -15,6 +156,7 @@ export const LoginModal = ({
   onClose: () => void;
   onLogin: (provider: string) => void;
 }) => {
+  const t = useT();
   const providers = [
     { id: "wallet", label: "Ethereum wallet (SIWE)", icon: "◆" },
   ];
@@ -100,8 +242,7 @@ export const LoginModal = ({
           </div>
           <div style={{ position: "relative", paddingTop: 32 }}>
             <div className="poetic" style={{ fontSize: 30, lineHeight: 1.2 }}>
-              &ldquo;When the noon bell strikes, the apostles parade — and
-              your agent signs.&rdquo;
+              {t("auth.quote")}
             </div>
             <div
               className="smallcaps"
@@ -111,7 +252,7 @@ export const LoginModal = ({
                 color: "var(--brass-bright)",
               }}
             >
-              — a guide to the orloj, 2026 ed.
+              {t("auth.quoteSource")}
             </div>
           </div>
         </div>
@@ -136,15 +277,15 @@ export const LoginModal = ({
             ×
           </button>
 
-          <Pill tone="brass">sign in</Pill>
+          <Pill tone="brass">{t("auth.signInPill")}</Pill>
           <h2
             className="display"
             style={{ fontSize: 22, marginTop: 8, marginBottom: 2 }}
           >
-            Welcome back to the square.
+            {t("auth.welcomeBack")}
           </h2>
           <p style={{ color: "var(--ink-soft)", fontSize: 14, marginTop: 4 }}>
-            One identity, all your agents.
+            {t("auth.oneIdentity")}
           </p>
 
           {magicStatus === "sent" ? (
@@ -165,20 +306,16 @@ export const LoginModal = ({
                   color: "var(--verdigris-deep)",
                 }}
               >
-                ✦ check your inbox
+                ✦ {t("auth.checkInbox")}
               </div>
               <div
                 className="display"
                 style={{ fontSize: 18, color: "var(--ink)" }}
               >
-                A signal is on its way.
+                {t("auth.signalOnItsWay")}
               </div>
               <div style={{ fontSize: 13, color: "var(--ink-soft)" }}>
-                We sent a sign-in link to{" "}
-                <span className="mono" style={{ color: "var(--ink)" }}>
-                  {sentTo}
-                </span>
-                . The link expires in 5 minutes.
+                {t("auth.sentLinkTo", { email: sentTo })}
               </div>
               <button
                 onClick={() => {
@@ -199,7 +336,7 @@ export const LoginModal = ({
                   fontFamily: "var(--font-ui)",
                 }}
               >
-                use a different email →
+                {t("auth.useDifferentEmail")}
               </button>
             </div>
           ) : (
@@ -227,8 +364,8 @@ export const LoginModal = ({
                 disabled={magicStatus === "sending" || !email}
               >
                 {magicStatus === "sending"
-                  ? "sending…"
-                  : "email me a sign-in link"}
+                  ? t("auth.sending")
+                  : t("auth.emailMeLink")}
               </Btn>
             </form>
           )}
@@ -250,7 +387,7 @@ export const LoginModal = ({
                 letterSpacing: "0.22em",
               }}
             >
-              or
+              {t("auth.or")}
             </span>
             <div style={{ flex: 1, height: 1, background: "var(--line)" }} />
           </div>
@@ -295,7 +432,7 @@ export const LoginModal = ({
                 >
                   {p.icon}
                 </span>
-                Continue with {p.label}
+                {t("auth.continueWith", { provider: p.label })}
                 <span style={{ marginLeft: "auto", color: "var(--ink-soft)" }}>
                   →
                 </span>
@@ -320,6 +457,7 @@ const UserMenu = ({
   onNavigate: (r: string) => void;
   onLogout: () => void;
 }) => {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const onProfile = route === "profile";
 
@@ -402,7 +540,7 @@ const UserMenu = ({
               onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(140,30,40,0.08)"; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
             >
-              Sign out
+              {t("nav.signOut")}
             </button>
           </div>
         </div>
@@ -412,6 +550,8 @@ const UserMenu = ({
 };
 
 const NavSearch = () => {
+  const t = useT();
+  const locale = useLocale();
   const [q, setQ] = useState("");
   const [focused, setFocused] = useState(false);
   const [mcps, setMcps] = useState<Mcp[]>([]);
@@ -457,7 +597,7 @@ const NavSearch = () => {
   const open = focused && trimmed.length > 0;
 
   const go = () => {
-    router.push(`/explore?q=${encodeURIComponent(trimmed || "")}`);
+    router.push(`/${locale}/explore?q=${encodeURIComponent(trimmed || "")}`);
     setQ("");
     inputRef.current?.blur();
   };
@@ -500,7 +640,7 @@ const NavSearch = () => {
             if (e.key === "Escape") { setQ(""); inputRef.current?.blur(); }
             else if (e.key === "Enter") { go(); }
           }}
-          placeholder="search the registry"
+          placeholder={t("auth.searchPlaceholder")}
           className="mono"
           style={{
             border: "none",
@@ -578,7 +718,7 @@ const NavSearch = () => {
             ))
           ) : (
             <div style={{ padding: "14px 14px", fontSize: 13, color: "var(--ink-soft)" }}>
-              No interfaces found
+              {t("auth.noInterfacesFound")}
             </div>
           )}
           <button
@@ -600,7 +740,7 @@ const NavSearch = () => {
               letterSpacing: "0.14em",
             }}
           >
-            <span>See all results for &ldquo;{trimmed}&rdquo;</span>
+            <span>{t("auth.seeAllResultsFor")} &ldquo;{trimmed}&rdquo;</span>
             <span>→</span>
           </button>
         </div>
@@ -628,9 +768,10 @@ export const TopNav = ({
   onLogin: () => void;
   onLogout: () => void;
 }) => {
+  const t = useT();
   const items = [
-    { id: "explore", l: "Explore" },
-    { id: "register", l: "Register" },
+    { id: "explore", l: t("nav.explore") },
+    { id: "register", l: t("nav.register") },
   ];
   return (
     <header
@@ -717,6 +858,7 @@ export const TopNav = ({
         </nav>
         <div style={{ flex: 1 }} />
         <NavSearch />
+        <LanguageSwitcher />
         {user ? (
           <UserMenu
             user={user}
@@ -726,7 +868,7 @@ export const TopNav = ({
           />
         ) : (
           <Btn kind="primary" size="sm" onClick={onLogin}>
-            Sign in
+            {t("nav.signIn")}
           </Btn>
         )}
       </div>

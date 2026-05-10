@@ -2,17 +2,21 @@
 import { useRouter } from "next/navigation";
 import { Pill, Btn, Divider, SectionHeader } from "./ornaments";
 import { useAuth } from "./auth-context";
+import { useT, useLocale } from "./i18n-context";
 
 export const Landing = () => {
   const router = useRouter();
+  const locale = useLocale();
+  const t = useT();
   const { user, setShowLogin } = useAuth();
-  const onNavigate = (r: string) => router.push(r === "home" ? "/" : `/${r}`);
+  const onNavigate = (r: string) =>
+    router.push(r === "home" ? `/${locale}` : `/${locale}/${r}`);
   const onRegister = () => { if (!user) { setShowLogin(true); return; } onNavigate("register"); };
-const stats = [
-    { v: "142", l: "registered MCPs" },
-    { v: "38", l: "chains indexed" },
-    { v: "1.2M", l: "tool calls / day" },
-    { v: "17", l: "audit firms" },
+  const stats = [
+    { v: "142", l: t("landing.statsRegisteredMcps") },
+    { v: "38", l: t("landing.statsChainsIndexed") },
+    { v: "1.2M", l: t("landing.statsToolCalls") },
+    { v: "17", l: t("landing.statsAuditFirms") },
   ];
 
   return (
@@ -38,7 +42,7 @@ const stats = [
                 marginBottom: 22,
               }}
             >
-              <Pill tone="verdigris">✦ ethprague · hackathon</Pill>
+              <Pill tone="verdigris">{t("landing.eyebrow")}</Pill>
             </div>
             <h1
               className="display"
@@ -50,7 +54,7 @@ const stats = [
                 letterSpacing: "0.01em",
               }}
             >
-              The astronomical
+              {t("landing.heroLine1")}
               <br />
               <span
                 style={{
@@ -60,11 +64,9 @@ const stats = [
                   color: "var(--brass-deep)",
                 }}
               >
-                registry{" "}
+                {t("landing.heroItalic")}{" "}
               </span>
-              for smart
-              <br />
-              interfaces.
+              {t("landing.heroLine2")}
             </h1>
             <p
               className="poetic"
@@ -76,10 +78,7 @@ const stats = [
                 lineHeight: 1.5,
               }}
             >
-              ORLOJ is a public, audited index of{" "}
-              <em>Model Context Protocol</em> servers wired to on‑chain
-              contracts. Publish yours; or browse a thousand and let your agent
-              ring the bells.
+              {t("landing.heroDescription")}
             </p>
             <div
               style={{
@@ -90,10 +89,10 @@ const stats = [
               }}
             >
               <Btn kind="primary" size="lg" onClick={onRegister}>
-                Register an MCP &nbsp;→
+                {t("landing.registerMcp")} &nbsp;→
               </Btn>
               <Btn kind="ghost" size="lg" onClick={() => onNavigate("explore")}>
-                Explore the registry
+                {t("landing.exploreRegistry")}
               </Btn>
             </div>
             <div
@@ -106,9 +105,9 @@ const stats = [
                 flexWrap: "wrap",
               }}
             >
-              <span>✶ Free to publish</span>
-              <span>✶ EIP‑712 signed manifests</span>
-              <span>✶ No custody</span>
+              <span>{t("landing.feeFree")}</span>
+              <span>{t("landing.eipSigned")}</span>
+              <span>{t("landing.noCustody")}</span>
             </div>
           </div>
 
@@ -143,9 +142,9 @@ const stats = [
       <section style={{ padding: "56px 32px 32px" }}>
         <div style={{ maxWidth: 1200, margin: "0 auto" }}>
           <SectionHeader
-            eyebrow="two paths through the square"
-            title="Bring an interface, or take one home."
-            subtitle="The registry forks here. Builders publish; operators browse and bind. Choose your gate."
+            eyebrow={t("landing.twoPathsEyebrow")}
+            title={t("landing.twoPathsTitle")}
+            subtitle={t("landing.twoPathsSubtitle")}
             align="center"
           />
 
@@ -159,31 +158,31 @@ const stats = [
           >
             <ForkCard
               tone="brass"
-              kicker="01 — Builders' gate"
-              title="Register a new MCP"
-              body="Paste a verified contract address. ORLOJ derives the ABI, generates a tool manifest, runs static checks, and lists it under your ENS. Takes about ninety seconds."
+              kicker={t("landing.buildersGateKicker")}
+              title={t("landing.buildersGateTitle")}
+              body={t("landing.buildersGateBody")}
               bullets={[
-                "Auto‑ABI from Sourcify",
-                "EIP‑712 manifest signing",
-                "Audit attestations",
-                "Public + private listings",
+                t("landing.buildersGateBullet1"),
+                t("landing.buildersGateBullet2"),
+                t("landing.buildersGateBullet3"),
+                t("landing.buildersGateBullet4"),
               ]}
-              cta="Open the wizard"
+              cta={t("landing.buildersGateCta")}
               onClick={onRegister}
               illustration={<RegisterIllustration />}
             />
             <ForkCard
               tone="verdigris"
-              kicker="02 — Operators' gate"
-              title="Explore registered MCPs"
-              body="Search 142 published interfaces by chain, capability, audit posture, and call volume. Bind any to one of your agents in two clicks."
+              kicker={t("landing.operatorsGateKicker")}
+              title={t("landing.operatorsGateTitle")}
+              body={t("landing.operatorsGateBody")}
               bullets={[
-                "Filter by capability tag",
-                "See live call traffic",
-                "Inspect manifest before binding",
-                "One‑click agent binding",
+                t("landing.operatorsGateBullet1"),
+                t("landing.operatorsGateBullet2"),
+                t("landing.operatorsGateBullet3"),
+                t("landing.operatorsGateBullet4"),
               ]}
-              cta="Browse the registry"
+              cta={t("landing.operatorsGateCta")}
               onClick={() => onNavigate("explore")}
               illustration={<ExploreIllustration />}
             />
@@ -242,9 +241,9 @@ const stats = [
       <section style={{ padding: "64px 32px" }}>
         <div style={{ maxWidth: 1200, margin: "0 auto" }}>
           <SectionHeader
-            eyebrow="the mechanism"
-            title="A clockwork in three movements."
-            subtitle="ORLOJ behaves like Prague's astronomical clock — public, deterministic, and slightly theatrical."
+            eyebrow={t("landing.mechanismEyebrow")}
+            title={t("landing.mechanismTitle")}
+            subtitle={t("landing.mechanismSubtitle")}
           />
           <div
             style={{
@@ -257,20 +256,20 @@ const stats = [
             {[
               {
                 n: "I",
-                t: "Create",
-                d: "Register your agent and seal their private keys in a vault — secure by default, never exposed.",
+                t: t("landing.step1Title"),
+                d: t("landing.step1Desc"),
                 hand: 0,
               },
               {
                 n: "II",
-                t: "Generate",
-                d: "Paste a contract address. We resolve the ABI and generate a ready‑to‑use MCP server in seconds.",
+                t: t("landing.step2Title"),
+                d: t("landing.step2Desc"),
                 hand: 120,
               },
               {
                 n: "III",
-                t: "Act",
-                d: "Let the agent wield the MCPs and move onchain seamlessly — call by call, permission by permission.",
+                t: t("landing.step3Title"),
+                d: t("landing.step3Desc"),
                 hand: 240,
               },
             ].map((m, i) => (
