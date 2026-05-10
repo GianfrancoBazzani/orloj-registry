@@ -2,7 +2,7 @@
 
 > *Orloj* (Czech for "astronomical clock") — a nod to Prague's iconic timepiece, built for **ETHPrague Hackathon 2026**.
 
-Orloj is a registry that exposes smart-contract interfaces to AI agents as **MCP (Model Context Protocol) servers**. MCPs are generated dynamically from [Sourcify](https://sourcify.dev/)-verified contract metadata, and signing is delegated to a **pluggable KMS layer** — pick **1Claw** (HSM + TEE) or **SpaceComputer Orbitport** (orbital HSM + SpaceTEE) per vault. Agents discover contracts and call them through a single, hot-pluggable HTTP endpoint — without ever touching keys, RPCs, or gas.
+Orloj is a registry that exposes smart-contract interfaces to AI agents as **MCP (Model Context Protocol) servers**. MCPs are generated dynamically from [Sourcify](https://sourcify.dev/)-verified contract metadata, and signing is delegated to a **pluggable KMS layer** — pick **1Claw** (HSM + TEE) or **SpaceComputer Orbitport** (orbital HSM + SpaceTEE) per vault. Each registered contract is served as its own MCP endpoint by a single hot-pluggable registry process, gated by per-agent bearer tokens — agents never touch keys, RPCs, or gas.
 
 ## Tracks Applied
 
@@ -63,15 +63,14 @@ The provider is recorded per vault, so a single deployment can run both side-by-
 - Node.js 24 + pnpm workspaces
 - Express 5
 - [`@modelcontextprotocol/sdk`](https://github.com/modelcontextprotocol/typescript-sdk) (Streamable HTTP transport)
-- chokidar — hot-reload of MCP modules
-- Zod — schema validation
+- Zod — schema validation (Solidity types → Zod → MCP tool inputs)
+- `node --watch` for dev hot-reload; per-agent bearer tokens (`mcpk_live_*`) verified against Postgres
 
-**Frontend** ([packages/app/](packages/app/))
+**Frontend / control plane** ([packages/app/](packages/app/))
 
-- Next.js 16
-- React 19
-- Tailwind CSS v4
-- TypeScript
+- Next.js 16, React 19, Tailwind CSS v4, TypeScript
+- Better-Auth with magic-link (Resend) + SIWE, ENS lookups via viem
+- Postgres (vault ownership, agent ownership, MCP API keys, Orbitport vault metadata + envelope-encrypted secrets)
 
 **On-chain & infra**
 
@@ -86,6 +85,21 @@ The provider is recorded per vault, so a single deployment can run both side-by-
 - Claude Design — UI/design exploration
 
 ## Run It Locally
+
+Each package reads its own `.env.local`. Copy the examples and fill in the secrets before starting the servers:
+
+```bash
+# from repo root
+cp packages/registry/.env.example packages/registry/.env.local
+cp packages/app/.env.example      packages/app/.env.local
+```
+
+Fill in at least:
+
+- **`packages/registry/.env.local`** — `DATABASE_URL` (same Postgres as the app), and either `1CLAW_API_KEY` or `ORBITPORT_CLIENT_ID` + `ORBITPORT_CLIENT_SECRET` depending on which vault provider you'll sign with.
+- **`packages/app/.env.local`** — `DATABASE_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL` (defaults to `http://localhost:3000`), `RESEND_API_KEY` + `EMAIL_FROM` for magic-link sign-in, `REGISTRY_URL=http://localhost:3001` so the app can proxy to the registry, plus the same `1CLAW_API_KEY` / `ORBITPORT_*` credentials. Optional: `ETH_RPC_URL`, `ETH_RPC_URL_SEPOLIA`, `ENS_CHAIN`.
+
+Then install and run:
 
 ```bash
 # from repo root
