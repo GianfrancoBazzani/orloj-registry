@@ -12,7 +12,7 @@ export function clearVaultCache(agentId) {
 
 // Returns one of:
 //   { provider: "orbitport", vaultId, kmsSigningKeyId, address }
-//   { provider: "oneclaw",   oneclawAgentId, vaultId }
+//   { provider: "oneclaw",   vaultId, signingKeyPath }
 export async function resolveVaultForAgent(orlojAgentId) {
   if (!orlojAgentId) {
     throw new Error("resolveVaultForAgent requires an agentId");
@@ -79,14 +79,21 @@ export async function resolveVaultForAgent(orlojAgentId) {
   const agentGrant = data.policies.find((p) => p.principal_type === "agent");
   if (!agentGrant) {
     throw new Error(
-      `1Claw vault ${vaultId} has no agent grant — cannot resolve a signing principal`,
+      `1Claw vault ${vaultId} has no agent grant — cannot resolve a signing wallet`,
+    );
+  }
+
+  const signingKeyPath = agentGrant.secret_path_pattern;
+  if (!signingKeyPath || /[*?[]/.test(signingKeyPath)) {
+    throw new Error(
+      `1Claw agent grant on vault ${vaultId} has no literal secret path (got "${signingKeyPath}") — cannot pick a wallet`,
     );
   }
 
   const resolved = {
     provider: "oneclaw",
-    oneclawAgentId: agentGrant.principal_id,
     vaultId,
+    signingKeyPath,
   };
   cache.set(orlojAgentId, resolved);
   return resolved;

@@ -29,8 +29,10 @@ export async function signTransaction({
   }
 
   return signWithOneclaw({
-    oneclawAgentId: v.oneclawAgentId,
+    vaultId: v.vaultId,
+    signingKeyPath: v.signingKeyPath,
     chain,
+    publicClient,
     to,
     value,
     data,
