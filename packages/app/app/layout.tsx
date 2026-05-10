@@ -36,7 +36,11 @@ const jetbrainsMono = JetBrains_Mono({
 export const metadata: Metadata = {
   title: "ORLOJ — Registry for Smart Interfaces",
   description:
-    "A public, audited index of Model Context Protocol servers wired to onchain contracts.",
+    "A public, index of Model Context Protocol servers wired to onchain contracts.",
+  icons: {
+    icon: "/logo.png",
+    apple: "/logo.png",
+  },
 };
 
 export default function RootLayout({
