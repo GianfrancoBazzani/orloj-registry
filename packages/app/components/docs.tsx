@@ -15,7 +15,7 @@ export const DocsPage = () => {
   ];
 
   return (
-    <main style={{ padding: "60px 32px 80px", maxWidth: 900, margin: "0 auto" }}>
+    <main className="page-pad" style={{ padding: "60px 32px 80px", maxWidth: 900, margin: "0 auto" }}>
       <Pill tone="brass">{t("docs.pill")}</Pill>
       <h1 className="display" style={{ fontSize: 56, margin: "14px 0 8px" }}>
         {t("docs.title")}

@@ -5,7 +5,7 @@ import Image from "next/image";
 import { useRouter, usePathname } from "next/navigation";
 import { StainedPanel, Pill, Btn, Input } from "./ornaments";
 import { authClient } from "@/lib/auth-client";
-import { SHORT_ADDR, type Mcp } from "./data";
+import { SHORT_ADDR, SHORT_NAME, type Mcp } from "./data";
 import { LaunchModal, type RegisterResult } from "./launch-modal";
 import { useT, useLocale } from "./i18n-context";
 import type { Locale } from "@/app/[lang]/dictionaries";
@@ -74,13 +74,18 @@ const LanguageSwitcher = () => {
         <div
           style={{
             position: "absolute",
-            top: "calc(100% + 4px)",
+            top: "100%",
             right: 0,
+            paddingTop: 4,
             zIndex: 50,
+            minWidth: 140,
+          }}
+        >
+        <div
+          style={{
             background: "var(--parchment)",
             border: "1px solid var(--line)",
             boxShadow: "4px 4px 0 var(--brass)",
-            minWidth: 140,
           }}
         >
           {LOCALE_OPTIONS.map((opt, i) => {
@@ -144,6 +149,7 @@ const LanguageSwitcher = () => {
             );
           })}
         </div>
+        </div>
       )}
     </div>
   );
@@ -203,6 +209,7 @@ export const LoginModal = ({
     >
       <div
         onClick={(e) => e.stopPropagation()}
+        className="login-modal"
         style={{
           width: "min(880px, 100%)",
           display: "grid",
@@ -215,6 +222,7 @@ export const LoginModal = ({
       >
         {/* left: stained glass */}
         <div
+          className="login-modal-left"
           style={{
             position: "relative",
             background: "var(--verdigris-deep)",
@@ -258,7 +266,7 @@ export const LoginModal = ({
         </div>
 
         {/* right: form */}
-        <div style={{ padding: "24px 28px", position: "relative" }}>
+        <div className="login-modal-right" style={{ padding: "24px 28px", position: "relative" }}>
           <button
             onClick={onClose}
             style={{
@@ -493,13 +501,25 @@ const UserMenu = ({
             fontWeight: 700,
           }}
         >
-          {user.name
+          {(/^0x[a-fA-F0-9]{40}$/.test(user.name) ? user.name.slice(2, 4) : user.name)
             .split(" ")
             .map((s: string) => s[0])
             .join("")
-            .slice(0, 2)}
+            .slice(0, 2)
+            .toUpperCase()}
         </div>
-        <span style={{ fontSize: 13 }}>{user.name.split(" ")[0]}</span>
+        <span
+          style={{
+            fontSize: 13,
+            maxWidth: 120,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+          title={user.name}
+        >
+          {SHORT_NAME(user.name, 12)}
+        </span>
         <span className="mono" style={{ fontSize: 10, opacity: 0.7 }}>
           ▾
         </span>
@@ -616,7 +636,7 @@ const NavSearch = () => {
 
   return (
     <>
-    <div style={{ position: "relative" }}>
+    <div className="nav-search" style={{ position: "relative" }}>
       <div
         style={{
           display: "flex",
@@ -785,6 +805,7 @@ export const TopNav = ({
       }}
     >
       <div
+        className="nav-wrap"
         style={{
           maxWidth: 1400,
           margin: "0 auto",
@@ -796,6 +817,7 @@ export const TopNav = ({
       >
         <button
           onClick={() => onNavigate("home")}
+          className="nav-brand"
           style={{
             display: "flex",
             alignItems: "center",
@@ -808,7 +830,7 @@ export const TopNav = ({
           <Image src="/logo.png" alt="Orloj" width={36} height={36} />
           <div>
             <div
-              className="display"
+              className="display nav-brand-text"
               style={{
                 fontSize: 18,
                 lineHeight: 1,
@@ -820,7 +842,7 @@ export const TopNav = ({
             </div>
           </div>
         </button>
-        <nav style={{ display: "flex", gap: 4, marginLeft: 24 }}>
+        <nav className="nav-items" style={{ display: "flex", gap: 4, marginLeft: 24 }}>
           {items.map((i) => {
             const active = route === i.id;
             return (

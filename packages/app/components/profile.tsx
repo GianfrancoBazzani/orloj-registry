@@ -18,6 +18,7 @@ import {
 import {
   MCP_REGISTRY,
   SHORT_ADDR,
+  SHORT_NAME,
   type Vault,
   type Agent,
   type Mcp,
@@ -237,10 +238,11 @@ export const Profile = () => {
   }
 
   return (
-    <main style={{ padding: "40px 32px 80px" }}>
+    <main className="page-pad" style={{ padding: "40px 32px 80px" }}>
       <div style={{ maxWidth: 1280, margin: "0 auto" }}>
         {/* profile header */}
         <div
+          className="profile-header"
           style={{
             display: "grid",
             gridTemplateColumns: "auto 1fr auto",
@@ -274,8 +276,16 @@ export const Profile = () => {
                 flexWrap: "wrap",
               }}
             >
-              <div className="display" style={{ fontSize: 28 }}>
-                {user.name}
+              <div
+                className="display"
+                style={{
+                  fontSize: 28,
+                  wordBreak: "break-word",
+                  overflowWrap: "anywhere",
+                }}
+                title={user.name}
+              >
+                {SHORT_NAME(user.name, 22)}
               </div>
             </div>
             <div
@@ -290,6 +300,7 @@ export const Profile = () => {
               {user.joined}
             </div>
             <div
+              className="profile-meta-row"
               style={{
                 display: "flex",
                 gap: 24,
@@ -311,6 +322,7 @@ export const Profile = () => {
 
         {/* tabs */}
         <div
+          className="profile-tabs"
           style={{
             display: "flex",
             gap: 0,
@@ -447,6 +459,7 @@ const Overview = ({
   return (
   <div>
     <div
+      className="profile-metrics"
       style={{
         display: "grid",
         gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
@@ -667,6 +680,7 @@ const Vaults = ({
         </div>
       ) : (
         <div
+          className="profile-vaults-grid"
           style={{
             display: "grid",
             gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))",
@@ -787,7 +801,7 @@ const CreateVault = ({
   const t = useT();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [provider, setProvider] = useState<"oneclaw" | "orbitport">("oneclaw");
+  const [provider, setProvider] = useState<"oneclaw" | "orbitport">("orbitport");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -892,14 +906,14 @@ const CreateVault = ({
           {(
             [
               {
-                id: "oneclaw" as const,
-                title: "1Claw",
-                desc: t("profile.hsmDesc"),
-              },
-              {
                 id: "orbitport" as const,
                 title: "SpaceComputer",
                 desc: t("profile.spacecomputerDesc"),
+              },
+              {
+                id: "oneclaw" as const,
+                title: "1Claw",
+                desc: t("profile.hsmDesc"),
               },
             ]
           ).map((opt) => {
@@ -2325,6 +2339,7 @@ const Agents = ({
           {agents.map((a) => (
             <div
               key={a.id}
+              className="agent-row"
               style={{
                 padding: 18,
                 background: "rgba(241,233,212,0.55)",

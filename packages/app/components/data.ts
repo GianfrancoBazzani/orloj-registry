@@ -1,5 +1,15 @@
 export const SHORT_ADDR = (a: string): string => a.slice(0, 6) + "…" + a.slice(-4);
 
+// Display-safe name: shortens 0x… addresses, takes the local part of an email,
+// and truncates anything else past `max` chars with an ellipsis.
+export const SHORT_NAME = (name: string, max = 18): string => {
+  if (!name) return "";
+  if (/^0x[a-fA-F0-9]{40}$/.test(name)) return SHORT_ADDR(name);
+  const at = name.indexOf("@");
+  const base = at > 0 ? name.slice(0, at) : name;
+  return base.length > max ? base.slice(0, max - 1) + "…" : base;
+};
+
 export interface Mcp {
   id: string;
   name: string;

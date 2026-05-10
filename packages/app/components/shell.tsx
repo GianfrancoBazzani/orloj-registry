@@ -69,6 +69,7 @@ const Footer = () => {
   const t = useT();
   return (
     <footer
+      className="site-footer"
       style={{
         marginTop: 60,
         padding: "40px 32px",
@@ -128,7 +129,7 @@ const Footer = () => {
       >
         <div>{t("shell.footerCopyright")}</div>
         <div className="mono">
-          spacecomputer · sourcify · ens
+          spacecomputer · sourcify
         </div>
       </div>
     </footer>

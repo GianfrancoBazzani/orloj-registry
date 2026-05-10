@@ -52,3 +52,130 @@ body {
 ::-webkit-scrollbar-thumb { background: var(--brass); border: 3px solid var(--parchment-2); border-radius: 6px; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ==========================================================================
+   Mobile responsive overrides (<= 768px).
+   The codebase uses inline styles, so we override with !important here.
+   ========================================================================== */
+@media (max-width: 768px) {
+  /* No horizontal scroll on mobile, ever. Containers can't be wider than viewport. */
+  html, body { overflow-x: hidden !important; max-width: 100vw !important; }
+
+  /* TopNav: hide search + Explore/Register nav (reachable from home), keep language switcher */
+  .nav-search { display: none !important; }
+  .nav-items { display: none !important; }
+  .nav-wrap {
+    padding: 12px 14px !important;
+    gap: 10px !important;
+  }
+  .nav-brand-text { font-size: 16px !important; }
+
+  /* Generic page padding */
+  .page-pad { padding-left: 16px !important; padding-right: 16px !important; }
+
+  /* Landing hero: stack into 1 column, hide the heavy clock tableau */
+  .hero-grid {
+    grid-template-columns: 1fr !important;
+    gap: 28px !important;
+  }
+  .hero-clock { display: none !important; }
+  .hero-section { padding: 32px 16px 16px !important; }
+
+  /* Two forks section: 1 col */
+  .forks-grid { grid-template-columns: 1fr !important; gap: 20px !important; }
+  .fork-card {
+    min-height: auto !important;
+    padding: 24px !important;
+    padding-bottom: 88px !important;
+  }
+  .fork-card-cta { left: 24px !important; right: 24px !important; bottom: 20px !important; }
+
+  /* Stats band: 4 → 2 columns */
+  .stats-grid { grid-template-columns: repeat(2, 1fr) !important; }
+  .stats-grid > * { border-left: none !important; }
+  .stats-grid > *:nth-child(even) { border-left: 1px solid var(--line) !important; }
+  .stats-grid > *:nth-child(n+3) { border-top: 1px solid var(--line) !important; }
+
+  /* Section paddings */
+  .section-pad { padding: 40px 16px !important; }
+  .section-pad-tight { padding: 24px 16px !important; }
+
+  /* Explore: filter rail stacks; hide search filter (header search) but keep selects + chip rail */
+  .explore-filters {
+    grid-template-columns: 1fr 1fr !important;
+    gap: 8px !important;
+  }
+  .explore-filters > .explore-search { display: none !important; }
+  /* No list view on phones — table doesn't fit. Hide the toggle entirely. */
+  .explore-filters > .explore-view-toggle { display: none !important; }
+
+  .explore-grid { grid-template-columns: 1fr !important; }
+  /* Grid cells must shrink to fit; cards must not extend past their cell */
+  .mcp-card {
+    min-width: 0 !important;
+    max-width: 100% !important;
+    overflow: hidden !important;
+  }
+  /* MCPCard footer: let the action button wrap under the stats on narrow widths */
+  .mcp-card-footer { flex-wrap: wrap !important; gap: 12px !important; }
+  .explore-table { display: block !important; overflow-x: auto !important; }
+
+  /* Detail drawer: full width */
+  .detail-drawer { width: 100% !important; }
+
+  /* Register form: stack form + sidebar; collapse address/chain row */
+  .register-grid { grid-template-columns: 1fr !important; gap: 20px !important; }
+  .register-form-row { grid-template-columns: 1fr !important; }
+  .register-form-panel { padding: 20px !important; }
+  .register-side { position: static !important; }
+
+  /* Profile header: stack avatar + info */
+  .profile-header {
+    grid-template-columns: 1fr !important;
+    gap: 14px !important;
+    padding: 18px !important;
+    text-align: center !important;
+  }
+  .profile-header > :first-child { margin: 0 auto !important; }
+  .profile-header .profile-meta-row { justify-content: center !important; flex-wrap: wrap !important; gap: 10px !important; }
+
+  /* Profile tabs: scroll horizontally */
+  .profile-tabs { overflow-x: auto !important; flex-wrap: nowrap !important; }
+  .profile-tabs button { padding: 12px 14px !important; white-space: nowrap !important; }
+
+  /* Profile metric cards: 2 cols */
+  .profile-metrics { grid-template-columns: repeat(2, 1fr) !important; }
+  /* Profile vaults: 1 col */
+  .profile-vaults-grid { grid-template-columns: 1fr !important; }
+
+  /* Agent rows: stack icon/info/actions */
+  .agent-row {
+    grid-template-columns: 1fr !important;
+    gap: 12px !important;
+    text-align: left !important;
+  }
+  .agent-row > :first-child { justify-self: start !important; }
+
+  /* Login modal: stack, hide stained-glass left panel */
+  .login-modal {
+    grid-template-columns: 1fr !important;
+    width: min(440px, 100%) !important;
+  }
+  .login-modal-left { display: none !important; }
+  .login-modal-right { padding: 22px 20px !important; }
+
+  /* Launch modal: tighter padding */
+  .launch-modal { width: 100% !important; }
+  .launch-modal-body { padding: 18px 16px 22px !important; }
+  .launch-modal-tabs { gap: 0 !important; }
+
+  /* Footer: tighten padding */
+  footer.site-footer { padding: 28px 16px !important; }
+}
+
+@media (max-width: 420px) {
+  /* Very small phones: shrink nav further */
+  .nav-wrap { gap: 6px !important; padding: 10px 12px !important; }
+  .nav-brand img { width: 30px !important; height: 30px !important; }
+  .nav-brand-text { font-size: 15px !important; letter-spacing: 0.18em !important; }
+}
