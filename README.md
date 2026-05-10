@@ -4,12 +4,19 @@
 
 Orloj is a registry that exposes smart-contract interfaces to AI agents as **MCP (Model Context Protocol) servers**. MCPs are generated dynamically from [Sourcify](https://sourcify.dev/)-verified contract metadata, and signing is delegated to a **pluggable KMS layer** — pick **1Claw** (HSM + TEE) or **SpaceComputer Orbitport** (orbital HSM + SpaceTEE) per vault. Each registered contract is served as its own MCP endpoint by a single hot-pluggable registry process, gated by per-agent bearer tokens — agents never touch keys, RPCs, or gas.
 
+## Highlights
+
+- **Sourcify ABI → typed MCP server, dynamically generated.** Every function in a verified contract becomes an MCP tool with Solidity types recursively translated into Zod schemas (tuples, dynamic + fixed-size arrays, all integer widths, `bytesN`), proxy ABIs resolved automatically via Sourcify's `proxyResolution` field, and NatSpec `userdoc.notice` surfaced verbatim as the description an LLM reads when deciding whether to call the function. Zero per-contract integration: the moment a contract is verified on Sourcify, it is callable by an agent.
+- **Hardware-rooted, pluggable KMS — keys never leave the enclave.** Each vault picks its signing backend: SpaceComputer Orbitport (orbital HSM + SpaceTEE; signing happens entirely inside the enclave on a 32-byte digest, with both `ETHEREUM` and `TRANSIT` schemes used in the same product surface for wallet signing *and* envelope-encrypted secret storage) or 1Claw (HSM + TEE intent signing). Both backends are wired into the same `signTransaction` path, so the agent surface is identical regardless of where the key lives.
+- **Agents never hold a key, never see a transaction.** The registry constructs every EIP-1559 tx with viem, hashes it, asks the chosen KMS to sign the digest, reassembles `(r, s, yParity)`, and broadcasts. A compromised registry host cannot forge transactions — it can only request signatures it is already authorized to request, on a digest, against a key it does not hold.
+- **Per-agent bearer tokens with grant-based authorization.** Each agent has a `mcpk_live_*` token (constant-time-checked against Postgres) and a per-vault grant carrying `permissions`, optional `secret_path_pattern`, and optional `expires_at`. The registry resolves the active grant on every MCP call and routes the signature to the matching KMS key. Revocation is a row update; keys never move.
+
 ## Tracks Applied
 
 - Ethereum Core
 - Network Economy
-- [Sourcify Bounty](https://ducttapeevents.notion.site/Sourcify-2fe1a305cfe7805c87a7ce855ae2bde6)
-- [SpaceComputer Bounty](https://ducttapeevents.notion.site/SpaceComputer-3101a305cfe7801ca388f3bc292f148d)
+- [Sourcify Bounty](https://ducttapeevents.notion.site/Sourcify-2fe1a305cfe7805c87a7ce855ae2bde6) — see [`SOURCIFY.md`](SOURCIFY.md) for our integration writeup
+- [SpaceComputer Bounty](https://ducttapeevents.notion.site/SpaceComputer-3101a305cfe7801ca388f3bc292f148d) — see [`SPACECOMPUTER.md`](SPACECOMPUTER.md) for our integration writeup
 - Best UX Flow
 
 ## The Problem It Solves
