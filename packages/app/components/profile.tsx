@@ -8,7 +8,6 @@ import { authClient } from "@/lib/auth-client";
 import {
   Pill,
   Btn,
-  Identicon,
   Field,
   Input,
   Select,
@@ -35,7 +34,6 @@ export const Profile = () => {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user, setShowLogin } = useAuth();
-  const onNavigate = (r: string) => router.push(r === "home" ? "/" : `/${r}`);
 
   const bindId = searchParams.get("bind");
   const [bindMcp, setBindMcp] = useState<Mcp | null>(
@@ -345,7 +343,6 @@ export const Profile = () => {
               user={user ?? undefined}
               vaults={vaults}
               agents={agents}
-              onNavigate={onNavigate}
             />
           )}
           {tab === "vaults" && (
@@ -385,12 +382,10 @@ export const Profile = () => {
 const Overview = ({
   vaults,
   agents,
-  onNavigate,
 }: {
   user?: User;
   vaults: Vault[];
   agents: Agent[];
-  onNavigate: (r: string) => void;
 }) => (
   <div>
     <div
@@ -466,61 +461,11 @@ const Overview = ({
       })}
     </div>
 
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "1.4fr 1fr",
-        gap: 24,
-        marginTop: 28,
-      }}
-    >
-      <div>
-        <h3 className="display" style={{ fontSize: 20, margin: 0 }}>
-          Recent activity
-        </h3>
-        <ActivityFeed compact />
-      </div>
-      <div>
-        <h3 className="display" style={{ fontSize: 20, margin: 0 }}>
-          Suggested MCPs
-        </h3>
-        <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
-          {MCP_REGISTRY.slice(0, 3).map((m) => (
-            <div
-              key={m.id}
-              onClick={() => onNavigate("explore")}
-              style={{
-                padding: 12,
-                display: "flex",
-                gap: 10,
-                alignItems: "center",
-                background: "rgba(241,233,212,0.5)",
-                border: "1px solid var(--line)",
-                cursor: "pointer",
-              }}
-            >
-              <Identicon seed={m.id} size={36} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div
-                  style={{
-                    fontWeight: 600,
-                    fontSize: 13,
-                    whiteSpace: "nowrap",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                  }}
-                >
-                  {m.name}
-                </div>
-                <div style={{ fontSize: 11.5, color: "var(--ink-soft)" }}>
-                  {m.tags.slice(0, 2).join(" · ")}
-                </div>
-              </div>
-              <span style={{ color: "var(--brass-deep)" }}>→</span>
-            </div>
-          ))}
-        </div>
-      </div>
+    <div style={{ marginTop: 28 }}>
+      <h3 className="display" style={{ fontSize: 20, margin: 0 }}>
+        Recent activity
+      </h3>
+      <ActivityFeed compact />
     </div>
   </div>
 );
