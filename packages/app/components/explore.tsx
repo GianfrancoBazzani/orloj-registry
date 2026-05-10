@@ -226,105 +226,108 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
             ))}
           </div>
         ) : (
-          <div
+          <table
             style={{
+              width: "100%",
+              borderCollapse: "collapse",
               border: "1px solid var(--line)",
               background: "rgba(241,233,212,0.4)",
             }}
           >
-            <div
-              className="smallcaps"
-              style={{
-                display: "grid",
-                gridTemplateColumns: "2.5fr 1.4fr 1fr 1fr 1fr 0.8fr",
-                gap: 12,
-                padding: "12px 16px",
-                fontSize: 11,
-                color: "var(--ink-soft)",
-                borderBottom: "1px solid var(--line)",
-                background: "var(--parchment-3)",
-              }}
-            >
-              <div>Interface</div>
-              <div>Author</div>
-              <div>Chain</div>
-              <div>Calls / 24h</div>
-              <div>Audits</div>
-              <div />
-            </div>
-            {list.map((m) => (
-              <div
-                key={m.id}
+            <colgroup>
+              <col style={{ width: "35%" }} />
+              <col style={{ width: "20%" }} />
+              <col style={{ width: "14%" }} />
+              <col style={{ width: "14%" }} />
+              <col style={{ width: "17%" }} />
+            </colgroup>
+            <thead>
+              <tr
                 style={{
-                  display: "grid",
-                  gridTemplateColumns: "2.5fr 1.4fr 1fr 1fr 1fr 0.8fr",
-                  gap: 12,
-                  padding: "14px 16px",
-                  alignItems: "center",
-                  borderBottom: "1px solid var(--line-soft)",
-                  cursor: "pointer",
+                  background: "var(--parchment-3)",
+                  borderBottom: "1px solid var(--line)",
                 }}
-                onClick={() => setSelected(m)}
-                onMouseEnter={(e) =>
-                  (e.currentTarget.style.background =
-                    "rgba(184,137,58,0.08)")
-                }
-                onMouseLeave={(e) =>
-                  (e.currentTarget.style.background = "transparent")
-                }
               >
-                <div
-                  style={{ display: "flex", gap: 10, alignItems: "center" }}
-                >
-                  <Identicon seed={m.id} size={32} />
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: 14 }}>
-                      {m.name}
-                    </div>
-                    <div
-                      className="mono"
-                      style={{ fontSize: 11, color: "var(--ink-soft)" }}
+                {(["Interface", "Author", "Chain", "Calls / 24h"] as const).map(
+                  (h) => (
+                    <th
+                      key={h}
+                      className="smallcaps"
+                      style={{
+                        padding: "12px 16px",
+                        fontSize: 11,
+                        color: "var(--ink-soft)",
+                        fontWeight: 400,
+                        textAlign: "left",
+                      }}
                     >
-                      {SHORT_ADDR(m.contract)}
-                    </div>
-                  </div>
-                </div>
-                <div style={{ fontSize: 13, color: "var(--verdigris-deep)" }}>
-                  {m.author}
-                </div>
-                <div style={{ fontSize: 13 }}>{m.chain}</div>
-                <div className="mono" style={{ fontSize: 13 }}>
-                  {m.callsLast24h.toLocaleString()}
-                </div>
-                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                  {m.audits.length > 0 ? (
-                    m.audits
-                      .slice(0, 1)
-                      .map((a) => (
-                        <Tag key={a} color="var(--verdigris-deep)">
-                          ✓ {a}
-                        </Tag>
-                      ))
-                  ) : (
-                    <Tag color="var(--wine)">unaudited</Tag>
-                  )}
-                  {m.audits.length > 1 && (
-                    <Tag color="var(--ink-soft)">+{m.audits.length - 1}</Tag>
-                  )}
-                </div>
-                <Btn
-                  size="sm"
-                  kind="ghost"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    openLaunchModal(m);
-                  }}
+                      {h}
+                    </th>
+                  ),
+                )}
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {list.map((m) => (
+                <tr
+                  key={m.id}
+                  style={{ borderBottom: "1px solid var(--line-soft)", cursor: "pointer" }}
+                  onClick={() => setSelected(m)}
+                  onMouseEnter={(e) =>
+                    (e.currentTarget.style.background = "rgba(184,137,58,0.08)")
+                  }
+                  onMouseLeave={(e) =>
+                    (e.currentTarget.style.background = "transparent")
+                  }
                 >
-                  Add MCP →
-                </Btn>
-              </div>
-            ))}
-          </div>
+                  <td style={{ padding: "14px 16px" }}>
+                    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                      <Identicon seed={m.id} size={32} />
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: 14 }}>
+                          {m.name}
+                        </div>
+                        <div
+                          className="mono"
+                          style={{ fontSize: 11, color: "var(--ink-soft)" }}
+                        >
+                          {SHORT_ADDR(m.contract)}
+                        </div>
+                      </div>
+                    </div>
+                  </td>
+                  <td
+                    style={{
+                      padding: "14px 16px",
+                      fontSize: 13,
+                      color: "var(--verdigris-deep)",
+                    }}
+                  >
+                    {m.author}
+                  </td>
+                  <td style={{ padding: "14px 16px", fontSize: 13 }}>
+                    {m.chain}
+                  </td>
+                  <td className="mono" style={{ padding: "14px 16px", fontSize: 13 }}>
+                    {m.callsLast24h.toLocaleString()}
+                  </td>
+                  <td style={{ padding: "14px 16px", textAlign: "right" }}>
+                    <Btn
+                      size="sm"
+                      kind="ghost"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openLaunchModal(m);
+                      }}
+                    >
+                      Add MCP →
+                    </Btn>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
 
         {list.length === 0 && (
@@ -455,12 +458,6 @@ const MCPCard = ({
             style={{ fontSize: 17, color: "var(--ink)" }}
           >
             {m.name}
-          </div>
-          <div
-            className="mono"
-            style={{ fontSize: 11, color: "var(--ink-soft)" }}
-          >
-            ★ {m.stars.toLocaleString()}
           </div>
         </div>
         <div
