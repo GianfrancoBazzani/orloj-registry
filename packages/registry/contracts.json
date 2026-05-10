@@ -40,5 +40,11 @@
         "address": false,
         "implementation": false,
         "rpcUrl": "wss://ethereum-sepolia-rpc.publicnode.com"
+    },
+    {
+        "chainId": 1,
+        "address": "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",
+        "implementation": false,
+        "rpcUrl": "wss://ethereum-rpc.publicnode.com"
     }
 ]
