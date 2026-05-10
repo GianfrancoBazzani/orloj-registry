@@ -22,8 +22,9 @@ export const Landing = () => {
   return (
     <main>
       {/* HERO */}
-      <section style={{ position: "relative", padding: "64px 32px 24px" }}>
+      <section className="hero-section" style={{ position: "relative", padding: "64px 32px 24px" }}>
         <div
+          className="hero-grid"
           style={{
             maxWidth: 1200,
             margin: "0 auto",
@@ -112,6 +113,7 @@ export const Landing = () => {
           </div>
 
           <div
+            className="hero-clock"
             style={{
               position: "relative",
               display: "flex",
@@ -139,7 +141,7 @@ export const Landing = () => {
       <Divider />
 
       {/* TWO FORKS */}
-      <section style={{ padding: "56px 32px 32px" }}>
+      <section className="section-pad" style={{ padding: "56px 32px 32px" }}>
         <div style={{ maxWidth: 1200, margin: "0 auto" }}>
           <SectionHeader
             eyebrow={t("landing.twoPathsEyebrow")}
@@ -149,6 +151,7 @@ export const Landing = () => {
           />
 
           <div
+            className="forks-grid"
             style={{
               display: "grid",
               gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))",
@@ -191,7 +194,7 @@ export const Landing = () => {
       </section>
 
       {/* STATS BAND */}
-      <section style={{ padding: "40px 32px" }}>
+      <section className="section-pad" style={{ padding: "40px 32px" }}>
         <div
           style={{
             maxWidth: 1200,
@@ -201,6 +204,7 @@ export const Landing = () => {
           }}
         >
           <div
+            className="stats-grid"
             style={{
               display: "grid",
               gridTemplateColumns: "repeat(4, 1fr)",
@@ -238,7 +242,7 @@ export const Landing = () => {
       </section>
 
       {/* HOW IT WORKS */}
-      <section style={{ padding: "64px 32px" }}>
+      <section className="section-pad" style={{ padding: "64px 32px" }}>
         <div style={{ maxWidth: 1200, margin: "0 auto" }}>
           <SectionHeader
             eyebrow={t("landing.mechanismEyebrow")}
@@ -574,6 +578,7 @@ const ForkCard = ({
   return (
     <div
       onClick={onClick}
+      className="fork-card"
       style={{
         position: "relative",
         padding: 32,
@@ -660,6 +665,7 @@ const ForkCard = ({
         ))}
       </ul>
       <div
+        className="fork-card-cta"
         style={{
           position: "absolute",
           bottom: 24,

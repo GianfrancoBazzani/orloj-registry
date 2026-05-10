@@ -69,6 +69,7 @@ const Footer = () => {
   const t = useT();
   return (
     <footer
+      className="site-footer"
       style={{
         marginTop: 60,
         padding: "40px 32px",

@@ -62,7 +62,7 @@ export const Register = () => {
 
   return (
     <>
-      <main style={{ padding: "40px 32px 80px" }}>
+      <main className="page-pad" style={{ padding: "40px 32px 80px" }}>
         <div style={{ maxWidth: 900, margin: "0 auto" }}>
           {/* Header */}
           <div
@@ -106,6 +106,7 @@ export const Register = () => {
           <Divider />
 
           <div
+            className="register-grid"
             style={{
               display: "grid",
               gridTemplateColumns: "1.4fr 1fr",
@@ -116,6 +117,7 @@ export const Register = () => {
           >
             {/* Form panel */}
             <div
+              className="register-form-panel"
               style={{
                 padding: 32,
                 background: "rgba(241,233,212,0.5)",
@@ -124,6 +126,7 @@ export const Register = () => {
             >
               <div style={{ display: "grid", gap: 20 }}>
                 <div
+                  className="register-form-row"
                   style={{
                     display: "grid",
                     gridTemplateColumns: "1fr 180px",
@@ -199,7 +202,7 @@ export const Register = () => {
             </div>
 
             {/* Side panel */}
-            <div style={{ position: "sticky", top: 24 }}>
+            <div className="register-side" style={{ position: "sticky", top: 24 }}>
               <div
                 style={{
                   border: "1px solid var(--line)",

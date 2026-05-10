@@ -149,6 +149,7 @@ export const LaunchModal = ({
     >
       <div
         onClick={(e) => e.stopPropagation()}
+        className="launch-modal"
         style={{
           width: "min(700px, 100%)",
           background: "var(--parchment)",
@@ -218,7 +219,7 @@ export const LaunchModal = ({
           </div>
         </div>
 
-        <div style={{ padding: "22px 24px 28px" }}>
+        <div className="launch-modal-body" style={{ padding: "22px 24px 28px" }}>
           {/* Registered name + URL */}
           <div
             style={{

@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Pill,
@@ -45,6 +45,15 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
   const [view, setView] = useState<"grid" | "list">("grid");
   const [selected, setSelected] = useState<Mcp | null>(null);
 
+  // List view's table doesn't fit phone widths — force grid below 768px.
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 768px)");
+    const apply = () => { if (mq.matches) setView("grid"); };
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, []);
+
   const allTags = [ALL_CAPS, ...new Set(mcps.flatMap((m) => m.tags))];
   const allChains = [ALL_CHAINS, ...new Set(mcps.map((m) => m.chain))];
 
@@ -70,7 +79,7 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
   if (sort === SORT_RECENT) list = [...list].reverse();
 
   return (
-    <main style={{ padding: "40px 32px 80px" }}>
+    <main className="page-pad" style={{ padding: "40px 32px 80px" }}>
       <div style={{ maxWidth: 1280, margin: "0 auto" }}>
         {/* Header */}
         <div
@@ -115,6 +124,7 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
 
         {/* Filter rail */}
         <div
+          className="explore-filters"
           style={{
             display: "grid",
             gridTemplateColumns: "1.5fr repeat(3, 1fr) auto",
@@ -123,7 +133,7 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
             alignItems: "center",
           }}
         >
-          <div style={{ position: "relative" }}>
+          <div className="explore-search" style={{ position: "relative" }}>
             <Input
               placeholder={t("explore.searchPlaceholder")}
               value={q}
@@ -149,6 +159,7 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
             options={[SORT_ACTIVE, SORT_STARRED, SORT_RECENT]}
           />
           <div
+            className="explore-view-toggle"
             style={{
               display: "flex",
               gap: 4,
@@ -214,6 +225,7 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
         {/* Listing */}
         {view === "grid" ? (
           <div
+            className="explore-grid"
             style={{
               display: "grid",
               gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))",
@@ -226,6 +238,7 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
                 m={m}
                 onClick={() => setSelected(m)}
                 onAddMcp={() => openLaunchModal(m)}
+                onChainClick={(c) => setChain(c)}
               />
             ))}
           </div>
@@ -373,10 +386,12 @@ const MCPCard = ({
   m,
   onClick,
   onAddMcp,
+  onChainClick,
 }: {
   m: Mcp;
   onClick: () => void;
   onAddMcp: () => void;
+  onChainClick: (chain: string) => void;
 }) => {
   const accent =
     m.color === "verdigris"
@@ -389,6 +404,7 @@ const MCPCard = ({
   return (
     <div
       onClick={onClick}
+      className="mcp-card"
       style={{
         position: "relative",
         background: "rgba(241,233,212,0.55)",
@@ -435,8 +451,35 @@ const MCPCard = ({
             right: 12,
             display: "flex",
             gap: 6,
+            alignItems: "center",
           }}
         >
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onChainClick(m.chain);
+            }}
+            className="smallcaps"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              padding: "3px 10px",
+              borderRadius: 999,
+              background: "rgba(241,233,212,0.95)",
+              color: "var(--ink)",
+              border: "1px solid var(--ink)",
+              fontFamily: "var(--font-ui)",
+              fontSize: 11,
+              fontWeight: 500,
+              letterSpacing: "0.16em",
+              cursor: "pointer",
+            }}
+            title={`Filter by ${m.chain}`}
+          >
+            ⛓ {m.chain}
+          </button>
           {m.verified && (
             <Pill
               tone="brass"
@@ -498,6 +541,7 @@ const MCPCard = ({
         </div>
 
         <div
+          className="mcp-card-footer"
           style={{
             display: "flex",
             justifyContent: "space-between",
@@ -568,6 +612,7 @@ const DetailDrawer = ({
   >
     <div
       onClick={(e) => e.stopPropagation()}
+      className="detail-drawer"
       style={{
         width: "min(640px, 100%)",
         background: "var(--parchment)",
