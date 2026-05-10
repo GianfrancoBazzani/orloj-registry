@@ -10,6 +10,7 @@ import {
   StainedPanel,
 } from "./ornaments";
 import { LaunchModal, type RegisterResult } from "./launch-modal";
+import { useT, useLocale } from "./i18n-context";
 
 const CHAIN_IDS: Record<string, number> = {
   Ethereum: 1,
@@ -22,6 +23,8 @@ const CHAIN_IDS: Record<string, number> = {
 
 export const Register = () => {
   const router = useRouter();
+  const locale = useLocale();
+  const t = useT();
   const [address, setAddress] = useState("");
   const [chain, setChain] = useState("Ethereum");
   const [rpcUrl, setRpcUrl] = useState("");
@@ -81,7 +84,7 @@ export const Register = () => {
                   lineHeight: 1,
                 }}
               >
-                Cast a new bell
+                {t("register.title")}
               </h1>
               <p
                 className="poetic"
@@ -92,12 +95,11 @@ export const Register = () => {
                   marginBottom: 0,
                 }}
               >
-                Paste a verified contract. ORLOJ resolves the ABI and forges
-                the interface.
+                {t("register.subtitle")}
               </p>
             </div>
-            <Btn kind="ghost" onClick={() => router.push("/explore")}>
-              ← Back to registry
+            <Btn kind="ghost" onClick={() => router.push(`/${locale}/explore`)}>
+              {t("register.backToRegistry")}
             </Btn>
           </div>
 
@@ -128,7 +130,7 @@ export const Register = () => {
                     gap: 12,
                   }}
                 >
-                  <Field label="Contract address">
+                  <Field label={t("register.contractAddress")}>
                     <Input
                       value={address}
                       onChange={(e) => setAddress(e.target.value)}
@@ -136,7 +138,7 @@ export const Register = () => {
                       style={{ fontFamily: "var(--font-mono)" }}
                     />
                   </Field>
-                  <Field label="Chain">
+                  <Field label={t("register.chain")}>
                     <Select
                       value={chain}
                       onChange={setChain}
@@ -146,8 +148,8 @@ export const Register = () => {
                 </div>
 
                 <Field
-                  label="RPC URL"
-                  hint="Optional — leave blank to use the default public endpoint."
+                  label={t("register.rpcUrl")}
+                  hint={t("register.rpcHint")}
                 >
                   <Input
                     value={rpcUrl}
@@ -191,7 +193,7 @@ export const Register = () => {
                   disabled={!validAddress || submitting}
                   onClick={submit}
                 >
-                  {submitting ? "Forging the interface…" : "Strike the bell — publish"}
+                  {submitting ? t("register.submitting") : t("register.submit")}
                 </Btn>
               </div>
             </div>
@@ -230,15 +232,12 @@ export const Register = () => {
                       marginBottom: 12,
                     }}
                   >
-                    checks
+                    {t("register.checksLabel")}
                   </div>
                   {[
-                    ["Address valid", validAddress],
-                    ["Chain selected", true],
-                    [
-                      "Custom RPC",
-                      rpcUrl.startsWith("http"),
-                    ],
+                    [t("register.checkAddress"), validAddress],
+                    [t("register.checkChain"), true],
+                    [t("register.checkCustomRpc"), rpcUrl.startsWith("http")],
                   ].map(([label, ok]) => (
                     <div
                       key={String(label)}
@@ -280,11 +279,9 @@ export const Register = () => {
                     marginBottom: 6,
                   }}
                 >
-                  how it works
+                  {t("register.howItWorks")}
                 </span>
-                ORLOJ fetches the verified ABI from Sourcify, resolves proxy
-                implementations, and generates a typed MCP server you can bind
-                to any agent in one command.
+                {t("register.howItWorksDesc")}
               </div>
             </div>
           </div>

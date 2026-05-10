@@ -1,7 +1,5 @@
 import type { Metadata } from "next";
 import { Cinzel, Cormorant_Garamond, Space_Grotesk, JetBrains_Mono } from "next/font/google";
-import { AuthProvider } from "@/components/auth-context";
-import { Shell } from "@/components/shell";
 import "./globals.css";
 
 const cinzel = Cinzel({
@@ -51,11 +49,7 @@ export default function RootLayout({
       lang="en"
       className={`${cinzel.variable} ${cormorant.variable} ${spaceGrotesk.variable} ${jetbrainsMono.variable}`}
     >
-      <body>
-        <AuthProvider>
-          <Shell>{children}</Shell>
-        </AuthProvider>
-      </body>
+      <body>{children}</body>
     </html>
   );
 }

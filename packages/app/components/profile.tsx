@@ -5,6 +5,7 @@ import type { Hex } from "viem";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "./auth-context";
 import { authClient } from "@/lib/auth-client";
+import { useT, useLocale } from "./i18n-context";
 import {
   Pill,
   Btn,
@@ -53,6 +54,8 @@ interface Metrics {
 
 export const Profile = () => {
   const router = useRouter();
+  const locale = useLocale();
+  const t = useT();
   const searchParams = useSearchParams();
   const { user, setShowLogin } = useAuth();
 
@@ -62,7 +65,7 @@ export const Profile = () => {
   );
   const onClearBind = () => {
     setBindMcp(null);
-    router.replace("/profile");
+    router.replace(`/${locale}/profile`);
   };
 
   const [tab, setTab] = useState(bindMcp ? "agents" : "overview");
@@ -202,17 +205,17 @@ export const Profile = () => {
   }, [user, reloadAgents, reloadMetrics]);
 
   const tabs = [
-    { id: "overview", l: "Overview" },
-    { id: "vaults", l: "Vaults & Keys" },
-    { id: "agents", l: "Agents" },
-    { id: "settings", l: "Settings" },
+    { id: "overview", l: t("profile.tabOverview") },
+    { id: "vaults", l: t("profile.tabVaults") },
+    { id: "agents", l: t("profile.tabAgents") },
+    { id: "settings", l: t("profile.tabSettings") },
   ];
 
   if (!user) {
     return (
       <main style={{ padding: "80px 32px", textAlign: "center" }}>
         <p className="poetic" style={{ fontSize: 22, color: "var(--ink-soft)" }}>
-          Sign in to access your profile.
+          {t("profile.signInPrompt")}
         </p>
         <button
           onClick={() => setShowLogin(true)}
@@ -227,7 +230,7 @@ export const Profile = () => {
             cursor: "pointer",
           }}
         >
-          Sign in →
+          {t("profile.signInButton")}
         </button>
       </main>
     );
@@ -283,7 +286,7 @@ export const Profile = () => {
                 marginTop: 4,
               }}
             >
-              {user.address ? SHORT_ADDR(user.address) : ""} · joined{" "}
+              {user.address ? SHORT_ADDR(user.address) : ""} · {t("profile.joined")}{" "}
               {user.joined}
             </div>
             <div
@@ -295,12 +298,12 @@ export const Profile = () => {
                 color: "rgba(241,233,212,0.7)",
               }}
             >
-              <span>{vaults.length} vaults</span>
+              <span>{t("profile.vaultsCount", { n: vaults.length })}</span>
               <span>·</span>
-              <span>{agents.length} agents</span>
+              <span>{t("profile.agentsCount", { n: agents.length })}</span>
               <span>·</span>
               <span>
-                {agents.reduce((a, b) => a + b.runs, 0)} tool calls this month
+                {t("profile.toolCallsMonth", { n: agents.reduce((a, b) => a + b.runs, 0) })}
               </span>
             </div>
           </div>
@@ -354,7 +357,7 @@ export const Profile = () => {
             <span style={{ fontSize: 22, color: "var(--brass-deep)" }}>🔗</span>
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 600, fontSize: 14 }}>
-                Binding &ldquo;{bindMcp.name}&rdquo; to a new agent…
+                {t("profile.bindingBanner", { name: bindMcp.name })}
               </div>
               <div
                 style={{
@@ -363,11 +366,11 @@ export const Profile = () => {
                   marginTop: 2,
                 }}
               >
-                Select a vault below or close to bind to an existing agent.
+                {t("profile.bindingSubtitle")}
               </div>
             </div>
             <Btn size="sm" kind="ghost" onClick={onClearBind}>
-              Cancel binding
+              {t("profile.cancelBinding")}
             </Btn>
           </div>
         )}
@@ -426,16 +429,20 @@ const Overview = ({
   agents: Agent[];
   metrics: Metrics | null;
 }) => {
+  const t = useT();
   const curr = metrics?.toolCallsLast30Days ?? 0;
   const prior = metrics?.toolCallsPrior30Days ?? 0;
+  const pct = Math.abs(Math.round(((curr - prior) / prior) * 100));
+  const sign = curr >= prior ? "+" : "-";
   const deltaLabel =
     prior === 0
       ? curr > 0
-        ? "first 30 days"
-        : "no activity yet"
-      : `${curr >= prior ? "+" : ""}${Math.round(((curr - prior) / prior) * 100)}% vs prior 30d`;
+        ? t("profile.metricFirst30")
+        : t("profile.metricNoActivity")
+      : t("profile.metricVsPrior", { sign, pct });
   const mcpsBound = metrics?.mcpsBound ?? 0;
   const chainsCovered = metrics?.chainsCovered ?? 0;
+  const chainsKey = chainsCovered === 1 ? "profile.metricAcrossChains" : "profile.metricAcrossChains_plural";
 
   return (
   <div>
@@ -448,27 +455,27 @@ const Overview = ({
     >
       {[
         {
-          l: "tool calls / month",
+          l: t("profile.metricToolCalls"),
           v: curr.toLocaleString(),
           d: deltaLabel,
           tone: "verdigris",
         },
         {
-          l: "active vaults",
+          l: t("profile.metricVaults"),
           v: vaults.length,
-          d: "all under policy",
+          d: t("profile.metricAllPolicy"),
           tone: "brass",
         },
         {
-          l: "agents online",
+          l: t("profile.metricAgents"),
           v: agents.filter((a) => a.status === "active").length,
-          d: `${agents.length} total`,
+          d: t("profile.metricTotal", { n: agents.length }),
           tone: "blue",
         },
         {
-          l: "mcps bound",
+          l: t("profile.metricMcps"),
           v: mcpsBound,
-          d: `across ${chainsCovered} chain${chainsCovered === 1 ? "" : "s"}`,
+          d: t(chainsKey, { n: chainsCovered }),
           tone: "wine",
         },
       ].map((s, i) => {
@@ -519,7 +526,7 @@ const Overview = ({
 
     <div style={{ marginTop: 28 }}>
       <h3 className="display" style={{ fontSize: 20, margin: 0 }}>
-        Recent activity
+        {t("profile.recentActivity")}
       </h3>
       <ActivityFeed
         compact
@@ -550,6 +557,7 @@ const Vaults = ({
   editingVaultId: string | null;
   setEditingVaultId: (id: string | null) => void;
 }) => {
+  const t = useT();
   const editingVault = editingVaultId
     ? (vaults.find((v) => v.id === editingVaultId) ?? null)
     : null;
@@ -580,7 +588,7 @@ const Vaults = ({
       >
         <div>
           <h2 className="display" style={{ fontSize: 28, margin: 0 }}>
-            Vaults
+            {t("profile.vaultsTitle")}
           </h2>
           <p
             className="poetic"
@@ -591,11 +599,11 @@ const Vaults = ({
               marginBottom: 0,
             }}
           >
-            Custody routed through KMS providers. Keys never leave the enclave.
+            {t("profile.vaultsSubtitle")}
           </p>
         </div>
         <Btn kind="primary" onClick={() => setCreating(true)}>
-          + Create vault
+          {t("profile.createVault")}
         </Btn>
       </div>
 
@@ -643,7 +651,7 @@ const Vaults = ({
             fontSize: 16,
           }}
         >
-          Loading vaults…
+          {t("profile.loadingVaults")}
         </div>
       ) : !loading && vaults.length === 0 && !error ? (
         <div
@@ -655,7 +663,7 @@ const Vaults = ({
             fontSize: 16,
           }}
         >
-          No vaults yet — create one to get started.
+          {t("profile.noVaults")}
         </div>
       ) : (
         <div
@@ -776,6 +784,7 @@ const CreateVault = ({
   onCancel: () => void;
   onCreate: (vault: Vault) => void;
 }) => {
+  const t = useT();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [provider, setProvider] = useState<"oneclaw" | "orbitport">("oneclaw");
@@ -797,23 +806,23 @@ const CreateVault = ({
         }),
       });
       if (res.status === 401) {
-        setError("Your session has expired. Please sign in again.");
+        setError(t("profile.sessionExpired"));
         return;
       }
       const payload = (await res.json().catch(() => null)) as
         | { vault?: Vault; error?: string }
         | null;
       if (!res.ok) {
-        setError(payload?.error ?? "Failed to create vault.");
+        setError(payload?.error ?? t("profile.failedCreateVault"));
         return;
       }
       if (!payload?.vault) {
-        setError("Unexpected response from server.");
+        setError(t("profile.unexpectedResponse"));
         return;
       }
       onCreate(payload.vault);
     } catch {
-      setError("Network error. Please try again.");
+      setError(t("profile.networkError"));
     } finally {
       setSubmitting(false);
     }
@@ -838,10 +847,10 @@ const CreateVault = ({
       >
         <GearIcon size={20} />
         <h3 className="display" style={{ fontSize: 18, margin: 0 }}>
-          New vault
+          {t("profile.vaultsTitle")}
         </h3>
       </div>
-      <Field label="Name">
+      <Field label={t("profile.nameField")}>
         <Input
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -850,11 +859,11 @@ const CreateVault = ({
           disabled={submitting}
         />
       </Field>
-      <Field label="Description" style={{ marginTop: 16 }}>
+      <Field label={t("profile.descriptionField")} style={{ marginTop: 16 }}>
         <textarea
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          placeholder="What is this vault for?"
+          placeholder={t("profile.descriptionPlaceholder")}
           maxLength={500}
           disabled={submitting}
           rows={3}
@@ -872,7 +881,7 @@ const CreateVault = ({
           }}
         />
       </Field>
-      <Field label="KMS provider" style={{ marginTop: 16 }}>
+      <Field label={t("profile.kmsProvider")} style={{ marginTop: 16 }}>
         <div
           style={{
             display: "grid",
@@ -885,12 +894,12 @@ const CreateVault = ({
               {
                 id: "oneclaw" as const,
                 title: "1Claw",
-                desc: "HSM + TEE, intent-based signing.",
+                desc: t("profile.hsmDesc"),
               },
               {
                 id: "orbitport" as const,
                 title: "SpaceComputer",
-                desc: "Orbital HSM with SpaceTEE.",
+                desc: t("profile.spacecomputerDesc"),
               },
             ]
           ).map((opt) => {
@@ -961,7 +970,7 @@ const CreateVault = ({
           disabled={!name.trim() || submitting}
           onClick={submit}
         >
-          {submitting ? "Creating…" : "Generate vault"}
+          {submitting ? t("profile.creating") : t("profile.generateVault")}
         </Btn>
       </div>
     </div>
@@ -1320,6 +1329,7 @@ const BackupKeyModal = ({
   vaultKey: VaultKey;
   onClose: () => void;
 }) => {
+  const t = useT();
   const [revealed, setRevealed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [value, setValue] = useState<string | null>(null);
@@ -1490,13 +1500,13 @@ const BackupKeyModal = ({
                   color: "var(--parchment)",
                 }}
               >
-                {loading ? "Loading…" : "I understand, reveal key"}
+                {loading ? t("profile.loading") : t("profile.revealKey")}
               </Btn>
             </>
           ) : (
             <>
               <Btn kind="ghost" size="sm" onClick={copy}>
-                {copied ? "Copied!" : "Copy key"}
+                {copied ? t("profile.copiedKey") : t("profile.copyKey")}
               </Btn>
               <Btn kind="primary" size="sm" onClick={onClose}>
                 Done
@@ -1520,6 +1530,7 @@ const EditVault = ({
   onDeleted: (id: string) => void;
   onKeyCountChange: (id: string, count: number) => void;
 }) => {
+  const t = useT();
   const [keys, setKeys] = useState<VaultKey[]>([]);
   const [keysLoading, setKeysLoading] = useState(false);
   const [keysError, setKeysError] = useState<string | null>(null);
@@ -1727,7 +1738,7 @@ const EditVault = ({
     try {
       const res = await fetch(`/api/vaults/${vault.id}`, { method: "DELETE" });
       if (res.status === 401) {
-        setError("Your session has expired. Please sign in again.");
+        setError(t("profile.sessionExpired"));
         return;
       }
       if (!res.ok && res.status !== 204) {
@@ -1739,7 +1750,7 @@ const EditVault = ({
       }
       onDeleted(vault.id);
     } catch {
-      setError("Network error. Please try again.");
+      setError(t("profile.networkError"));
     } finally {
       setDeleting(false);
     }
@@ -1820,14 +1831,14 @@ const EditVault = ({
                 </span>
                 <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
                   <IconBtn
-                    label={copiedKey === vault.address ? "Copied" : "Copy address"}
+                    label={copiedKey === vault.address ? t("profile.copied") : t("profile.copyAddress")}
                     onClick={() => void copyAddress(vault.address!)}
                     disabled={busy}
                   >
                     {copiedKey === vault.address ? <CheckIcon /> : <CopyIcon />}
                   </IconBtn>
                   <IconBtn
-                    label="Show payment QR"
+                    label={t("profile.showQr")}
                     onClick={() => setQrAddress(vault.address!)}
                     disabled={busy}
                   >
@@ -1925,21 +1936,21 @@ const EditVault = ({
                   </span>
                   <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
                     <IconBtn
-                      label={copiedKey === k.key ? "Copied" : "Copy address"}
+                      label={copiedKey === k.key ? t("profile.copied") : t("profile.copyAddress")}
                       onClick={() => void copyAddress(k.key)}
                       disabled={busy}
                     >
                       {copiedKey === k.key ? <CheckIcon /> : <CopyIcon />}
                     </IconBtn>
                     <IconBtn
-                      label="Show payment QR"
+                      label={t("profile.showQr")}
                       onClick={() => setQrAddress(k.key)}
                       disabled={busy}
                     >
                       <QrIcon />
                     </IconBtn>
                     <IconBtn
-                      label="Backup private key"
+                      label={t("profile.backupKey")}
                       onClick={() => setBackupKey(k)}
                       disabled={busy}
                     >
@@ -1948,8 +1959,8 @@ const EditVault = ({
                     <HoldDeleteBtn
                       label={
                         removingKey === k.key
-                          ? "Removing…"
-                          : "Hold to delete key"
+                          ? t("profile.removing")
+                          : t("profile.holdToDeleteKey")
                       }
                       onConfirm={() => void removeKey(k)}
                       disabled={busy}
@@ -1993,7 +2004,7 @@ const EditVault = ({
               }}
             >
               <Btn kind="primary" size="sm" onClick={createWallet} disabled={busy}>
-                {adding ? "Creating…" : "Create new wallet"}
+                {adding ? t("profile.creating") : t("profile.createWallet")}
               </Btn>
               <Btn
                 kind="ghost"
@@ -2020,7 +2031,7 @@ const EditVault = ({
                 border: "1px solid var(--line)",
               }}
             >
-              <Field label="Private key (0x-prefixed, 64 hex chars)">
+              <Field label={t("profile.privateKeyField")}>
                 <Input
                   value={importValue}
                   onChange={(e) => setImportValue(e.target.value)}
@@ -2054,7 +2065,7 @@ const EditVault = ({
                   onClick={importKey}
                   disabled={!importValue.trim() || busy}
                 >
-                  {adding ? "Adding…" : "Add"}
+                  {adding ? t("profile.adding") : t("profile.add")}
                 </Btn>
               </div>
             </div>
@@ -2136,7 +2147,7 @@ const EditVault = ({
                 color: "var(--parchment)",
               }}
             >
-              {deleting ? "Deleting…" : "Yes, delete"}
+              {deleting ? t("profile.deleting") : t("profile.yesDelete")}
             </Btn>
           </div>
         ) : (
@@ -2193,6 +2204,7 @@ const Agents = ({
   reload: (signal?: AbortSignal) => Promise<void>;
   reloadMetrics: (signal?: AbortSignal) => Promise<void>;
 }) => {
+  const t = useT();
   const [revealing, setRevealing] = useState<Agent | null>(null);
   const [changingKey, setChangingKey] = useState<Agent | null>(null);
   const [newApiKey, setNewApiKey] = useState<{
@@ -2295,7 +2307,7 @@ const Agents = ({
       )}
 
       {loading && agents.length === 0 ? (
-        <div style={{ padding: 24, color: "var(--ink-soft)" }}>Loading agents…</div>
+        <div style={{ padding: 24, color: "var(--ink-soft)" }}>{t("profile.loadingAgents")}</div>
       ) : agents.length === 0 ? (
         <div
           style={{
@@ -2417,7 +2429,7 @@ const Agents = ({
                   kind="ghost"
                   onClick={() => setChangingKey(a)}
                 >
-                  {a.keyPath ? "Change key" : "Grant key"}
+                  {a.keyPath ? t("profile.changeKey") : t("profile.grantKey")}
                 </Btn>
                 <Btn
                   size="sm"
@@ -2426,7 +2438,7 @@ const Agents = ({
                   onClick={() => handleDelete(a)}
                   style={{ color: "var(--wine)" }}
                 >
-                  {removingId === a.id ? "Deleting…" : "Delete"}
+                  {removingId === a.id ? t("profile.deleting") : t("profile.delete")}
                 </Btn>
               </div>
             </div>
@@ -2476,6 +2488,7 @@ const CreateAgent = ({
   onCancel: () => void;
   onCreated: (apiKey: string | null, name: string) => Promise<void> | void;
 }) => {
+  const t = useT();
   const [name, setName] = useState("");
   const [vaultId, setVaultId] = useState(vaults[0]?.id ?? "");
   const [keys, setKeys] = useState<VaultKey[]>([]);
@@ -2616,13 +2629,13 @@ const CreateAgent = ({
       >
         <GearIcon size={20} />
         <h3 className="display" style={{ fontSize: 18, margin: 0 }}>
-          {bindMcp ? `Bind "${bindMcp.name}" to a new agent` : "New agent"}
+          {bindMcp ? t("profile.bindingBanner", { name: bindMcp.name }) : t("profile.vaultsTitle")}
         </h3>
       </div>
       <div
         style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12 }}
       >
-        <Field label="Agent name" hint="A name your team will recognize.">
+        <Field label={t("profile.agentName")} hint={t("profile.agentNameHint")}>
           <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -2630,9 +2643,9 @@ const CreateAgent = ({
           />
         </Field>
         <Field
-          label="Operating vault"
+          label={t("profile.operatingVault")}
           hint={
-            vaults.length === 0 ? "Create a vault first to grant a key." : undefined
+            vaults.length === 0 ? t("profile.createVaultFirst") : undefined
           }
         >
           <Select
@@ -2648,17 +2661,17 @@ const CreateAgent = ({
 
       <div style={{ marginTop: 12 }}>
         <Field
-          label="Signing key"
+          label={t("profile.signingKey")}
           hint={
             keysLoading
-              ? "Loading keys…"
+              ? t("profile.loadingKeys")
               : keys.length === 0
                 ? selectedProvider === "orbitport"
-                  ? "Open the vault and wait for its KMS wallet to be provisioned."
-                  : "This vault has no keys yet. Add one in Vaults & Keys."
+                  ? t("profile.openVaultWait")
+                  : t("profile.noKeysYet")
                 : selectedProvider === "orbitport"
-                  ? "The agent will be granted signing access to this KMS-managed wallet."
-                  : "The agent will be granted read access to this key only."
+                  ? t("profile.kmsSigningAccess")
+                  : t("profile.readOnlyAccess")
           }
         >
           <Select
@@ -2739,10 +2752,10 @@ const CreateAgent = ({
         </Btn>
         <Btn kind="primary" disabled={!canSubmit} onClick={submit}>
           {submitting
-            ? "Registering…"
+            ? t("profile.registering")
             : bindMcp
-              ? "Bind & register"
-              : "Register agent"}
+              ? t("profile.bindAndRegister")
+              : t("profile.registerAgent")}
         </Btn>
       </div>
     </div>
@@ -2758,6 +2771,7 @@ const RevealAgentApiKeyModal = ({
   agentName: string;
   onClose: () => void;
 }) => {
+  const t = useT();
   const [revealed, setRevealed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [value, setValue] = useState<string | null>(null);
@@ -2929,7 +2943,7 @@ const RevealAgentApiKeyModal = ({
           ) : (
             <>
               <Btn kind="ghost" size="sm" onClick={copy}>
-                {copied ? "Copied!" : "Copy key"}
+                {copied ? t("profile.copiedKey") : t("profile.copyKey")}
               </Btn>
               <Btn kind="primary" size="sm" onClick={onClose}>
                 Done
@@ -2953,6 +2967,7 @@ const ChangeAgentKeyModal = ({
   onClose: () => void;
   onChanged: () => Promise<void> | void;
 }) => {
+  const t = useT();
   const [vaultId, setVaultId] = useState(agent.vaultId ?? vaults[0]?.id ?? "");
   const [keys, setKeys] = useState<VaultKey[]>([]);
   const [keysLoading, setKeysLoading] = useState(false);
@@ -3101,7 +3116,7 @@ const ChangeAgentKeyModal = ({
             label="Key"
             hint={
               keysLoading
-                ? "Loading…"
+                ? t("profile.loading")
                 : keys.length === 0
                   ? "No keys in this vault."
                   : undefined
@@ -3147,7 +3162,7 @@ const ChangeAgentKeyModal = ({
             disabled={!vaultId || !keyPath || submitting}
             onClick={submit}
           >
-            {submitting ? "Saving…" : agent.keyPath ? "Replace key" : "Grant key"}
+            {submitting ? "Saving…" : agent.keyPath ? t("profile.changeKey") : t("profile.grantKey")}
           </Btn>
         </div>
       </div>
@@ -3164,6 +3179,7 @@ const NewAgentApiKeyModal = ({
   apiKey: string;
   onClose: () => void;
 }) => {
+  const t = useT();
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try {
@@ -3234,7 +3250,7 @@ const NewAgentApiKeyModal = ({
           }}
         >
           <Btn kind="ghost" size="sm" onClick={copy}>
-            {copied ? "Copied!" : "Copy"}
+            {copied ? t("profile.copiedKey") : t("profile.copyKey")}
           </Btn>
           <Btn kind="primary" size="sm" onClick={onClose}>
             I&apos;ve saved it
