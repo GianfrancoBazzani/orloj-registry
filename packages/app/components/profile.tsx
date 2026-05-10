@@ -801,7 +801,7 @@ const CreateVault = ({
   const t = useT();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [provider, setProvider] = useState<"oneclaw" | "orbitport">("oneclaw");
+  const [provider, setProvider] = useState<"oneclaw" | "orbitport">("orbitport");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -906,14 +906,14 @@ const CreateVault = ({
           {(
             [
               {
-                id: "oneclaw" as const,
-                title: "1Claw",
-                desc: t("profile.hsmDesc"),
-              },
-              {
                 id: "orbitport" as const,
                 title: "SpaceComputer",
                 desc: t("profile.spacecomputerDesc"),
+              },
+              {
+                id: "oneclaw" as const,
+                title: "1Claw",
+                desc: t("profile.hsmDesc"),
               },
             ]
           ).map((opt) => {
