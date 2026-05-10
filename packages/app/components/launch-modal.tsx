@@ -128,6 +128,11 @@ export const LaunchModal = ({
     navigator.clipboard.writeText(config.code);
     setCopied(true);
     setTimeout(() => setCopied(false), 1800);
+    void fetch("/api/mcps/bind", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mcpName: result.name }),
+    }).catch((err) => console.error("[bind] failed", err));
   };
 
   return (

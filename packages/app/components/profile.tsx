@@ -30,6 +30,27 @@ interface User {
   provider: string;
 }
 
+interface ActivityRow {
+  occurredAt: string;
+  agentId: string;
+  mcpName: string;
+  contractName: string | null;
+  toolName: string;
+  status: "ok" | "error";
+  args: unknown;
+  resultSummary: string | null;
+  errorMessage: string | null;
+}
+
+interface Metrics {
+  toolCallsLast30Days: number;
+  toolCallsPrior30Days: number;
+  mcpsBound: number;
+  chainsCovered: number;
+  boundMcps: string[];
+  recentActivity: ActivityRow[];
+}
+
 export const Profile = () => {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -54,6 +75,19 @@ export const Profile = () => {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [agentsLoading, setAgentsLoading] = useState(false);
   const [agentsError, setAgentsError] = useState<string | null>(null);
+  const [metrics, setMetrics] = useState<Metrics | null>(null);
+
+  const reloadMetrics = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const res = await fetch("/api/metrics", { signal });
+      if (!res.ok) return;
+      const data = (await res.json()) as Metrics;
+      if (!signal?.aborted) setMetrics(data);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      console.error("[metrics] reload failed", err);
+    }
+  }, []);
 
   const reloadAgents = useCallback(async (signal?: AbortSignal) => {
     setAgentsLoading(true);
@@ -163,8 +197,9 @@ export const Profile = () => {
     };
     void Promise.resolve().then(run);
     void Promise.resolve().then(() => reloadAgents(ac.signal));
+    void Promise.resolve().then(() => reloadMetrics(ac.signal));
     return () => ac.abort();
-  }, [user, reloadAgents]);
+  }, [user, reloadAgents, reloadMetrics]);
 
   const tabs = [
     { id: "overview", l: "Overview" },
@@ -343,6 +378,7 @@ export const Profile = () => {
               user={user ?? undefined}
               vaults={vaults}
               agents={agents}
+              metrics={metrics}
             />
           )}
           {tab === "vaults" && (
@@ -368,6 +404,7 @@ export const Profile = () => {
               loading={agentsLoading}
               error={agentsError}
               reload={reloadAgents}
+              reloadMetrics={reloadMetrics}
             />
           )}
           {tab === "settings" && (
@@ -382,11 +419,25 @@ export const Profile = () => {
 const Overview = ({
   vaults,
   agents,
+  metrics,
 }: {
   user?: User;
   vaults: Vault[];
   agents: Agent[];
-}) => (
+  metrics: Metrics | null;
+}) => {
+  const curr = metrics?.toolCallsLast30Days ?? 0;
+  const prior = metrics?.toolCallsPrior30Days ?? 0;
+  const deltaLabel =
+    prior === 0
+      ? curr > 0
+        ? "first 30 days"
+        : "no activity yet"
+      : `${curr >= prior ? "+" : ""}${Math.round(((curr - prior) / prior) * 100)}% vs prior 30d`;
+  const mcpsBound = metrics?.mcpsBound ?? 0;
+  const chainsCovered = metrics?.chainsCovered ?? 0;
+
+  return (
   <div>
     <div
       style={{
@@ -398,8 +449,8 @@ const Overview = ({
       {[
         {
           l: "tool calls / month",
-          v: "1,047",
-          d: "+18% vs prior",
+          v: curr.toLocaleString(),
+          d: deltaLabel,
           tone: "verdigris",
         },
         {
@@ -414,7 +465,12 @@ const Overview = ({
           d: `${agents.length} total`,
           tone: "blue",
         },
-        { l: "mcps bound", v: "7", d: "across 4 chains", tone: "wine" },
+        {
+          l: "mcps bound",
+          v: mcpsBound,
+          d: `across ${chainsCovered} chain${chainsCovered === 1 ? "" : "s"}`,
+          tone: "wine",
+        },
       ].map((s, i) => {
         const accent =
           s.tone === "verdigris"
@@ -465,10 +521,15 @@ const Overview = ({
       <h3 className="display" style={{ fontSize: 20, margin: 0 }}>
         Recent activity
       </h3>
-      <ActivityFeed compact />
+      <ActivityFeed
+        compact
+        events={metrics?.recentActivity ?? []}
+        agents={agents}
+      />
     </div>
   </div>
-);
+  );
+};
 
 const Vaults = ({
   vaults,
@@ -2119,6 +2180,7 @@ const Agents = ({
   loading,
   error,
   reload,
+  reloadMetrics,
 }: {
   agents: Agent[];
   vaults: Vault[];
@@ -2129,6 +2191,7 @@ const Agents = ({
   loading: boolean;
   error: string | null;
   reload: (signal?: AbortSignal) => Promise<void>;
+  reloadMetrics: (signal?: AbortSignal) => Promise<void>;
 }) => {
   const [revealing, setRevealing] = useState<Agent | null>(null);
   const [changingKey, setChangingKey] = useState<Agent | null>(null);
@@ -2208,10 +2271,23 @@ const Agents = ({
             onClearBind();
           }}
           onCreated={async (apiKey, name) => {
+            const mcpToBind = bindMcp?.id;
             setCreating(false);
             onClearBind();
             if (apiKey) setNewApiKey({ agentName: name, apiKey });
             await reload();
+            if (mcpToBind) {
+              try {
+                await fetch("/api/mcps/bind", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ mcpName: mcpToBind }),
+                });
+                await reloadMetrics();
+              } catch (err) {
+                console.error("[bind] failed", err);
+              }
+            }
           }}
         />
       )}
@@ -3182,56 +3258,66 @@ const NewAgentApiKeyModal = ({
   );
 };
 
+const RELATIVE_TIME = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+const formatRelative = (iso: string): string => {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const seconds = Math.round(diffMs / 1000);
+  if (seconds < 60) return "just now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return RELATIVE_TIME.format(-minutes, "minute");
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return RELATIVE_TIME.format(-hours, "hour");
+  const days = Math.round(hours / 24);
+  if (days < 7) return RELATIVE_TIME.format(-days, "day");
+  const weeks = Math.round(days / 7);
+  if (weeks < 5) return RELATIVE_TIME.format(-weeks, "week");
+  const months = Math.round(days / 30);
+  return RELATIVE_TIME.format(-months, "month");
+};
+
+const summarizeResult = (row: ActivityRow): string => {
+  if (row.status === "error") return row.errorMessage?.slice(0, 60) ?? "";
+  const text = row.resultSummary ?? "";
+  if (!text) return "";
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object") {
+      if (typeof parsed.hash === "string") return `${parsed.hash.slice(0, 10)}…`;
+      if ("balance" in parsed) return `${parsed.balance} wei`;
+    }
+  } catch {
+    /* not JSON */
+  }
+  return text.length > 40 ? `${text.slice(0, 40)}…` : text;
+};
+
 const ActivityFeed = ({
   compact,
+  events,
+  agents,
 }: {
   compact?: boolean;
+  events: ActivityRow[];
+  agents: Agent[];
 }) => {
-  const events = [
-    {
-      t: "6 min ago",
-      who: "Karel",
-      what: "called Aave.deposit",
-      amount: "4,200 USDC",
-      ok: true,
-    },
-    {
-      t: "23 min ago",
-      who: "Karel",
-      what: "called Curve.quote",
-      amount: "15 routes",
-      ok: true,
-    },
-    {
-      t: "1 hr ago",
-      who: "Vlasta",
-      what: "paused — exit threshold reached",
-      amount: "",
-      ok: false,
-    },
-    {
-      t: "3 hr ago",
-      who: "Vlasta",
-      what: "called Optimism.proveWithdrawal",
-      amount: "0.4 ETH",
-      ok: true,
-    },
-    {
-      t: "yesterday",
-      who: "Bohumil",
-      what: "called Snapshot.castVote",
-      amount: "EIP-1234",
-      ok: true,
-    },
-    {
-      t: "yesterday",
-      who: "Karel",
-      what: "rejected — exceeded daily allowance",
-      amount: "600 USDC",
-      ok: false,
-    },
-  ];
   const slice = compact ? events.slice(0, 5) : events;
+  if (slice.length === 0) {
+    return (
+      <div
+        style={{
+          marginTop: 12,
+          padding: "20px 16px",
+          border: "1px solid var(--line)",
+          background: "rgba(241,233,212,0.5)",
+          fontSize: 13,
+          color: "var(--ink-soft)",
+          textAlign: "center",
+        }}
+      >
+        No tool calls yet — bind an MCP and have your agent call a tool.
+      </div>
+    );
+  }
   return (
     <div
       style={{
@@ -3240,45 +3326,53 @@ const ActivityFeed = ({
         background: "rgba(241,233,212,0.5)",
       }}
     >
-      {slice.map((e, i) => (
-        <div
-          key={i}
-          style={{
-            padding: "12px 16px",
-            borderBottom:
-              i < slice.length - 1 ? "1px solid var(--line-soft)" : "none",
-            display: "grid",
-            gridTemplateColumns: "90px 100px 1fr auto",
-            gap: 12,
-            alignItems: "center",
-          }}
-        >
+      {slice.map((e, i) => {
+        const agent = agents.find((a) => a.id === e.agentId);
+        const who = agent?.name ?? `${e.agentId.slice(0, 8)}…`;
+        const ok = e.status === "ok";
+        const what = ok
+          ? `called ${e.contractName ?? e.mcpName}.${e.toolName}`
+          : `${e.toolName} — ${e.errorMessage ? e.errorMessage.slice(0, 40) : "error"}`;
+        const amount = summarizeResult(e);
+        return (
           <div
-            className="smallcaps"
-            style={{ fontSize: 10, color: "var(--ink-soft)" }}
+            key={i}
+            style={{
+              padding: "12px 16px",
+              borderBottom:
+                i < slice.length - 1 ? "1px solid var(--line-soft)" : "none",
+              display: "grid",
+              gridTemplateColumns: "90px 100px 1fr auto",
+              gap: 12,
+              alignItems: "center",
+            }}
           >
-            {e.t}
-          </div>
-          <div style={{ fontSize: 13, fontWeight: 600 }}>{e.who}</div>
-          <div className="mono" style={{ fontSize: 12, color: "var(--ink-soft)" }}>
-            {e.what}
-          </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            {e.amount && (
-              <span className="mono" style={{ fontSize: 12 }}>
-                {e.amount}
+            <div
+              className="smallcaps"
+              style={{ fontSize: 10, color: "var(--ink-soft)" }}
+            >
+              {formatRelative(e.occurredAt)}
+            </div>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>{who}</div>
+            <div className="mono" style={{ fontSize: 12, color: "var(--ink-soft)" }}>
+              {what}
+            </div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              {amount && (
+                <span className="mono" style={{ fontSize: 12 }}>
+                  {amount}
+                </span>
+              )}
+              <span style={{ color: ok ? "var(--verdigris)" : "var(--wine)" }}>
+                {ok ? "✓" : "⚠"}
               </span>
-            )}
-            <span style={{ color: e.ok ? "var(--verdigris)" : "var(--wine)" }}>
-              {e.ok ? "✓" : "⚠"}
-            </span>
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 };
-
 
 const Settings = ({
   user,

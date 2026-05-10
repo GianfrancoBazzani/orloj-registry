@@ -102,6 +102,33 @@ const ensureSchema = async (pool: Pool): Promise<void> => {
     CREATE INDEX IF NOT EXISTS mcp_api_key_agent_id_idx
       ON mcp_api_key(agent_id)
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS tool_call_log (
+      id             BIGSERIAL PRIMARY KEY,
+      agent_id       TEXT NOT NULL,
+      user_id        TEXT NOT NULL,
+      mcp_name       TEXT NOT NULL,
+      contract_name  TEXT,
+      tool_name      TEXT NOT NULL,
+      args           JSONB,
+      status         TEXT NOT NULL CHECK (status IN ('ok','error')),
+      result_summary TEXT,
+      error_message  TEXT,
+      occurred_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS tool_call_log_user_time_idx
+      ON tool_call_log(user_id, occurred_at DESC)
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_mcp_binding (
+      user_id  TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      mcp_name TEXT NOT NULL,
+      bound_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id, mcp_name)
+    )
+  `);
 };
 
 export const getPool = (): Promise<Pool> => {

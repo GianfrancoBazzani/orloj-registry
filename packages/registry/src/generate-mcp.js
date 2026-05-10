@@ -4,6 +4,35 @@ import * as viemChains from "viem/chains";
 import { z } from "zod";
 import { getContract } from "./get-contract.js";
 import { signTransaction } from "./sign-transaction.js";
+import { logToolCall } from "./log-tool-call.mjs";
+
+function withLogging(ctx, handler) {
+  return async (args) => {
+    let status = "ok";
+    let resultSummary = null;
+    let errorMessage = null;
+    try {
+      const result = await handler(args);
+      if (result?.isError) {
+        status = "error";
+        errorMessage = String(result?.content?.[0]?.text ?? "");
+      } else if (typeof result?.content?.[0]?.text === "string") {
+        resultSummary = result.content[0].text;
+      }
+      await logToolCall({ ...ctx, args, status, resultSummary, errorMessage });
+      return result;
+    } catch (e) {
+      await logToolCall({
+        ...ctx,
+        args,
+        status: "error",
+        resultSummary: null,
+        errorMessage: String(e?.message ?? e),
+      });
+      throw e;
+    }
+  };
+}
 
 function findChain(chainId) {
   const id = Number(chainId);
@@ -25,7 +54,7 @@ const WEI_SCHEMA = z
   .regex(/^\d+$/)
   .describe("Amount in wei (decimal string)");
 
-function buildNativeTokenServer({ chain, publicClient, agentId }) {
+function buildNativeTokenServer({ chain, publicClient, agentId, mcpName, contractName }) {
   const chainId = chain.id;
   const name = `native_token_chain_id_${chainId}`;
   const symbol = chain.nativeCurrency?.symbol ?? "ETH";
@@ -39,57 +68,63 @@ function buildNativeTokenServer({ chain, publicClient, agentId }) {
     "balanceOf",
     balanceDoc,
     { address: ADDRESS_SCHEMA },
-    async ({ address }) => {
-      try {
-        const balance = await publicClient.getBalance({ address });
-        return {
-          content: [
-            { type: "text", text: JSON.stringify({ balance }, serialize, 2) },
-          ],
-        };
-      } catch (e) {
-        return {
-          content: [{ type: "text", text: `Error: ${e}` }],
-          isError: true,
-        };
-      }
-    },
+    withLogging(
+      { agentId, mcpName, contractName, toolName: "balanceOf" },
+      async ({ address }) => {
+        try {
+          const balance = await publicClient.getBalance({ address });
+          return {
+            content: [
+              { type: "text", text: JSON.stringify({ balance }, serialize, 2) },
+            ],
+          };
+        } catch (e) {
+          return {
+            content: [{ type: "text", text: `Error: ${e}` }],
+            isError: true,
+          };
+        }
+      },
+    ),
   );
 
   server.tool(
     "transfer",
     transferDoc,
     { to: ADDRESS_SCHEMA, value: WEI_SCHEMA },
-    async ({ to, value }) => {
-      try {
-        const serializedTransaction = await signTransaction({
-          agentId,
-          chain,
-          publicClient,
-          to,
-          value: BigInt(value),
-        });
-        const hash = await publicClient.sendRawTransaction({
-          serializedTransaction,
-        });
-        return {
-          content: [
-            { type: "text", text: JSON.stringify({ hash }, serialize, 2) },
-          ],
-        };
-      } catch (e) {
-        return {
-          content: [{ type: "text", text: `Error: ${e}` }],
-          isError: true,
-        };
-      }
-    },
+    withLogging(
+      { agentId, mcpName, contractName, toolName: "transfer" },
+      async ({ to, value }) => {
+        try {
+          const serializedTransaction = await signTransaction({
+            agentId,
+            chain,
+            publicClient,
+            to,
+            value: BigInt(value),
+          });
+          const hash = await publicClient.sendRawTransaction({
+            serializedTransaction,
+          });
+          return {
+            content: [
+              { type: "text", text: JSON.stringify({ hash }, serialize, 2) },
+            ],
+          };
+        } catch (e) {
+          return {
+            content: [{ type: "text", text: `Error: ${e}` }],
+            isError: true,
+          };
+        }
+      },
+    ),
   );
 
   return server;
 }
 
-function buildContractServer({ chain, publicClient, contract, address, agentId }) {
+function buildContractServer({ chain, publicClient, contract, address, agentId, mcpName, contractName }) {
   const server = new McpServer({
     name: contract.name_contract,
     version: "1.0.0",
@@ -105,21 +140,24 @@ function buildContractServer({ chain, publicClient, contract, address, agentId }
         fn.name,
         fn.doc || fn.name,
         fn.input.shape,
-        async (args) => {
-          try {
-            const result = await fn.func(publicClient, args);
-            return {
-              content: [
-                { type: "text", text: JSON.stringify(result, serialize, 2) },
-              ],
-            };
-          } catch (e) {
-            return {
-              content: [{ type: "text", text: `Error: ${e}` }],
-              isError: true,
-            };
-          }
-        },
+        withLogging(
+          { agentId, mcpName, contractName, toolName: fn.name },
+          async (args) => {
+            try {
+              const result = await fn.func(publicClient, args);
+              return {
+                content: [
+                  { type: "text", text: JSON.stringify(result, serialize, 2) },
+                ],
+              };
+            } catch (e) {
+              return {
+                content: [{ type: "text", text: `Error: ${e}` }],
+                isError: true,
+              };
+            }
+          },
+        ),
       );
       continue;
     }
@@ -129,30 +167,33 @@ function buildContractServer({ chain, publicClient, contract, address, agentId }
         fn.name,
         fn.doc || fn.name,
         fn.input.shape,
-        async (args) => {
-          try {
-            const serializedTransaction = await signTransaction({
-              agentId,
-              chain,
-              publicClient,
-              to: address,
-              data: fn.encodeData(args),
-            });
-            const hash = await publicClient.sendRawTransaction({
-              serializedTransaction,
-            });
-            return {
-              content: [
-                { type: "text", text: JSON.stringify({ hash }, serialize, 2) },
-              ],
-            };
-          } catch (e) {
-            return {
-              content: [{ type: "text", text: `Error: ${e}` }],
-              isError: true,
-            };
-          }
-        },
+        withLogging(
+          { agentId, mcpName, contractName, toolName: fn.name },
+          async (args) => {
+            try {
+              const serializedTransaction = await signTransaction({
+                agentId,
+                chain,
+                publicClient,
+                to: address,
+                data: fn.encodeData(args),
+              });
+              const hash = await publicClient.sendRawTransaction({
+                serializedTransaction,
+              });
+              return {
+                content: [
+                  { type: "text", text: JSON.stringify({ hash }, serialize, 2) },
+                ],
+              };
+            } catch (e) {
+              return {
+                content: [{ type: "text", text: `Error: ${e}` }],
+                isError: true,
+              };
+            }
+          },
+        ),
       );
     }
   }
@@ -202,8 +243,14 @@ export async function buildMcp({ chainId, address, implementation, rpcUrl }) {
     };
     return {
       meta,
-      build: ({ agentId }) =>
-        buildNativeTokenServer({ chain, publicClient, agentId }),
+      build: ({ agentId, mcpName }) =>
+        buildNativeTokenServer({
+          chain,
+          publicClient,
+          agentId,
+          mcpName,
+          contractName: `Native ${symbol}`,
+        }),
     };
   }
 
@@ -239,7 +286,15 @@ export async function buildMcp({ chainId, address, implementation, rpcUrl }) {
 
   return {
     meta,
-    build: ({ agentId }) =>
-      buildContractServer({ chain, publicClient, contract, address, agentId }),
+    build: ({ agentId, mcpName }) =>
+      buildContractServer({
+        chain,
+        publicClient,
+        contract,
+        address,
+        agentId,
+        mcpName,
+        contractName: contract.name_contract,
+      }),
   };
 }
