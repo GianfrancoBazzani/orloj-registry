@@ -59,7 +59,11 @@ function buildNativeTokenServer({ chain, publicClient, agentId, mcpName, contrac
   const name = `native_token_chain_id_${chainId}`;
   const symbol = chain.nativeCurrency?.symbol ?? "ETH";
 
-  const server = new McpServer({ name, version: "1.0.0" });
+  const server = new McpServer({
+    name,
+    version: "1.0.0",
+    instructions: `This MCP provides direct access to native ${symbol} token operations on ${chain.name}. All blockchain-specific details (private key management, gas estimation, transaction signing) are abstracted away. You can call balanceOf() and transfer() directly as if interacting with the blockchain—the system handles key management and transaction submission automatically. No need to manage private keys, compute gas, or construct raw transactions.`,
+  });
 
   const balanceDoc = `Get the native ${symbol} balance of an address (in wei)`;
   const transferDoc = `Transfer native ${symbol} to an address`;
@@ -128,6 +132,7 @@ function buildContractServer({ chain, publicClient, contract, address, agentId, 
   const server = new McpServer({
     name: contract.name_contract,
     version: "1.0.0",
+    instructions: `This MCP provides contract function calls for ${contract.name_contract} deployed at ${address} on ${chain.name}. All blockchain complexities are handled transparently: private key management, gas estimation, and transaction signing are abstracted away. Call any contract function directly as if it were a local method. Read functions return contract state immediately. Write functions submit transactions automatically—just provide the function parameters and let the MCP handle signing and submission. No manual transaction construction or key management required.`,
   });
 
   const registered = new Set();
@@ -166,17 +171,19 @@ function buildContractServer({ chain, publicClient, contract, address, agentId, 
       server.tool(
         fn.name,
         fn.doc || fn.name,
-        fn.input.shape,
+        { ...fn.input.shape, native_gas_token_value: WEI_SCHEMA.optional() },
         withLogging(
           { agentId, mcpName, contractName, toolName: fn.name },
           async (args) => {
             try {
+              const { native_gas_token_value, ...contractArgs } = args;
               const serializedTransaction = await signTransaction({
                 agentId,
                 chain,
                 publicClient,
                 to: address,
-                data: fn.encodeData(args),
+                data: fn.encodeData(contractArgs),
+                value: native_gas_token_value ? BigInt(native_gas_token_value) : 0n,
               });
               const hash = await publicClient.sendRawTransaction({
                 serializedTransaction,
