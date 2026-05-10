@@ -25,11 +25,10 @@ const WEI_SCHEMA = z
   .regex(/^\d+$/)
   .describe("Amount in wei (decimal string)");
 
-function buildNativeTokenMcp({ chain, publicClient }) {
+function buildNativeTokenServer({ chain, publicClient, agentId }) {
   const chainId = chain.id;
   const name = `native_token_chain_id_${chainId}`;
   const symbol = chain.nativeCurrency?.symbol ?? "ETH";
-  const decimals = chain.nativeCurrency?.decimals ?? 18;
 
   const server = new McpServer({ name, version: "1.0.0" });
 
@@ -64,7 +63,9 @@ function buildNativeTokenMcp({ chain, publicClient }) {
     async ({ to, value }) => {
       try {
         const serializedTransaction = await signTransaction({
+          agentId,
           chain,
+          publicClient,
           to,
           value: BigInt(value),
         });
@@ -85,67 +86,19 @@ function buildNativeTokenMcp({ chain, publicClient }) {
     },
   );
 
-  const tools = [
-    { name: "balanceOf", type: "view", description: balanceDoc },
-    { name: "transfer", type: "write", description: transferDoc },
-  ];
-
-  const meta = {
-    chainId,
-    address: false,
-    implementation: false,
-    contractName: name,
-    version: "1.0.0",
-    toolCount: tools.length,
-    tools,
-    nativeToken: true,
-    symbol,
-    decimals,
-  };
-
-  return { server, meta };
+  return server;
 }
 
-export async function buildMcp({ chainId, address, implementation, rpcUrl }) {
-  const chain = findChain(chainId);
-  if (!chain) {
-    throw new Error(`unknown chainId ${chainId}: not found in viem/chains`);
-  }
-
-  const isWs = typeof rpcUrl === "string" && /^wss?:\/\//i.test(rpcUrl);
-  const transport = isWs
-    ? webSocket(rpcUrl)
-    : http(rpcUrl || undefined, { timeout: 10_000 });
-  const publicClient = createPublicClient({ chain, transport });
-
-  if (!address && !implementation) {
-    return buildNativeTokenMcp({ chain, publicClient });
-  }
-
-  const abiAddress = implementation || address;
-  const contract = await getContract(address, chainId, {
-    ignoreEvents: true,
-    abiAddress,
-  });
-
+function buildContractServer({ chain, publicClient, contract, address, agentId }) {
   const server = new McpServer({
     name: contract.name_contract,
     version: "1.0.0",
   });
 
-  const tools = [];
   const registered = new Set();
   for (const fn of contract.functions) {
     if (registered.has(fn.name)) continue;
     registered.add(fn.name);
-
-    if (fn.type === "view" || fn.type === "write") {
-      tools.push({
-        name: fn.name,
-        type: fn.type,
-        description: fn.doc || fn.name,
-      });
-    }
 
     if (fn.type === "view") {
       server.tool(
@@ -179,7 +132,9 @@ export async function buildMcp({ chainId, address, implementation, rpcUrl }) {
         async (args) => {
           try {
             const serializedTransaction = await signTransaction({
+              agentId,
               chain,
+              publicClient,
               to: address,
               data: fn.encodeData(args),
             });
@@ -202,6 +157,76 @@ export async function buildMcp({ chainId, address, implementation, rpcUrl }) {
     }
   }
 
+  return server;
+}
+
+export async function buildMcp({ chainId, address, implementation, rpcUrl }) {
+  const chain = findChain(chainId);
+  if (!chain) {
+    throw new Error(`unknown chainId ${chainId}: not found in viem/chains`);
+  }
+
+  const isWs = typeof rpcUrl === "string" && /^wss?:\/\//i.test(rpcUrl);
+  const transport = isWs
+    ? webSocket(rpcUrl)
+    : http(rpcUrl || undefined, { timeout: 10_000 });
+  const publicClient = createPublicClient({ chain, transport });
+
+  if (!address && !implementation) {
+    const symbol = chain.nativeCurrency?.symbol ?? "ETH";
+    const decimals = chain.nativeCurrency?.decimals ?? 18;
+    const name = `native_token_chain_id_${chain.id}`;
+    const tools = [
+      {
+        name: "balanceOf",
+        type: "view",
+        description: `Get the native ${symbol} balance of an address (in wei)`,
+      },
+      {
+        name: "transfer",
+        type: "write",
+        description: `Transfer native ${symbol} to an address`,
+      },
+    ];
+    const meta = {
+      chainId: chain.id,
+      address: false,
+      implementation: false,
+      contractName: name,
+      version: "1.0.0",
+      toolCount: tools.length,
+      tools,
+      nativeToken: true,
+      symbol,
+      decimals,
+    };
+    return {
+      meta,
+      build: ({ agentId }) =>
+        buildNativeTokenServer({ chain, publicClient, agentId }),
+    };
+  }
+
+  const abiAddress = implementation || address;
+  const contract = await getContract(address, chainId, {
+    ignoreEvents: true,
+    abiAddress,
+  });
+
+  const seen = new Set();
+  const tools = [];
+  for (const fn of contract.functions) {
+    if (seen.has(fn.name)) continue;
+    seen.add(fn.name);
+    if (fn.type === "view" || fn.type === "write") {
+      tools.push({
+        name: fn.name,
+        type: fn.type,
+        description: fn.doc || fn.name,
+      });
+    }
+  }
+
   const meta = {
     chainId: Number(chainId),
     address,
@@ -212,5 +237,9 @@ export async function buildMcp({ chainId, address, implementation, rpcUrl }) {
     tools,
   };
 
-  return { server, meta };
+  return {
+    meta,
+    build: ({ agentId }) =>
+      buildContractServer({ chain, publicClient, contract, address, agentId }),
+  };
 }

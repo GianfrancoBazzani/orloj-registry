@@ -140,13 +140,14 @@ app.post("/interface/:name/mcp", requireBearer, async (req, res) => {
     return;
   }
   console.log(`[mcp] ${name} agent=${req.auth.agentId}`);
+  const server = entry.build({ agentId: req.auth.agentId });
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     enableJsonResponse: true,
   });
   res.on("close", () => transport.close());
   try {
-    await entry.server.connect(transport);
+    await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
   } catch (err) {
     console.error(`[registry] request error for "${name}":`, err);

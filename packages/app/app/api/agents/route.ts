@@ -121,7 +121,7 @@ export async function POST(request: Request) {
     name: trimmedName,
     description: trimmedDescription,
     scopes: scopes && Array.isArray(scopes) ? (scopes as string[]) : [],
-    intents_api_enabled: true,
+    intents_api_enabled: false,
   });
 
   if (error || !data) {

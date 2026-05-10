@@ -68,9 +68,15 @@ importers:
 
   packages/registry:
     dependencies:
+      '@1claw/sdk':
+        specifier: 0.20.4
+        version: 0.20.4
       '@modelcontextprotocol/sdk':
         specifier: 1.29.0
         version: 1.29.0(zod@4.4.3)
+      '@spacecomputer-io/orbitport-sdk-ts':
+        specifier: 0.2.1
+        version: 0.2.1(typescript@5.9.3)
       cors:
         specifier: 2.8.6
         version: 2.8.6
