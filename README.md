@@ -13,8 +13,8 @@ Orloj is a registry that exposes smart-contract interfaces to AI agents as **MCP
 
 ## Tracks Applied
 
-- Ethereum Core
-- Network Economy
+- Ethereum Core — see [`ETHEREUM-CORE.md`](ETHEREUM-CORE.md) for our integration writeup
+- Network Economy — see [`NETWORK-ECONOMY.md`](NETWORK-ECONOMY.md) for our integration writeup
 - [Sourcify Bounty](https://ducttapeevents.notion.site/Sourcify-2fe1a305cfe7805c87a7ce855ae2bde6) — see [`SOURCIFY.md`](SOURCIFY.md) for our integration writeup
 - [SpaceComputer Bounty](https://ducttapeevents.notion.site/SpaceComputer-3101a305cfe7801ca388f3bc292f148d) — see [`SPACECOMPUTER.md`](SPACECOMPUTER.md) for our integration writeup
 - Best UX Flow
