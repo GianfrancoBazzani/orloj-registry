@@ -129,7 +129,7 @@ const Footer = () => {
       >
         <div>{t("shell.footerCopyright")}</div>
         <div className="mono">
-          spacecomputer · sourcify · ens
+          spacecomputer · sourcify
         </div>
       </div>
     </footer>
