@@ -19,7 +19,7 @@ use tower_http::cors::CorsLayer;
 
 use crate::{
     auth::require_bearer,
-    db::DbPool,
+    db::{DbPool, ContractMetaRow},
     mcps::{
         evm_mcp::{EvmMcpServer, build_tools},
         native_mcp::{NativeMcpServer, build_native_tools, chain_info},
@@ -71,20 +71,40 @@ async fn healthz(State(state): State<SharedState>) -> Json<Value> {
 }
 
 /// GET /mcp — list all registered MCPs with metadata (no tool details).
-async fn list_mcp(State(state): State<SharedState>) -> Json<Value> {
-    let items: Vec<Value> = state
-        .registry
-        .list_meta()
-        .await
+/// Reads from DB so the list is accurate even before any MCP is built in memory.
+async fn list_mcp(State(state): State<SharedState>) -> Response {
+    let rows = match state.db.list_contracts_meta().await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[list_mcp] db error: {e:#}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "db error" })),
+            )
+                .into_response();
+        }
+    };
+
+    let items: Vec<Value> = rows
         .into_iter()
-        .map(|(name, meta)| {
-            let mut v = serde_json::to_value(&meta).unwrap_or_default();
-            v["name"] = json!(name);
-            v["url"] = json!(format!("/interface/{name}/mcp"));
-            v
+        .map(|row: ContractMetaRow| {
+            let name = if row.address == "native" {
+                native_entry_name(row.chain_id)
+            } else {
+                entry_name(row.chain_id, &row.address)
+            };
+            json!({
+                "name": name,
+                "chainId": row.chain_id,
+                "address": row.address,
+                "implementation": row.implementation,
+                "contractName": row.contract_name,
+                "url": format!("/interface/{name}/mcp"),
+            })
         })
         .collect();
-    Json(json!(items))
+
+    Json(json!(items)).into_response()
 }
 
 /// POST /register

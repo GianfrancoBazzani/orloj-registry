@@ -28,11 +28,20 @@ pub enum VaultInfo {
     },
 }
 
-/// Row returned by `load_contract` / `load_all_contracts`.
+/// Row returned by `load_contract`.
 pub struct ContractRow {
     pub chain_id: u64,
     pub address: String,
     pub abi: Value,
+    pub contract_name: String,
+    pub implementation: Option<String>,
+    pub rpc_url: Option<String>,
+}
+
+/// Lightweight row returned by `list_contracts_meta` — no ABI.
+pub struct ContractMetaRow {
+    pub chain_id: u64,
+    pub address: String,
     pub contract_name: String,
     pub implementation: Option<String>,
     pub rpc_url: Option<String>,
@@ -227,23 +236,22 @@ impl DbPool {
         }))
     }
 
-    /// Load all registered contracts from the database.
-    /// Used at startup to pre-warm the in-memory registry.
-    pub async fn load_all_contracts(&self) -> Result<Vec<ContractRow>> {
+    /// List all registered contracts from the database (no ABI — lightweight).
+    /// Used by GET /mcp to enumerate available MCPs without loading their ABIs.
+    pub async fn list_contracts_meta(&self) -> Result<Vec<ContractMetaRow>> {
         let rows = sqlx::query(
-            "SELECT chain_id, address, abi, contract_name, implementation, rpc_url \
+            "SELECT chain_id, address, contract_name, implementation, rpc_url \
                FROM registered_contracts",
         )
         .fetch_all(&self.pool)
         .await
-        .context("load_all_contracts failed")?;
+        .context("list_contracts_meta failed")?;
 
         rows.into_iter()
             .map(|r| {
-                Ok(ContractRow {
+                Ok(ContractMetaRow {
                     chain_id: r.try_get::<i32, _>("chain_id")? as u64,
                     address: r.try_get("address")?,
-                    abi: r.try_get("abi")?,
                     contract_name: r.try_get("contract_name")?,
                     implementation: r.try_get("implementation")?,
                     rpc_url: r.try_get("rpc_url")?,
