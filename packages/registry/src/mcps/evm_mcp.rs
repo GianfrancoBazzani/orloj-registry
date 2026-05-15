@@ -308,8 +308,10 @@ impl<P: Provider<Ethereum> + Send + Sync + 'static> ServerHandler for EvmMcpServ
 pub async fn run_evm_mcp(cfg: EvmMcpConfig) -> Result<()> {
     let t0 = std::time::Instant::now();
 
-    let provider =
-        ProviderBuilder::new().connect_http(cfg.rpc_url.parse().context("invalid rpc_url")?);
+    let provider = ProviderBuilder::new()
+        .connect(&cfg.rpc_url)
+        .await
+        .context("rpc connect failed")?;
     let abi = Arc::new(cfg.abi);
     let tools = build_tools(&abi);
 

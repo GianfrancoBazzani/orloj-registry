@@ -375,8 +375,10 @@ impl<P: Provider<Ethereum> + Send + Sync + 'static> ServerHandler for NativeMcpS
 // ---------------------------------------------------------------------------
 
 pub async fn run_native_mcp(cfg: NativeMcpConfig) -> Result<()> {
-    let provider =
-        ProviderBuilder::new().connect_http(cfg.rpc_url.parse().context("invalid rpc_url")?);
+    let provider = ProviderBuilder::new()
+        .connect(&cfg.rpc_url)
+        .await
+        .context("rpc connect failed")?;
 
     let server = NativeMcpServer::new(
         cfg.chain_id,

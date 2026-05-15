@@ -329,17 +329,6 @@ async fn handle_mcp(
         }
     };
 
-    let url = match rpc_url.parse() {
-        Ok(u) => u,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("invalid rpc_url: {e}") })),
-            )
-                .into_response();
-        }
-    };
-
     // Parse request body as JSON-RPC.
     let body_json: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
@@ -352,7 +341,16 @@ async fn handle_mcp(
         }
     };
 
-    let provider = ProviderBuilder::new().connect_http(url);
+    let provider = match ProviderBuilder::new().connect(&rpc_url).await {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("rpc connect failed: {e}") })),
+            )
+                .into_response();
+        }
+    };
 
     let result = if entry.is_native {
         NativeMcpServer::new(

@@ -135,8 +135,10 @@ pub struct OrbitportSignParams {
 ///   ORBITPORT_API_URL        – KMS base URL  (default: https://op.spacecomputer.io/api)
 ///   ORBITPORT_AUTH_URL       – OAuth token URL (default: https://auth.spacecomputer.io/oauth/token)
 async fn sign_with_orbitport(params: OrbitportSignParams) -> Result<Bytes> {
-    let provider =
-        ProviderBuilder::new().connect_http(params.rpc_url.parse().context("invalid rpc_url")?);
+    let provider = ProviderBuilder::new()
+        .connect(&params.rpc_url)
+        .await
+        .context("rpc connect failed")?;
 
     let from: Address = params.address.parse().context("invalid Orbitport address")?;
 
@@ -278,8 +280,10 @@ async fn sign_with_oneclaw(params: OneclawSignParams) -> Result<Bytes> {
         .context("invalid private key returned from 1Claw")?;
     let from = signer.address();
 
-    let provider =
-        ProviderBuilder::new().connect_http(params.rpc_url.parse().context("invalid rpc_url")?);
+    let provider = ProviderBuilder::new()
+        .connect(&params.rpc_url)
+        .await
+        .context("rpc connect failed")?;
 
     let tx_req = TransactionRequest::default()
         .from(from)
