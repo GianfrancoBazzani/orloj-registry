@@ -315,6 +315,7 @@ async fn handle_mcp(
     };
 
     entry.touch().await;
+    eprintln!("[mcp] running {name} for agent {agent_id}");
 
     // Build provider.
     let rpc_url = match &entry.rpc_url {
@@ -457,10 +458,12 @@ async fn get_or_load(state: &AppState, name: &str) -> anyhow::Result<Option<Arc<
         };
 
         let entry = build_native_entry(chain_id, row.rpc_url);
+        eprintln!("[mcp] spinning up native {name}");
         state
             .registry
             .set(name.to_string(), Arc::clone(&entry))
             .await;
+        eprintln!("[mcp] ready native {name}");
         return Ok(Some(entry));
     }
 
@@ -477,6 +480,7 @@ async fn get_or_load(state: &AppState, name: &str) -> anyhow::Result<Option<Arc<
         return Ok(None);
     };
 
+    eprintln!("[mcp] spinning up contract {name} ({})", row.contract_name);
     let entry = build_entry(
         chain_id,
         &address,
@@ -490,6 +494,7 @@ async fn get_or_load(state: &AppState, name: &str) -> anyhow::Result<Option<Arc<
         .registry
         .set(name.to_string(), Arc::clone(&entry))
         .await;
+    eprintln!("[mcp] ready contract {name} ({} tools)", entry.meta.tool_count);
     Ok(Some(entry))
 }
 
