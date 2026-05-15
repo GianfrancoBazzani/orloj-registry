@@ -20,7 +20,7 @@ cargo check   # fast type-check only
 ## Run
 
 ```bash
-cargo run --bin orloj-backend-rust
+cargo run
 ```
 
 Reads configuration from `.env` if present (via `dotenvy`).
