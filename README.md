@@ -67,11 +67,11 @@ The provider is recorded per vault, so a single deployment can run both side-by-
 
 **Registry server** ([packages/registry/](packages/registry/))
 
-- Node.js 24 + pnpm workspaces
-- Express 5
-- [`@modelcontextprotocol/sdk`](https://github.com/modelcontextprotocol/typescript-sdk) (Streamable HTTP transport)
-- Zod — schema validation (Solidity types → Zod → MCP tool inputs)
-- `node --watch` for dev hot-reload; per-agent bearer tokens (`mcpk_live_*`) verified against Postgres
+- Rust (Cargo — not a pnpm workspace member)
+- axum 0.7 — HTTP server
+- [rmcp 0.16](https://github.com/modelcontextprotocol/rust-sdk) — MCP protocol, Streamable HTTP transport
+- alloy 2.0 — ABI parsing (`JsonAbi`), calldata encoding/decoding (`DynSolValue`), EIP-1559 tx construction
+- sqlx 0.8 — async Postgres; per-agent bearer tokens (`mcpk_live_*`) verified with constant-time comparison
 
 **Frontend / control plane** ([packages/app/](packages/app/))
 
@@ -93,30 +93,28 @@ The provider is recorded per vault, so a single deployment can run both side-by-
 
 ## Run It Locally
 
-Each package reads its own `.env.local`. Copy the examples and fill in the secrets before starting the servers:
+The registry reads `.env`; the app reads `.env.local`. Copy the examples and fill in secrets before starting:
 
 ```bash
 # from repo root
-cp packages/registry/.env.example packages/registry/.env.local
+cp packages/registry/.env.example packages/registry/.env
 cp packages/app/.env.example      packages/app/.env.local
 ```
 
 Fill in at least:
 
-- **`packages/registry/.env.local`** — `DATABASE_URL` (same Postgres as the app), and either `1CLAW_API_KEY` or `ORBITPORT_CLIENT_ID` + `ORBITPORT_CLIENT_SECRET` depending on which vault provider you'll sign with.
-- **`packages/app/.env.local`** — `DATABASE_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL` (defaults to `http://localhost:3000`), `RESEND_API_KEY` + `EMAIL_FROM` for magic-link sign-in, `REGISTRY_URL=http://localhost:3001` so the app can proxy to the registry, plus the same `1CLAW_API_KEY` / `ORBITPORT_*` credentials. Optional: `ETH_RPC_URL`, `ETH_RPC_URL_SEPOLIA`, `ENS_CHAIN`.
+- **`packages/registry/.env`** — `DATABASE_URL` (same Postgres as the app), and either `ONECLAW_API_KEY` + `ONECLAW_BASE_URL` or `ORBITPORT_CLIENT_ID` + `ORBITPORT_CLIENT_SECRET` depending on which vault provider you'll sign with.
+- **`packages/app/.env.local`** — `DATABASE_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL` (defaults to `http://localhost:3000`), `RESEND_API_KEY` + `EMAIL_FROM` for magic-link sign-in, `REGISTRY_URL=http://localhost:3001` so the app can proxy to the registry, plus the same KMS credentials. Optional: `ETH_RPC_URL`, `ETH_RPC_URL_SEPOLIA`, `ENS_CHAIN`.
 
-Then install and run:
+Then run:
 
 ```bash
-# from repo root
-pnpm install
+# registry server (http://localhost:3001) — from packages/registry/
+cargo run
 
-# registry server (http://localhost:3001)
-pnpm --filter registry dev
-
-# frontend (http://localhost:3000)
+# frontend (http://localhost:3000) — from repo root or packages/app/
+pnpm install   # app only; registry is Rust/Cargo
 pnpm --filter app dev
 ```
 
-Node 24.15.0 and pnpm 10.33.2 are pinned via `.npmrc` and `packageManager` — `pnpm install` will refuse on the wrong versions.
+Node 24.15.0 and pnpm 10.33.2 are pinned via `.npmrc` and `packageManager` — `pnpm install` will refuse on the wrong versions (applies to the app only).
