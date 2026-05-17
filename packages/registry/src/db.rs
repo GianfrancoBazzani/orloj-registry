@@ -86,8 +86,6 @@ impl DbPool {
                 rpc_url         TEXT,
                 abi             JSONB        NOT NULL,
                 contract_name   TEXT         NOT NULL,
-                userdoc         JSONB,
-                devdoc          JSONB,
                 registered_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),
                 PRIMARY KEY (chain_id, address)
             )",
@@ -364,12 +362,15 @@ impl DbPool {
         // Mirrors: client.access.listGrants(vaultId) in vault-resolve.js.
         let signing_key_path = oneclaw_list_grants_signing_path(&vault_id).await?;
 
-        let info = VaultInfo::Oneclaw { vault_id, signing_key_path };
+        let info = VaultInfo::Oneclaw {
+            vault_id,
+            signing_key_path,
+        };
         self.vault_cache
             .write()
             .await
             .insert(agent_id.to_string(), info.clone());
-        
+
         Ok(info)
     }
 
@@ -511,8 +512,8 @@ struct OrbitportGrantRow {
 /// Mirrors the `client.access.listGrants(vaultId)` call in vault-resolve.js.
 async fn oneclaw_list_grants_signing_path(vault_id: &str) -> Result<String> {
     let api_key = std::env::var("ONECLAW_API_KEY").context("ONECLAW_API_KEY not set")?;
-    let base_url = std::env::var("ONECLAW_BASE_URL")
-        .unwrap_or_else(|_| "https://api.1claw.xyz".to_string());
+    let base_url =
+        std::env::var("ONECLAW_BASE_URL").unwrap_or_else(|_| "https://api.1claw.xyz".to_string());
 
     let bearer = oneclaw_bearer_token(&base_url, &api_key)
         .await

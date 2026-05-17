@@ -6,8 +6,6 @@ pub struct SourcifyResult {
     pub abi: JsonAbi,
     pub implementation: Option<String>,
     pub contract_name: String,
-    pub userdoc: Option<Value>,
-    pub devdoc: Option<Value>,
 }
 
 /// Fetch contract metadata from Sourcify.
@@ -22,10 +20,12 @@ pub struct SourcifyResult {
 pub async fn fetch_contract(chain_id: u64, address: &str) -> Result<SourcifyResult> {
     let url = format!(
         "https://sourcify.dev/server/v2/contract/{chain_id}/{address}\
-         ?fields=abi,userdoc,devdoc,compilation,proxyResolution"
+         ?fields=abi,compilation,proxyResolution"
     );
 
-    let response = reqwest::get(&url).await.context("sourcify request failed")?;
+    let response = reqwest::get(&url)
+        .await
+        .context("sourcify request failed")?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -33,7 +33,10 @@ pub async fn fetch_contract(chain_id: u64, address: &str) -> Result<SourcifyResu
         anyhow::bail!("sourcify returned {status}: {body}");
     }
 
-    let json: Value = response.json().await.context("sourcify response is not JSON")?;
+    let json: Value = response
+        .json()
+        .await
+        .context("sourcify response is not JSON")?;
 
     let contract_name = json
         .get("compilation")
@@ -77,8 +80,6 @@ pub async fn fetch_contract(chain_id: u64, address: &str) -> Result<SourcifyResu
                     abi: impl_result.abi,
                     implementation,
                     contract_name,
-                    userdoc: impl_result.userdoc,
-                    devdoc: impl_result.devdoc,
                 });
             }
             Err(e) => {
@@ -91,34 +92,31 @@ pub async fn fetch_contract(chain_id: u64, address: &str) -> Result<SourcifyResu
     }
 
     // Non-proxy (or impl fetch failed): use the contract's own ABI.
-    let abi: JsonAbi = serde_json::from_value(
-        json.get("abi").cloned().unwrap_or(Value::Array(vec![])),
-    )
-    .context("sourcify ABI parse failed")?;
+    let abi: JsonAbi =
+        serde_json::from_value(json.get("abi").cloned().unwrap_or(Value::Array(vec![])))
+            .context("sourcify ABI parse failed")?;
 
     Ok(SourcifyResult {
         abi,
         implementation,
         contract_name,
-        userdoc: json.get("userdoc").cloned(),
-        devdoc: json.get("devdoc").cloned(),
     })
 }
 
 struct AbiOnly {
     abi: JsonAbi,
-    userdoc: Option<Value>,
-    devdoc: Option<Value>,
 }
 
 /// Fetch just the ABI (+ docs) for a contract address. Used for implementation lookups.
 async fn fetch_abi_only(chain_id: u64, address: &str) -> Result<AbiOnly> {
     let url = format!(
         "https://sourcify.dev/server/v2/contract/{chain_id}/{address}\
-         ?fields=abi,userdoc,devdoc,compilation"
+         ?fields=abi,compilation"
     );
 
-    let response = reqwest::get(&url).await.context("sourcify impl request failed")?;
+    let response = reqwest::get(&url)
+        .await
+        .context("sourcify impl request failed")?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -126,16 +124,14 @@ async fn fetch_abi_only(chain_id: u64, address: &str) -> Result<AbiOnly> {
         anyhow::bail!("sourcify impl returned {status}: {body}");
     }
 
-    let json: Value = response.json().await.context("sourcify impl response is not JSON")?;
+    let json: Value = response
+        .json()
+        .await
+        .context("sourcify impl response is not JSON")?;
 
-    let abi: JsonAbi = serde_json::from_value(
-        json.get("abi").cloned().unwrap_or(Value::Array(vec![])),
-    )
-    .context("sourcify impl ABI parse failed")?;
+    let abi: JsonAbi =
+        serde_json::from_value(json.get("abi").cloned().unwrap_or(Value::Array(vec![])))
+            .context("sourcify impl ABI parse failed")?;
 
-    Ok(AbiOnly {
-        abi,
-        userdoc: json.get("userdoc").cloned(),
-        devdoc: json.get("devdoc").cloned(),
-    })
+    Ok(AbiOnly { abi })
 }

@@ -81,8 +81,6 @@ CREATE TABLE registered_contracts (
     rpc_url       TEXT,
     abi           JSONB        NOT NULL,
     contract_name TEXT         NOT NULL,
-    userdoc       JSONB,
-    devdoc        JSONB,
     registered_at TIMESTAMPTZ  NOT NULL DEFAULT now(),
     PRIMARY KEY (chain_id, address)
 );

@@ -65,7 +65,7 @@ cargo check                          # fast type-check without linking
 
 ## Proxy contract flow
 
-`sourcify::fetch_contract` queries `?fields=abi,userdoc,devdoc,compilation,proxyResolution`. If `proxyResolution.isProxy` is true and `proxyResolution.implementations[0].address` is present, it makes a second Sourcify call for the implementation's ABI and returns that. The stored ABI is the implementation's; `McpEntry.address` (the proxy) is used for all on-chain calls.
+`sourcify::fetch_contract` queries `?fields=abi,compilation,proxyResolution`. If `proxyResolution.isProxy` is true and `proxyResolution.implementations[0].address` is present, it makes a second Sourcify call for the implementation's ABI and returns that. The stored ABI is the implementation's; `McpEntry.address` (the proxy) is used for all on-chain calls.
 
 ## Vault signing flow
 
