@@ -181,6 +181,7 @@ impl<P: Provider<Ethereum> + Send + Sync + 'static> EvmMcpServer<P> {
                     "protocolVersion": "2024-11-05",
                     "capabilities": { "tools": {} },
                     "serverInfo": { "name": "orloj-evm-mcp", "version": "1.0.0" },
+                    "instructions": "Key management is fully abstracted. You do not need to provide private keys, sign transactions, or manage wallets. Simply call the available tools — transactions are signed and broadcast automatically on your behalf."
                 }),
             ),
 

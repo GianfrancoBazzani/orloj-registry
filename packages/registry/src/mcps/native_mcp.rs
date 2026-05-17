@@ -32,35 +32,122 @@ pub struct ChainInfo {
 /// Falls back to ("Unknown Chain", "ETH") for unrecognised chain IDs.
 pub fn chain_info(chain_id: u64) -> ChainInfo {
     match chain_id {
-        1 => ChainInfo { name: "Ethereum Mainnet", symbol: "ETH" },
-        10 => ChainInfo { name: "OP Mainnet", symbol: "ETH" },
-        56 => ChainInfo { name: "BNB Smart Chain", symbol: "BNB" },
-        66 => ChainInfo { name: "OKC", symbol: "OKT" },
-        100 => ChainInfo { name: "Gnosis", symbol: "xDAI" },
-        128 => ChainInfo { name: "Huobi ECO Chain", symbol: "HT" },
-        137 => ChainInfo { name: "Polygon", symbol: "POL" },
-        250 => ChainInfo { name: "Fantom Opera", symbol: "FTM" },
-        255 => ChainInfo { name: "Kroma", symbol: "ETH" },
-        321 => ChainInfo { name: "KCC", symbol: "KCS" },
-        324 => ChainInfo { name: "zkSync Era", symbol: "ETH" },
-        1088 => ChainInfo { name: "Metis Andromeda", symbol: "METIS" },
-        1101 => ChainInfo { name: "Polygon zkEVM", symbol: "ETH" },
-        1116 => ChainInfo { name: "Core", symbol: "CORE" },
-        1284 => ChainInfo { name: "Moonbeam", symbol: "GLMR" },
-        1285 => ChainInfo { name: "Moonriver", symbol: "MOVR" },
-        2222 => ChainInfo { name: "Kava", symbol: "KAVA" },
-        8453 => ChainInfo { name: "Base", symbol: "ETH" },
-        34443 => ChainInfo { name: "Mode", symbol: "ETH" },
-        42161 => ChainInfo { name: "Arbitrum One", symbol: "ETH" },
-        42220 => ChainInfo { name: "Celo", symbol: "CELO" },
-        43114 => ChainInfo { name: "Avalanche C-Chain", symbol: "AVAX" },
-        59144 => ChainInfo { name: "Linea", symbol: "ETH" },
-        60808 => ChainInfo { name: "BOB", symbol: "ETH" },
-        81457 => ChainInfo { name: "Blast", symbol: "ETH" },
-        534352 => ChainInfo { name: "Scroll", symbol: "ETH" },
-        7777777 => ChainInfo { name: "Zora", symbol: "ETH" },
-        1666600000 => ChainInfo { name: "Harmony One", symbol: "ONE" },
-        _ => ChainInfo { name: "Unknown Chain", symbol: "ETH" },
+        1 => ChainInfo {
+            name: "Ethereum Mainnet",
+            symbol: "ETH",
+        },
+        10 => ChainInfo {
+            name: "OP Mainnet",
+            symbol: "ETH",
+        },
+        56 => ChainInfo {
+            name: "BNB Smart Chain",
+            symbol: "BNB",
+        },
+        66 => ChainInfo {
+            name: "OKC",
+            symbol: "OKT",
+        },
+        100 => ChainInfo {
+            name: "Gnosis",
+            symbol: "xDAI",
+        },
+        128 => ChainInfo {
+            name: "Huobi ECO Chain",
+            symbol: "HT",
+        },
+        137 => ChainInfo {
+            name: "Polygon",
+            symbol: "POL",
+        },
+        250 => ChainInfo {
+            name: "Fantom Opera",
+            symbol: "FTM",
+        },
+        255 => ChainInfo {
+            name: "Kroma",
+            symbol: "ETH",
+        },
+        321 => ChainInfo {
+            name: "KCC",
+            symbol: "KCS",
+        },
+        324 => ChainInfo {
+            name: "zkSync Era",
+            symbol: "ETH",
+        },
+        1088 => ChainInfo {
+            name: "Metis Andromeda",
+            symbol: "METIS",
+        },
+        1101 => ChainInfo {
+            name: "Polygon zkEVM",
+            symbol: "ETH",
+        },
+        1116 => ChainInfo {
+            name: "Core",
+            symbol: "CORE",
+        },
+        1284 => ChainInfo {
+            name: "Moonbeam",
+            symbol: "GLMR",
+        },
+        1285 => ChainInfo {
+            name: "Moonriver",
+            symbol: "MOVR",
+        },
+        2222 => ChainInfo {
+            name: "Kava",
+            symbol: "KAVA",
+        },
+        8453 => ChainInfo {
+            name: "Base",
+            symbol: "ETH",
+        },
+        34443 => ChainInfo {
+            name: "Mode",
+            symbol: "ETH",
+        },
+        42161 => ChainInfo {
+            name: "Arbitrum One",
+            symbol: "ETH",
+        },
+        42220 => ChainInfo {
+            name: "Celo",
+            symbol: "CELO",
+        },
+        43114 => ChainInfo {
+            name: "Avalanche C-Chain",
+            symbol: "AVAX",
+        },
+        59144 => ChainInfo {
+            name: "Linea",
+            symbol: "ETH",
+        },
+        60808 => ChainInfo {
+            name: "BOB",
+            symbol: "ETH",
+        },
+        81457 => ChainInfo {
+            name: "Blast",
+            symbol: "ETH",
+        },
+        534352 => ChainInfo {
+            name: "Scroll",
+            symbol: "ETH",
+        },
+        7777777 => ChainInfo {
+            name: "Zora",
+            symbol: "ETH",
+        },
+        1666600000 => ChainInfo {
+            name: "Harmony One",
+            symbol: "ONE",
+        },
+        _ => ChainInfo {
+            name: "Unknown Chain",
+            symbol: "ETH",
+        },
     }
 }
 
@@ -268,6 +355,7 @@ impl<P: Provider<Ethereum> + Send + Sync + 'static> NativeMcpServer<P> {
                     "serverInfo": {
                         "name": format!("native_token_chain_id_{}", self.chain_id),
                         "version": "1.0.0",
+                        "instructions": "Key management is fully abstracted. You do not need to provide private keys, sign transactions, or manage wallets. Simply call the available tools — transactions are signed and broadcast automatically on your behalf."
                     },
                 }),
             ),
