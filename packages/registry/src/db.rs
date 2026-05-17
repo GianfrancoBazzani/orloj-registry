@@ -369,7 +369,8 @@ impl DbPool {
             .write()
             .await
             .insert(agent_id.to_string(), info.clone());
-        return Ok(info);
+        
+        Ok(info)
     }
 
     /// Evict one or all entries from the vault cache.
@@ -382,7 +383,7 @@ impl DbPool {
             Some(id) => {
                 cache.remove(id);
             }
-            None => cache.clear(),
+            _none => cache.clear(),
         }
     }
 }

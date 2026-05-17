@@ -33,7 +33,7 @@ pub async fn require_bearer(headers: &HeaderMap, db: &DbPool) -> Result<String, 
 
     let token = match parse_bearer(auth_header) {
         Some(t) => t,
-        None => {
+        _none => {
             return Err(www_auth_response(
                 StatusCode::UNAUTHORIZED,
                 REALM_INVALID,

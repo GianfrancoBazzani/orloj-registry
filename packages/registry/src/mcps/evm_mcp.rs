@@ -201,7 +201,7 @@ impl<P: Provider<Ethereum> + Send + Sync + 'static> EvmMcpServer<P> {
 
                 let func = match self.abi.function(tool_name).and_then(|fs| fs.first()) {
                     Some(f) => f,
-                    None => {
+                    _none => {
                         return json_rpc_ok(
                             id,
                             serde_json::json!({
