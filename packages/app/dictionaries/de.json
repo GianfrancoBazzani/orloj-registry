@@ -99,8 +99,12 @@
     "checkCustomRpc": "Benutzerdefinierter RPC",
     "submitting": "Schnittstelle wird geschmiedet…",
     "submit": "Glocke läuten — veröffentlichen",
+    "typeLabel": "Registrierungstyp",
+    "typeContract": "Smart Contract",
+    "typeNative": "Nativer Token",
     "howItWorks": "so funktioniert es",
-    "howItWorksDesc": "ORLOJ ruft das verifizierte ABI von Sourcify ab, löst Proxy-Implementierungen auf und generiert einen typisierten MCP-Server, den Sie mit einem Befehl an jeden Agenten binden können."
+    "howItWorksDesc": "ORLOJ ruft das verifizierte ABI von Sourcify ab, löst Proxy-Implementierungen auf und generiert einen typisierten MCP-Server, den Sie mit einem Befehl an jeden Agenten binden können.",
+    "howItWorksNativeDesc": "ORLOJ registriert die native Währung der Kette (ETH, MATIC usw.) als MCP-Server und stellt Balance- und Transfer-Tools bereit, die jeder Agent direkt nutzen kann."
   },
   "docs": {
     "pill": "dokumentation",
