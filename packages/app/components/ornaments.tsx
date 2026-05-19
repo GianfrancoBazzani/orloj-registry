@@ -647,7 +647,8 @@ export const Input = forwardRef<
     {...rest}
     style={{
       width: "100%",
-      padding: "12px 14px",
+      height: "44px",
+      padding: "0 14px",
       background: "rgba(255,255,255,0.45)",
       border: "1px solid var(--line)",
       fontFamily:
@@ -658,6 +659,7 @@ export const Input = forwardRef<
       color: "var(--ink)",
       outline: "none",
       borderRadius: 0,
+      boxSizing: "border-box" as const,
       transition: "border-color 0.18s ease, background 0.18s ease",
       ...style,
     }}
@@ -737,15 +739,17 @@ export const Select = ({
       onChange={(e) => onChange(e.target.value)}
       style={{
         width: "100%",
-        padding: "12px 32px 12px 14px",
+        height: "44px",
+        padding: "0 32px 0 14px",
         appearance: "none",
         background: "rgba(255,255,255,0.45)",
         border: "1px solid var(--line)",
         fontFamily: "var(--font-ui)",
-        fontSize: 13,
+        fontSize: 14,
         color: "var(--ink)",
         cursor: "pointer",
         borderRadius: 0,
+        boxSizing: "border-box",
       }}
     >
       {options.map((o) => (

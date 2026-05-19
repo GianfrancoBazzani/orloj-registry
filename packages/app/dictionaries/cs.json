@@ -99,8 +99,16 @@
     "checkCustomRpc": "Vlastní RPC",
     "submitting": "Kování rozhraní…",
     "submit": "Udeřit na zvon — zveřejnit",
+    "typeLabel": "Typ registrace",
+    "typeContract": "Chytrý kontrakt",
+    "typeNative": "Nativní token",
+    "chainCustom": "Vlastní…",
+    "chainIdLabel": "ID sítě",
+    "chainIdHint": "Číselné ID sítě (např. 42161 pro Arbitrum).",
+    "checkChainId": "ID sítě je platné",
     "howItWorks": "jak to funguje",
-    "howItWorksDesc": "ORLOJ načítá ověřené ABI ze Sourcify, řeší proxy implementace a generuje typovaný server MCP, který můžete svázat s libovolným agentem jedním příkazem."
+    "howItWorksDesc": "ORLOJ načítá ověřené ABI ze Sourcify, řeší proxy implementace a generuje typovaný server MCP, který můžete svázat s libovolným agentem jedním příkazem.",
+    "howItWorksNativeDesc": "ORLOJ registruje nativní měnu řetězce (ETH, MATIC atd.) jako server MCP, zpřístupňuje nástroje pro zůstatek a převod, které může libovolný agent používat přímo."
   },
   "docs": {
     "pill": "dokumentace",

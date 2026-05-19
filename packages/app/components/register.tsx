@@ -21,31 +21,42 @@ const CHAIN_IDS: Record<string, number> = {
   Polygon: 137,
 };
 
+type RegisterMode = "contract" | "native";
+
 export const Register = () => {
   const router = useRouter();
   const locale = useLocale();
   const t = useT();
+  const [mode, setMode] = useState<RegisterMode>("contract");
   const [address, setAddress] = useState("");
   const [chain, setChain] = useState("Ethereum");
+  const [customChainId, setCustomChainId] = useState("");
   const [rpcUrl, setRpcUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<RegisterResult | null>(null);
 
+  const isCustomChain = !(chain in CHAIN_IDS);
+  const resolvedChainId = isCustomChain
+    ? parseInt(customChainId, 10)
+    : (CHAIN_IDS[chain] ?? 1);
+  const validCustomChainId = !isCustomChain || (/^\d+$/.test(customChainId.trim()) && parseInt(customChainId, 10) > 0);
   const validAddress = /^0x[a-fA-F0-9]{40}$/.test(address);
+  const canSubmit = !submitting && validCustomChainId && (mode === "native" || validAddress);
 
   const submit = async () => {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch("/api/register", {
+      const isNative = mode === "native";
+      const res = await fetch(isNative ? "/api/register-native" : "/api/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          address,
-          chainId: CHAIN_IDS[chain] ?? 1,
-          rpcUrl: rpcUrl || undefined,
-        }),
+        body: JSON.stringify(
+          isNative
+            ? { chainId: resolvedChainId, rpcUrl: rpcUrl || undefined }
+            : { address, chainId: resolvedChainId, rpcUrl: rpcUrl || undefined }
+        ),
       });
       const data = await res.json();
       if (res.ok) {
@@ -125,30 +136,66 @@ export const Register = () => {
               }}
             >
               <div style={{ display: "grid", gap: 20 }}>
-                <div
-                  className="register-form-row"
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr 180px",
-                    gap: 12,
-                  }}
-                >
-                  <Field label={t("register.contractAddress")}>
-                    <Input
-                      value={address}
-                      onChange={(e) => setAddress(e.target.value)}
-                      placeholder="0x…"
-                      style={{ fontFamily: "var(--font-mono)" }}
-                    />
-                  </Field>
+                <Field label={t("register.typeLabel")}>
+                  <Select
+                    value={mode === "contract" ? t("register.typeContract") : t("register.typeNative")}
+                    onChange={(v) =>
+                      setMode(v === t("register.typeNative") ? "native" : "contract")
+                    }
+                    options={[t("register.typeContract"), t("register.typeNative")]}
+                  />
+                </Field>
+
+                {mode === "contract" && (
+                  <div
+                    className="register-form-row"
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 180px",
+                      gap: 12,
+                    }}
+                  >
+                    <Field label={t("register.contractAddress")}>
+                      <Input
+                        value={address}
+                        onChange={(e) => setAddress(e.target.value)}
+                        placeholder="0x…"
+                        style={{ fontFamily: "var(--font-mono)" }}
+                      />
+                    </Field>
+                    <Field label={t("register.chain")}>
+                      <Select
+                        value={chain}
+                        onChange={setChain}
+                        options={[...Object.keys(CHAIN_IDS), t("register.chainCustom")]}
+                      />
+                    </Field>
+                  </div>
+                )}
+
+                {mode === "native" && (
                   <Field label={t("register.chain")}>
                     <Select
                       value={chain}
                       onChange={setChain}
-                      options={Object.keys(CHAIN_IDS)}
+                      options={[...Object.keys(CHAIN_IDS), t("register.chainCustom")]}
                     />
                   </Field>
-                </div>
+                )}
+
+                {isCustomChain && (
+                  <Field
+                    label={t("register.chainIdLabel")}
+                    hint={t("register.chainIdHint")}
+                  >
+                    <Input
+                      value={customChainId}
+                      onChange={(e) => setCustomChainId(e.target.value.replace(/\D/g, ""))}
+                      placeholder="e.g. 42161"
+                      style={{ fontFamily: "var(--font-mono)" }}
+                    />
+                  </Field>
+                )}
 
                 <Field
                   label={t("register.rpcUrl")}
@@ -193,7 +240,7 @@ export const Register = () => {
                 <Btn
                   kind="brass"
                   size="lg"
-                  disabled={!validAddress || submitting}
+                  disabled={!canSubmit}
                   onClick={submit}
                 >
                   {submitting ? t("register.submitting") : t("register.submit")}
@@ -237,11 +284,19 @@ export const Register = () => {
                   >
                     {t("register.checksLabel")}
                   </div>
-                  {[
-                    [t("register.checkAddress"), validAddress],
-                    [t("register.checkChain"), true],
-                    [t("register.checkCustomRpc"), rpcUrl.startsWith("http")],
-                  ].map(([label, ok]) => (
+                  {(mode === "contract"
+                    ? [
+                        [t("register.checkAddress"), validAddress],
+                        [t("register.checkChain"), true],
+                        ...(isCustomChain ? [[t("register.checkChainId"), validCustomChainId]] : []),
+                        [t("register.checkCustomRpc"), rpcUrl.startsWith("http")],
+                      ]
+                    : [
+                        [t("register.checkChain"), true],
+                        ...(isCustomChain ? [[t("register.checkChainId"), validCustomChainId]] : []),
+                        [t("register.checkCustomRpc"), rpcUrl.startsWith("http")],
+                      ]
+                  ).map(([label, ok]) => (
                     <div
                       key={String(label)}
                       style={{
@@ -284,7 +339,9 @@ export const Register = () => {
                 >
                   {t("register.howItWorks")}
                 </span>
-                {t("register.howItWorksDesc")}
+                {mode === "native"
+                  ? t("register.howItWorksNativeDesc")
+                  : t("register.howItWorksDesc")}
               </div>
             </div>
           </div>

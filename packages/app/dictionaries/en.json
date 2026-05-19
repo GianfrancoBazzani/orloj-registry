@@ -99,8 +99,16 @@
     "checkCustomRpc": "Custom RPC",
     "submitting": "Forging the interface…",
     "submit": "Strike the bell — publish",
+    "typeLabel": "Registration type",
+    "typeContract": "Smart Contract",
+    "typeNative": "Native Token",
+    "chainCustom": "Custom…",
+    "chainIdLabel": "Chain ID",
+    "chainIdHint": "Numeric chain ID of the network (e.g. 42161 for Arbitrum).",
+    "checkChainId": "Chain ID valid",
     "howItWorks": "how it works",
-    "howItWorksDesc": "ORLOJ fetches the verified ABI from Sourcify, resolves proxy implementations, and generates a typed MCP server you can bind to any agent in one command."
+    "howItWorksDesc": "ORLOJ fetches the verified ABI from Sourcify, resolves proxy implementations, and generates a typed MCP server you can bind to any agent in one command.",
+    "howItWorksNativeDesc": "ORLOJ registers the chain's native currency (ETH, MATIC, etc.) as an MCP server, exposing balance and transfer tools any agent can use directly."
   },
   "docs": {
     "pill": "documentation",
