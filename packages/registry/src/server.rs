@@ -111,39 +111,28 @@ async fn list_mcp(State(state): State<SharedState>) -> Response {
     Json(json!(items)).into_response()
 }
 
-enum RpcValidation {
+enum ChainIdCheck {
     Valid,
-    InvalidScheme,
-    ChainMismatch { expected: u64, got: u64 },
+    Mismatch { expected: u64, got: u64 },
 }
 
-/// Ok(Valid) — reachable, chain ID matches.
-/// Ok(InvalidScheme) — not https:// or wss://.
-/// Ok(ChainMismatch) — connected but chain ID differs.
-/// Err — connection or RPC call failed (treat as 502).
-async fn test_rpc_url(chain_id: u64, rpc_url: &str) -> anyhow::Result<RpcValidation> {
-    if !rpc_url.starts_with("https://") && !rpc_url.starts_with("wss://") {
-        return Ok(RpcValidation::InvalidScheme);
-    }
-
-    let provider = ProviderBuilder::new()
-        .connect(rpc_url)
-        .await
-        .context("failed to connect to RPC")?;
-
+/// Verifies the provider's chain ID against the expected one.
+/// Scheme check and provider creation are the caller's responsibility.
+/// Err — eth_chainId call failed.
+async fn check_chain_id(chain_id: u64, provider: &impl Provider) -> anyhow::Result<ChainIdCheck> {
     let got = provider
         .get_chain_id()
         .await
         .context("eth_chainId request failed")?;
 
     if got != chain_id {
-        return Ok(RpcValidation::ChainMismatch {
+        return Ok(ChainIdCheck::Mismatch {
             expected: chain_id,
             got,
         });
     }
 
-    Ok(RpcValidation::Valid)
+    Ok(ChainIdCheck::Valid)
 }
 
 /// POST /register
@@ -153,15 +142,6 @@ async fn test_rpc_url(chain_id: u64, rpc_url: &str) -> anyhow::Result<RpcValidat
 /// builds the MCP in memory, and returns the entry metadata.
 async fn register(State(state): State<SharedState>, Json(body): Json<RegisterBody>) -> Response {
     let address = body.address.trim().to_string();
-
-    // Mirrors ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/
-    if !is_valid_address(&address) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "address must be 0x-prefixed 20-byte hex" })),
-        )
-            .into_response();
-    }
 
     // if (rpcUrl != null && (typeof rpcUrl !== "string" || rpcUrl.length === 0))
     if body.rpc_url.as_deref().is_some_and(|u| u.is_empty()) {
@@ -175,16 +155,29 @@ async fn register(State(state): State<SharedState>, Json(body): Json<RegisterBod
     let chain_id = body.chain_id;
 
     if let Some(rpc_url) = &body.rpc_url {
-        match test_rpc_url(chain_id, rpc_url).await {
-            Ok(RpcValidation::Valid) => {}
-            Ok(RpcValidation::InvalidScheme) => {
+        if !rpc_url.starts_with("https://") && !rpc_url.starts_with("wss://") {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "rpcUrl must start with https:// or wss://" })),
+            )
+                .into_response();
+        }
+
+        let provider = match ProviderBuilder::new().connect(rpc_url).await {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("[register] rpc connect failed: {e:#}");
                 return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": "rpcUrl must start with https:// or wss://" })),
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({ "error": format!("could not reach rpcUrl: {e}") })),
                 )
                     .into_response();
             }
-            Ok(RpcValidation::ChainMismatch { expected, got }) => {
+        };
+
+        match check_chain_id(chain_id, &provider).await {
+            Ok(ChainIdCheck::Valid) => {}
+            Ok(ChainIdCheck::Mismatch { expected, got }) => {
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(json!({ "error": format!("rpcUrl chain ID mismatch: expected {expected}, got {got}") })),
@@ -192,10 +185,30 @@ async fn register(State(state): State<SharedState>, Json(body): Json<RegisterBod
                     .into_response();
             }
             Err(e) => {
-                eprintln!("[register] rpc test failed: {e:#}");
+                eprintln!("[register] chain ID check failed: {e:#}");
                 return (
                     StatusCode::BAD_GATEWAY,
                     Json(json!({ "error": format!("could not reach rpcUrl: {e}") })),
+                )
+                    .into_response();
+            }
+        }
+
+        // verifies if the address is a valid 20 byte hex address + verifies that is not a EOA
+        match is_valid_contract(&address, &provider).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "address is not a deployed contract (EOA or no code)" })),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                eprintln!("[register] contract check failed: {e:#}");
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({ "error": format!("could not verify the provided address was a contract: {e}") })),
                 )
                     .into_response();
             }
@@ -324,17 +337,31 @@ async fn register_native(
 
     let chain_id = body.chain_id;
 
+    // verifies validity of rpc url
     if let Some(rpc_url) = &body.rpc_url {
-        match test_rpc_url(chain_id, rpc_url).await {
-            Ok(RpcValidation::Valid) => {}
-            Ok(RpcValidation::InvalidScheme) => {
+        if !rpc_url.starts_with("https://") && !rpc_url.starts_with("wss://") {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "rpcUrl must start with https:// or wss://" })),
+            )
+                .into_response();
+        }
+
+        let provider = match ProviderBuilder::new().connect(rpc_url).await {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("[register-native] rpc connect failed: {e:#}");
                 return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": "rpcUrl must start with https:// or wss://" })),
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({ "error": format!("could not reach rpcUrl: {e}") })),
                 )
                     .into_response();
             }
-            Ok(RpcValidation::ChainMismatch { expected, got }) => {
+        };
+
+        match check_chain_id(chain_id, &provider).await {
+            Ok(ChainIdCheck::Valid) => {}
+            Ok(ChainIdCheck::Mismatch { expected, got }) => {
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(json!({ "error": format!("rpcUrl chain ID mismatch: expected {expected}, got {got}") })),
@@ -342,7 +369,7 @@ async fn register_native(
                     .into_response();
             }
             Err(e) => {
-                eprintln!("[register-native] rpc test failed: {e:#}");
+                eprintln!("[register-native] chain ID check failed: {e:#}");
                 return (
                     StatusCode::BAD_GATEWAY,
                     Json(json!({ "error": format!("could not reach rpcUrl: {e}") })),
@@ -615,6 +642,30 @@ fn is_valid_address(address: &str) -> bool {
     address.len() == 42
         && address.starts_with("0x")
         && address[2..].chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Returns Ok(true) if address is a deployed contract (has code, not an EOA or EIP-7702 delegation).
+/// Returns Ok(false) for invalid address format, empty code (EOA), or EIP-7702 delegated EOA.
+/// Returns Err on RPC failure.
+async fn is_valid_contract(address: &str, provider: &impl Provider) -> anyhow::Result<bool> {
+    if !is_valid_address(address) {
+        return Ok(false);
+    }
+
+    let addr: Address = address.parse().context("invalid address")?;
+    let code = provider
+        .get_code_at(addr)
+        .await
+        .context("eth_getCode failed")?;
+
+    // EIP-7702 delegation designation: 0xef0100 + 20-byte address
+    const EIP7702_MAGIC: &[u8; 3] = &[0xef, 0x01, 0x00];
+
+    if code.is_empty() || code.starts_with(EIP7702_MAGIC) {
+        return Ok(false);
+    }
+
+    Ok(true)
 }
 
 /// Construct a new empty registry. Convenience for main.rs.
