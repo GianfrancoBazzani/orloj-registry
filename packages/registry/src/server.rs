@@ -111,12 +111,19 @@ async fn list_mcp(State(state): State<SharedState>) -> Response {
     Json(json!(items)).into_response()
 }
 
-/// Returns Ok(true) if the URL is reachable and its chain ID matches.
-/// Returns Ok(false) if the scheme is wrong or the chain ID mismatches.
-/// Returns Err if the connection or RPC call itself fails (treat as 502).
-async fn test_rpc_url(chain_id: u64, rpc_url: &str) -> anyhow::Result<bool> {
+enum RpcValidation {
+    Valid,
+    InvalidScheme,
+    ChainMismatch { expected: u64, got: u64 },
+}
+
+/// Ok(Valid) — reachable, chain ID matches.
+/// Ok(InvalidScheme) — not https:// or wss://.
+/// Ok(ChainMismatch) — connected but chain ID differs.
+/// Err — connection or RPC call failed (treat as 502).
+async fn test_rpc_url(chain_id: u64, rpc_url: &str) -> anyhow::Result<RpcValidation> {
     if !rpc_url.starts_with("https://") && !rpc_url.starts_with("wss://") {
-        return Ok(false);
+        return Ok(RpcValidation::InvalidScheme);
     }
 
     let provider = ProviderBuilder::new()
@@ -124,12 +131,19 @@ async fn test_rpc_url(chain_id: u64, rpc_url: &str) -> anyhow::Result<bool> {
         .await
         .context("failed to connect to RPC")?;
 
-    let rpc_chain_id = provider
+    let got = provider
         .get_chain_id()
         .await
         .context("eth_chainId request failed")?;
 
-    Ok(rpc_chain_id == chain_id)
+    if got != chain_id {
+        return Ok(RpcValidation::ChainMismatch {
+            expected: chain_id,
+            got,
+        });
+    }
+
+    Ok(RpcValidation::Valid)
 }
 
 /// POST /register
@@ -162,11 +176,18 @@ async fn register(State(state): State<SharedState>, Json(body): Json<RegisterBod
 
     if let Some(rpc_url) = &body.rpc_url {
         match test_rpc_url(chain_id, rpc_url).await {
-            Ok(true) => {}
-            Ok(false) => {
+            Ok(RpcValidation::Valid) => {}
+            Ok(RpcValidation::InvalidScheme) => {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": "rpcUrl must be a valid https:// or wss:// URL for the provided chainId" })),
+                    Json(json!({ "error": "rpcUrl must start with https:// or wss://" })),
+                )
+                    .into_response();
+            }
+            Ok(RpcValidation::ChainMismatch { expected, got }) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("rpcUrl chain ID mismatch: expected {expected}, got {got}") })),
                 )
                     .into_response();
             }
@@ -174,7 +195,7 @@ async fn register(State(state): State<SharedState>, Json(body): Json<RegisterBod
                 eprintln!("[register] rpc test failed: {e:#}");
                 return (
                     StatusCode::BAD_GATEWAY,
-                    Json(json!({ "error": format!("rpc test failed: {e}") })),
+                    Json(json!({ "error": format!("could not reach rpcUrl: {e}") })),
                 )
                     .into_response();
             }
@@ -305,11 +326,18 @@ async fn register_native(
 
     if let Some(rpc_url) = &body.rpc_url {
         match test_rpc_url(chain_id, rpc_url).await {
-            Ok(true) => {}
-            Ok(false) => {
+            Ok(RpcValidation::Valid) => {}
+            Ok(RpcValidation::InvalidScheme) => {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": "rpcUrl must be a valid https:// or wss:// URL for the provided chainId" })),
+                    Json(json!({ "error": "rpcUrl must start with https:// or wss://" })),
+                )
+                    .into_response();
+            }
+            Ok(RpcValidation::ChainMismatch { expected, got }) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("rpcUrl chain ID mismatch: expected {expected}, got {got}") })),
                 )
                     .into_response();
             }
@@ -317,7 +345,7 @@ async fn register_native(
                 eprintln!("[register-native] rpc test failed: {e:#}");
                 return (
                     StatusCode::BAD_GATEWAY,
-                    Json(json!({ "error": format!("rpc test failed: {e}") })),
+                    Json(json!({ "error": format!("could not reach rpcUrl: {e}") })),
                 )
                     .into_response();
             }
