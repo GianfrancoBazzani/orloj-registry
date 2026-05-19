@@ -36,7 +36,6 @@ Beyond this demo, Orbitport is what makes the category — HSM-grade custody for
 ## Files of interest
 
 - `packages/app/lib/vault-providers/orbitport.ts` — full KMS provider: `createKey` (both schemes), `encrypt`/`decrypt` (TRANSIT), `sign` (ETHEREUM), key-grant CRUD
-- `packages/registry/src/vault-providers/orbitport.js` — registry-side `signWithOrbitport` (digest → broadcast tx)
-- `packages/registry/src/sign-transaction.js` — provider router on the live transaction path
-- `packages/registry/src/vault-resolve.js` — agent → vault → KMS-key-id resolution
+- `packages/registry/src/vault/sign_transaction.rs` — provider router on the live transaction path; Orbitport path sends digest → gets `(r,s,v)` → broadcasts
+- `packages/registry/src/db.rs` — `resolve_vault()`: agent → grant → vault → KMS-key-id resolution
 - `packages/app/lib/db.ts` — `orbitport_vault` / `orbitport_secret` / `orbitport_grant` schema

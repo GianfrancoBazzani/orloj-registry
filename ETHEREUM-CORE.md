@@ -28,8 +28,8 @@ The agentic era needs an additional layer where the ergonomics are good enough t
 
 ## Files of interest
 
-- `packages/registry/src/server.mjs` — registry HTTP layer, per-MCP routing, bearer-auth gate (the "instant revocation" guarantee)
-- `packages/registry/src/get-contract.js` — Sourcify v2 fetch + ABI typing (the "no unverified call" guarantee)
-- `packages/registry/src/sign-transaction.js` — provider-agnostic signing path (the "no key leak" guarantee)
-- `packages/registry/src/vault-resolve.js` — per-agent grant resolution (the "no forgery" guarantee)
+- `packages/registry/src/server.rs` — registry HTTP layer, per-MCP routing, bearer-auth gate (the "instant revocation" guarantee)
+- `packages/registry/src/sourcify.rs` — Sourcify v2 fetch + ABI parsing (the "no unverified call" guarantee)
+- `packages/registry/src/vault/sign_transaction.rs` — provider-agnostic signing path (the "no key leak" guarantee)
+- `packages/registry/src/db.rs` — per-agent grant resolution (the "no forgery" guarantee)
 - `packages/app/lib/mcp-tokens.ts` — bearer token issuance + revocation
