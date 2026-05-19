@@ -3,7 +3,11 @@
 
 use std::sync::Arc;
 
-use alloy::{json_abi::JsonAbi, primitives::Address, providers::ProviderBuilder};
+use alloy::{
+    json_abi::JsonAbi,
+    primitives::Address,
+    providers::{Provider, ProviderBuilder},
+};
 use anyhow::Context;
 use axum::{
     Router,
@@ -19,7 +23,7 @@ use tower_http::cors::CorsLayer;
 
 use crate::{
     auth::require_bearer,
-    db::{DbPool, ContractMetaRow},
+    db::{ContractMetaRow, DbPool},
     mcps::{
         evm_mcp::{EvmMcpServer, build_tools},
         native_mcp::{NativeMcpServer, build_native_tools, chain_info},
@@ -107,6 +111,27 @@ async fn list_mcp(State(state): State<SharedState>) -> Response {
     Json(json!(items)).into_response()
 }
 
+/// Returns Ok(true) if the URL is reachable and its chain ID matches.
+/// Returns Ok(false) if the scheme is wrong or the chain ID mismatches.
+/// Returns Err if the connection or RPC call itself fails (treat as 502).
+async fn test_rpc_url(chain_id: u64, rpc_url: &str) -> anyhow::Result<bool> {
+    if !rpc_url.starts_with("https://") && !rpc_url.starts_with("wss://") {
+        return Ok(false);
+    }
+
+    let provider = ProviderBuilder::new()
+        .connect(rpc_url)
+        .await
+        .context("failed to connect to RPC")?;
+
+    let rpc_chain_id = provider
+        .get_chain_id()
+        .await
+        .context("eth_chainId request failed")?;
+
+    Ok(rpc_chain_id == chain_id)
+}
+
 /// POST /register
 /// Body: `{ chainId, address, rpcUrl? }`
 ///
@@ -134,6 +159,28 @@ async fn register(State(state): State<SharedState>, Json(body): Json<RegisterBod
     }
 
     let chain_id = body.chain_id;
+
+    if let Some(rpc_url) = &body.rpc_url {
+        match test_rpc_url(chain_id, rpc_url).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "rpcUrl must be a valid https:// or wss:// URL for the provided chainId" })),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                eprintln!("[register] rpc test failed: {e:#}");
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({ "error": format!("rpc test failed: {e}") })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
     let name = entry_name(chain_id, &address);
 
     // If already in the registry, return immediately.
@@ -255,6 +302,28 @@ async fn register_native(
     }
 
     let chain_id = body.chain_id;
+
+    if let Some(rpc_url) = &body.rpc_url {
+        match test_rpc_url(chain_id, rpc_url).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "rpcUrl must be a valid https:// or wss:// URL for the provided chainId" })),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                eprintln!("[register-native] rpc test failed: {e:#}");
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({ "error": format!("rpc test failed: {e}") })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
     let name = native_entry_name(chain_id);
 
     if let Some(entry) = state.registry.get(&name).await {
@@ -492,7 +561,10 @@ async fn get_or_load(state: &AppState, name: &str) -> anyhow::Result<Option<Arc<
         .registry
         .set(name.to_string(), Arc::clone(&entry))
         .await;
-    eprintln!("[mcp] ready contract {name} ({} tools)", entry.meta.tool_count);
+    eprintln!(
+        "[mcp] ready contract {name} ({} tools)",
+        entry.meta.tool_count
+    );
     Ok(Some(entry))
 }
 

@@ -149,7 +149,11 @@ impl Registry {
             for name in &to_evict {
                 map.remove(name);
             }
-            eprintln!("[registry] evicted {} idle entries: {:?}", to_evict.len(), to_evict);
+            eprintln!(
+                "[registry] evicted {} idle entries: {:?}",
+                to_evict.len(),
+                to_evict
+            );
         }
     }
 }
