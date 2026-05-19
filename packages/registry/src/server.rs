@@ -111,28 +111,67 @@ async fn list_mcp(State(state): State<SharedState>) -> Response {
     Json(json!(items)).into_response()
 }
 
-enum ChainIdCheck {
-    Valid,
-    Mismatch { expected: u64, got: u64 },
-}
+/// Validates scheme, connects, and verifies the chain ID.
+/// Returns the live provider on success so callers can reuse it.
+/// Returns Err(Response) with the appropriate 400/502 on any failure.
+async fn validate_rpc(chain_id: u64, rpc_url: &str) -> Result<impl Provider, Response> {
+    if !rpc_url.starts_with("https://") && !rpc_url.starts_with("wss://") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "rpcUrl must start with https:// or wss://" })),
+        )
+            .into_response());
+    }
 
-/// Verifies the provider's chain ID against the expected one.
-/// Scheme check and provider creation are the caller's responsibility.
-/// Err — eth_chainId call failed.
-async fn check_chain_id(chain_id: u64, provider: &impl Provider) -> anyhow::Result<ChainIdCheck> {
+    let provider = ProviderBuilder::new()
+        .connect(rpc_url)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": format!("could not reach rpcUrl: {e}") })),
+            )
+                .into_response()
+        })?;
+
     let got = provider
         .get_chain_id()
         .await
-        .context("eth_chainId request failed")?;
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": format!("eth_chainId failed: {e}") })),
+            )
+                .into_response()
+        })?;
 
     if got != chain_id {
-        return Ok(ChainIdCheck::Mismatch {
-            expected: chain_id,
-            got,
-        });
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("rpcUrl chain ID mismatch: expected {chain_id}, got {got}") })),
+        )
+            .into_response());
     }
 
-    Ok(ChainIdCheck::Valid)
+    Ok(provider)
+}
+
+/// Verifies the address is a deployed contract (not an EOA or EIP-7702 delegation).
+/// Returns Err(Response) with 400/502 on failure.
+async fn validate_contract(address: &str, provider: &impl Provider) -> Result<(), Response> {
+    match is_valid_contract(address, provider).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "address is not a deployed contract (EOA or no code)" })),
+        )
+            .into_response()),
+        Err(e) => Err((
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": format!("could not verify contract code: {e}") })),
+        )
+            .into_response()),
+    }
 }
 
 /// POST /register
@@ -155,63 +194,12 @@ async fn register(State(state): State<SharedState>, Json(body): Json<RegisterBod
     let chain_id = body.chain_id;
 
     if let Some(rpc_url) = &body.rpc_url {
-        if !rpc_url.starts_with("https://") && !rpc_url.starts_with("wss://") {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "rpcUrl must start with https:// or wss://" })),
-            )
-                .into_response();
-        }
-
-        let provider = match ProviderBuilder::new().connect(rpc_url).await {
+        let provider = match validate_rpc(chain_id, rpc_url).await {
             Ok(p) => p,
-            Err(e) => {
-                eprintln!("[register] rpc connect failed: {e:#}");
-                return (
-                    StatusCode::BAD_GATEWAY,
-                    Json(json!({ "error": format!("could not reach rpcUrl: {e}") })),
-                )
-                    .into_response();
-            }
+            Err(resp) => return resp,
         };
-
-        match check_chain_id(chain_id, &provider).await {
-            Ok(ChainIdCheck::Valid) => {}
-            Ok(ChainIdCheck::Mismatch { expected, got }) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": format!("rpcUrl chain ID mismatch: expected {expected}, got {got}") })),
-                )
-                    .into_response();
-            }
-            Err(e) => {
-                eprintln!("[register] chain ID check failed: {e:#}");
-                return (
-                    StatusCode::BAD_GATEWAY,
-                    Json(json!({ "error": format!("could not reach rpcUrl: {e}") })),
-                )
-                    .into_response();
-            }
-        }
-
-        // verifies if the address is a valid 20 byte hex address + verifies that is not a EOA
-        match is_valid_contract(&address, &provider).await {
-            Ok(true) => {}
-            Ok(false) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": "address is not a deployed contract (EOA or no code)" })),
-                )
-                    .into_response();
-            }
-            Err(e) => {
-                eprintln!("[register] contract check failed: {e:#}");
-                return (
-                    StatusCode::BAD_GATEWAY,
-                    Json(json!({ "error": format!("could not verify the provided address was a contract: {e}") })),
-                )
-                    .into_response();
-            }
+        if let Err(resp) = validate_contract(&address, &provider).await {
+            return resp;
         }
     }
 
@@ -337,45 +325,9 @@ async fn register_native(
 
     let chain_id = body.chain_id;
 
-    // verifies validity of rpc url
     if let Some(rpc_url) = &body.rpc_url {
-        if !rpc_url.starts_with("https://") && !rpc_url.starts_with("wss://") {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "rpcUrl must start with https:// or wss://" })),
-            )
-                .into_response();
-        }
-
-        let provider = match ProviderBuilder::new().connect(rpc_url).await {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("[register-native] rpc connect failed: {e:#}");
-                return (
-                    StatusCode::BAD_GATEWAY,
-                    Json(json!({ "error": format!("could not reach rpcUrl: {e}") })),
-                )
-                    .into_response();
-            }
-        };
-
-        match check_chain_id(chain_id, &provider).await {
-            Ok(ChainIdCheck::Valid) => {}
-            Ok(ChainIdCheck::Mismatch { expected, got }) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": format!("rpcUrl chain ID mismatch: expected {expected}, got {got}") })),
-                )
-                    .into_response();
-            }
-            Err(e) => {
-                eprintln!("[register-native] chain ID check failed: {e:#}");
-                return (
-                    StatusCode::BAD_GATEWAY,
-                    Json(json!({ "error": format!("could not reach rpcUrl: {e}") })),
-                )
-                    .into_response();
-            }
+        if let Err(resp) = validate_rpc(chain_id, rpc_url).await.map(|_| ()) {
+            return resp;
         }
     }
 
