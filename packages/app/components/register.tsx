@@ -30,13 +30,19 @@ export const Register = () => {
   const [mode, setMode] = useState<RegisterMode>("contract");
   const [address, setAddress] = useState("");
   const [chain, setChain] = useState("Ethereum");
+  const [customChainId, setCustomChainId] = useState("");
   const [rpcUrl, setRpcUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<RegisterResult | null>(null);
 
+  const isCustomChain = !(chain in CHAIN_IDS);
+  const resolvedChainId = isCustomChain
+    ? parseInt(customChainId, 10)
+    : (CHAIN_IDS[chain] ?? 1);
+  const validCustomChainId = !isCustomChain || (/^\d+$/.test(customChainId.trim()) && parseInt(customChainId, 10) > 0);
   const validAddress = /^0x[a-fA-F0-9]{40}$/.test(address);
-  const canSubmit = mode === "native" ? !submitting : validAddress && !submitting;
+  const canSubmit = !submitting && validCustomChainId && (mode === "native" || validAddress);
 
   const submit = async () => {
     setSubmitting(true);
@@ -48,8 +54,8 @@ export const Register = () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
           isNative
-            ? { chainId: CHAIN_IDS[chain] ?? 1, rpcUrl: rpcUrl || undefined }
-            : { address, chainId: CHAIN_IDS[chain] ?? 1, rpcUrl: rpcUrl || undefined }
+            ? { chainId: resolvedChainId, rpcUrl: rpcUrl || undefined }
+            : { address, chainId: resolvedChainId, rpcUrl: rpcUrl || undefined }
         ),
       });
       const data = await res.json();
@@ -161,7 +167,7 @@ export const Register = () => {
                       <Select
                         value={chain}
                         onChange={setChain}
-                        options={Object.keys(CHAIN_IDS)}
+                        options={[...Object.keys(CHAIN_IDS), t("register.chainCustom")]}
                       />
                     </Field>
                   </div>
@@ -172,7 +178,21 @@ export const Register = () => {
                     <Select
                       value={chain}
                       onChange={setChain}
-                      options={Object.keys(CHAIN_IDS)}
+                      options={[...Object.keys(CHAIN_IDS), t("register.chainCustom")]}
+                    />
+                  </Field>
+                )}
+
+                {isCustomChain && (
+                  <Field
+                    label={t("register.chainIdLabel")}
+                    hint={t("register.chainIdHint")}
+                  >
+                    <Input
+                      value={customChainId}
+                      onChange={(e) => setCustomChainId(e.target.value.replace(/\D/g, ""))}
+                      placeholder="e.g. 42161"
+                      style={{ fontFamily: "var(--font-mono)" }}
                     />
                   </Field>
                 )}
@@ -268,10 +288,12 @@ export const Register = () => {
                     ? [
                         [t("register.checkAddress"), validAddress],
                         [t("register.checkChain"), true],
+                        ...(isCustomChain ? [[t("register.checkChainId"), validCustomChainId]] : []),
                         [t("register.checkCustomRpc"), rpcUrl.startsWith("http")],
                       ]
                     : [
                         [t("register.checkChain"), true],
+                        ...(isCustomChain ? [[t("register.checkChainId"), validCustomChainId]] : []),
                         [t("register.checkCustomRpc"), rpcUrl.startsWith("http")],
                       ]
                   ).map(([label, ok]) => (

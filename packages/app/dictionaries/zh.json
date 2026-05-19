@@ -102,6 +102,10 @@
     "typeLabel": "注册类型",
     "typeContract": "智能合约",
     "typeNative": "原生代币",
+    "chainCustom": "自定义…",
+    "chainIdLabel": "链 ID",
+    "chainIdHint": "网络的数字链 ID（例如 Arbitrum 为 42161）。",
+    "checkChainId": "链 ID 有效",
     "howItWorks": "工作原理",
     "howItWorksDesc": "ORLOJ 从 Sourcify 获取已验证的 ABI，解析代理实现，并生成类型化的 MCP 服务器，您可以用一个命令将其绑定到任何代理。",
     "howItWorksNativeDesc": "ORLOJ 将链的原生货币（ETH、MATIC 等）注册为 MCP 服务器，提供余额查询和转账工具，任何代理均可直接使用。"

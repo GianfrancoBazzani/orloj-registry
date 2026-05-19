@@ -102,6 +102,10 @@
     "typeLabel": "Registrierungstyp",
     "typeContract": "Smart Contract",
     "typeNative": "Nativer Token",
+    "chainCustom": "Benutzerdefiniert…",
+    "chainIdLabel": "Chain-ID",
+    "chainIdHint": "Numerische Chain-ID des Netzwerks (z.B. 42161 für Arbitrum).",
+    "checkChainId": "Chain-ID gültig",
     "howItWorks": "so funktioniert es",
     "howItWorksDesc": "ORLOJ ruft das verifizierte ABI von Sourcify ab, löst Proxy-Implementierungen auf und generiert einen typisierten MCP-Server, den Sie mit einem Befehl an jeden Agenten binden können.",
     "howItWorksNativeDesc": "ORLOJ registriert die native Währung der Kette (ETH, MATIC usw.) als MCP-Server und stellt Balance- und Transfer-Tools bereit, die jeder Agent direkt nutzen kann."

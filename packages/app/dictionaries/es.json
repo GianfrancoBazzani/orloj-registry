@@ -102,6 +102,10 @@
     "typeLabel": "Tipo de registro",
     "typeContract": "Contrato inteligente",
     "typeNative": "Token nativo",
+    "chainCustom": "Personalizado…",
+    "chainIdLabel": "ID de cadena",
+    "chainIdHint": "ID numérico de la red (ej. 42161 para Arbitrum).",
+    "checkChainId": "ID de cadena válido",
     "howItWorks": "cómo funciona",
     "howItWorksDesc": "ORLOJ obtiene el ABI verificado desde Sourcify, resuelve implementaciones proxy y genera un servidor MCP tipado que puede vincular a cualquier agente con un comando.",
     "howItWorksNativeDesc": "ORLOJ registra la moneda nativa de la cadena (ETH, MATIC, etc.) como servidor MCP, exponiendo herramientas de saldo y transferencia que cualquier agente puede usar directamente."
