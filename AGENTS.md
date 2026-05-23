@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 pnpm workspace monorepo (see [pnpm-workspace.yaml](pnpm-workspace.yaml)):
 
-- [packages/registry/](packages/registry/) — Express 5 + `@modelcontextprotocol/sdk` server (`src/server.mjs`). Endpoints: `GET /healthz`, `GET /mcp` (manifest list), `POST /register` (Sourcify lookup → persists to `contracts.json` → builds MCP), `POST /interface/:name/mcp` (bearer-auth, per-agent MCP over Streamable HTTP). `src/generate-mcp.js` converts ABIs to Zod-typed tools (view → `readContract`, write → `signTransaction` → `sendRawTransaction`, plus native-token MCPs). `src/sign-transaction.js` + `src/vault-resolve.js` + `src/vault-providers/{oneclaw,orbitport}.js` route signing per agent. `src/auth.mjs` validates `mcp_api_key` rows in Postgres with `timingSafeEqual`. `src/loader{,-impl}.mjs` is an ESM resolver hook that re-adds `.js` to extensionless imports — required because `@1claw/sdk@0.20.4` ships them and Node 24's strict ESM resolver rejects them. Runs on `:3001` by default.
+- [packages/registry/](packages/registry/) — Rust (axum + rmcp) registry server. **Not a pnpm workspace member** (no `package.json`); managed entirely by Cargo. Endpoints: `GET /healthz`, `GET /mcp` (manifest list), `POST /register` (Sourcify lookup → persists to Postgres → builds in-memory MCP), `POST /register-native` (native token MCP), `POST /interface/:name/mcp` (bearer-auth, per-agent MCP over Streamable HTTP). ABI → MCP tool mapping in `src/abi_codec.rs`; signing routed through `src/vault/sign_transaction.rs` (Orbitport KMS or 1Claw). In-memory registry with 30-min idle eviction in `src/registry.rs`. Auth in `src/auth.rs` (constant-time `mcp_api_key` lookup). Full details in [packages/registry/CLAUDE.md](packages/registry/CLAUDE.md). Runs on `:3001` by default.
 - [packages/app/](packages/app/) — Next.js 16 control plane. Pages: `/`, `/explore`, `/register`, `/profile`, `/docs`. API routes under `app/api/`: `agents`, `agents/[id]`, `agents/[id]/rotate-key`, `vaults`, `vaults/[id]`, `vaults/[id]/secrets`, `vaults/[id]/key-grants`, `vaults/[id]/sign-test`, `register` (proxies registry), `mcps`, `auth/[...all]`. `lib/auth.ts` is Better-Auth with magic-link (Resend) + SIWE + post-SIWE ENS refresh. `lib/db.ts` provisions schema on first pool acquire (`vault_ownership`, `agent_ownership`, `mcp_api_key`, `orbitport_vault`, `orbitport_secret`, `orbitport_grant`). `lib/vault-providers/{oneclaw,orbitport}.ts` are the TS provider abstraction; the Orbitport provider provisions one secp256k1 + one AES-256-GCM key per vault and stores ciphertext rows in our Postgres (envelope encryption). `lib/mcp-tokens.ts` issues `mcpk_live_*` bearer tokens that the registry verifies.
 
 The root `package.json` declares no scripts; commands are run inside individual packages.
@@ -36,13 +36,12 @@ pnpm lint     # eslint (eslint-config-next core-web-vitals + typescript)
 From `packages/registry/`:
 
 ```bash
-pnpm dev      # node --import ./src/loader.mjs --watch --watch-path=src src/server.mjs (port :3001)
-pnpm start    # same, no --watch
+cargo build                    # compile
+cargo run                            # run (port :3001)
+cargo check                    # fast type-check without linking
 ```
 
-Both registry scripts use `node --env-file-if-exists=.env.local` and require the `--import ./src/loader.mjs` ESM resolver hook — don't drop it. Hot-reload is Node's built-in `--watch`, not chokidar.
-
-There is no test runner configured yet, and no root-level orchestration scripts.
+The registry reads env vars via `dotenvy::dotenv_override()` — loads `.env` only (not `.env.local`). There is no test runner configured yet, and no root-level orchestration scripts.
 
 ## Critical: Next.js 16 is not the Next.js you know
 

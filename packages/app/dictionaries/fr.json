@@ -99,8 +99,16 @@
     "checkCustomRpc": "RPC personnalisé",
     "submitting": "Forgeage de l'interface…",
     "submit": "Sonner la cloche — publier",
+    "typeLabel": "Type d'enregistrement",
+    "typeContract": "Contrat intelligent",
+    "typeNative": "Token natif",
+    "chainCustom": "Personnalisé…",
+    "chainIdLabel": "ID de chaîne",
+    "chainIdHint": "ID numérique de la chaîne (ex. 42161 pour Arbitrum).",
+    "checkChainId": "ID de chaîne valide",
     "howItWorks": "comment ça fonctionne",
-    "howItWorksDesc": "ORLOJ récupère l'ABI vérifié depuis Sourcify, résout les implémentations proxy et génère un serveur MCP typé que vous pouvez lier à n'importe quel agent en une commande."
+    "howItWorksDesc": "ORLOJ récupère l'ABI vérifié depuis Sourcify, résout les implémentations proxy et génère un serveur MCP typé que vous pouvez lier à n'importe quel agent en une commande.",
+    "howItWorksNativeDesc": "ORLOJ enregistre la devise native de la chaîne (ETH, MATIC, etc.) comme serveur MCP, exposant des outils de solde et de transfert que tout agent peut utiliser directement."
   },
   "docs": {
     "pill": "documentation",

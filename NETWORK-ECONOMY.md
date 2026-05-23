@@ -36,4 +36,4 @@ Orloj is the design where nobody between the user and the chain is holding the u
 - `packages/app/lib/agent-ownership.ts` — per-user agent ownership records
 - `packages/app/lib/mcp-tokens.ts` — bearer token issuance, rotation, and revocation
 - `packages/app/lib/vault-providers/` — pluggable KMS providers (1Claw / Orbitport)
-- `packages/registry/src/vault-resolve.js` — agent → grant → vault resolution at signing time
+- `packages/registry/src/db.rs` — agent → grant → vault resolution at signing time
