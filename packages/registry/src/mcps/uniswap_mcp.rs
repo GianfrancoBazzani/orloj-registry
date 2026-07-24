@@ -2,11 +2,13 @@
 // (https://trade-api.gateway.uniswap.org/v1 — see developers.uniswap.org/docs/trading/swapping-api).
 //
 // Unlike EvmMcpServer/NativeMcpServer, this server is not bound to a single chain at
-// construction time: `chainId` (and, for `swap`, `rpcUrl`) are required tool arguments so
-// every call is unambiguous about which network it targets.
+// construction time: `chainId` is a required tool argument on every call so it's never
+// ambiguous which network is targeted. `swap` also needs an rpc_url to sign/broadcast —
+// pass `rpcUrl` explicitly, or omit it and it's looked up from the `networks` table by
+// chainId (db::DbPool::get_network). `supported_networks` lists what's registered there.
 //
-// `quote` is a read-only call to Uniswap's /quote endpoint — no wallet/signing needed beyond
-// the `swapper` address supplied by the caller.
+// `quote` is a read-only call to Uniswap's /quote endpoint, priced for the authenticated
+// agent's own wallet (resolved via the vault, same as `swap` — no raw keys, no signing).
 //
 // `swap` resolves the authenticated agent's own wallet address (via the vault, no raw keys) and
 // executes the full flow with no manual approval step required by the caller:
@@ -21,7 +23,9 @@
 //   4. If the (possibly refreshed) quote carries `permitData`, that's Permit2's per-swap
 //      EIP-712 message (the canonical PermitSingle struct — same shape on every chain). Its
 //      signing hash is computed by hand from `alloy::primitives::keccak256` (see permit2_digest
-//      below) and signed via the vault's generic sign_digest() — no raw keys leave the vault.
+//      below) and signed via sign_permit_digest() — Orbitport KMS or a locally-fetched 1Claw
+//      key, mirroring (but not touching) vault::sign_transaction's own two backends. Kept local
+//      to this file since Permit2 signing is this MCP's concern, not the shared tx-signing path.
 //   5. POST /swap with the quote (+ signature/permitData if step 4 ran), then sign + broadcast
 //      the returned transaction through the same vault-signing path as EvmMcpServer write calls.
 //
@@ -32,6 +36,8 @@
 // Env vars:
 //   UNISWAP_API_KEY  – Uniswap Trading API key (required)
 //   UNISWAP_API_URL  – base URL (default: https://trade-api.gateway.uniswap.org/v1)
+//   ONECLAW_API_KEY / ONECLAW_BASE_URL     – needed only if the agent's vault is 1Claw-backed
+//   ORBITPORT_API_URL                      – needed only if the agent's vault is Orbitport-backed
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,8 +46,10 @@ use alloy::primitives::keccak256;
 use alloy::{
     primitives::{Address, B256, Bytes, U256},
     providers::{Provider, ProviderBuilder},
+    signers::{Signer, local::PrivateKeySigner},
 };
 use anyhow::{Context, Result};
+use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use rmcp::{
     ErrorData as McpError, ServerHandler, ServiceExt,
     model::*,
@@ -51,9 +59,10 @@ use rmcp::{
 use serde_json::{Map, Value, json};
 
 use crate::{
-    db::DbPool,
+    db::{DbPool, VaultInfo},
     vault::sign_transaction::{
-        SignTransactionParams, resolve_agent_address, sign_digest, sign_transaction,
+        SignTransactionParams, oneclaw_bearer_token, orbitport_access_token,
+        resolve_agent_address, sign_transaction,
     },
 };
 
@@ -127,20 +136,13 @@ pub fn build_uniswap_tools() -> Vec<Tool> {
 
     let quote = Tool::new(
         "quote".to_string(),
-        "Get a Uniswap price quote and route for a token pair on a given chain. Read-only — does not move funds.".to_string(),
+        "Get a Uniswap price quote and route for a token pair on a given chain, priced for the authenticated agent's own wallet. Read-only — does not move funds.".to_string(),
         {
             let mut props = Map::new();
             props.insert("chainId".to_string(), chain_id_prop.clone());
             props.insert("tokenIn".to_string(), token_in_prop.clone());
             props.insert("tokenOut".to_string(), token_out_prop.clone());
             props.insert("amount".to_string(), amount_prop.clone());
-            props.insert(
-                "swapper".to_string(),
-                json!({
-                    "type": "string",
-                    "description": "Wallet address (0x-prefixed) that would execute the swap. Required by Uniswap for accurate routing and pricing."
-                }),
-            );
             props.insert("type".to_string(), type_prop.clone());
             props.insert("slippageTolerance".to_string(), slippage_prop.clone());
 
@@ -150,7 +152,7 @@ pub fn build_uniswap_tools() -> Vec<Tool> {
             schema.insert(
                 "required".to_string(),
                 Value::Array(
-                    ["chainId", "tokenIn", "tokenOut", "amount", "swapper"]
+                    ["chainId", "tokenIn", "tokenOut", "amount"]
                         .into_iter()
                         .map(|s| Value::String(s.to_string()))
                         .collect(),
@@ -170,7 +172,7 @@ pub fn build_uniswap_tools() -> Vec<Tool> {
                 "rpcUrl".to_string(),
                 json!({
                     "type": "string",
-                    "description": "HTTPS or WSS RPC endpoint for `chainId`, used to sign and broadcast the swap (and, if needed, the Permit2 approval) transaction."
+                    "description": "HTTPS or WSS RPC endpoint for `chainId`, used to sign and broadcast the swap (and, if needed, the Permit2 approval) transaction. Optional — if omitted, looked up from the `networks` table by chainId (call `supported_networks` to see what's registered). Required if that chain isn't registered there."
                 }),
             );
             props.insert("tokenIn".to_string(), token_in_prop);
@@ -191,7 +193,7 @@ pub fn build_uniswap_tools() -> Vec<Tool> {
             schema.insert(
                 "required".to_string(),
                 Value::Array(
-                    ["chainId", "rpcUrl", "tokenIn", "tokenOut", "amount"]
+                    ["chainId", "tokenIn", "tokenOut", "amount"]
                         .into_iter()
                         .map(|s| Value::String(s.to_string()))
                         .collect(),
@@ -201,7 +203,18 @@ pub fn build_uniswap_tools() -> Vec<Tool> {
         },
     );
 
-    vec![quote, swap]
+    let supported_networks = Tool::new(
+        "supported_networks".to_string(),
+        "List the chainIds this registry has a network config for (name + chainId), so an agent can check what's available before calling `swap` without an explicit rpcUrl.".to_string(),
+        {
+            let mut schema = Map::new();
+            schema.insert("type".to_string(), Value::String("object".to_string()));
+            schema.insert("properties".to_string(), Value::Object(Map::new()));
+            schema
+        },
+    );
+
+    vec![quote, swap, supported_networks]
 }
 
 // ---------------------------------------------------------------------------
@@ -369,6 +382,185 @@ fn permit2_digest(permit_data: &Value) -> Result<B256> {
     Ok(keccak256(&digest_buf))
 }
 
+// ---------------------------------------------------------------------------
+// Permit2 digest signing — self-contained in this file. Reuses only the already-`pub` pieces
+// of vault::sign_transaction (resolve_agent_address, sign_transaction, orbitport_access_token,
+// oneclaw_bearer_token); the KMS digest call and 1Claw secret fetch are duplicated locally
+// rather than exposing new surface area from the shared vault module.
+// ---------------------------------------------------------------------------
+
+/// Signs an arbitrary 32-byte digest (here: a Permit2 EIP-712 signing hash) with the agent's
+/// vault. Returns the 65-byte ECDSA signature (r || s || v, v = 27/28) Permit2 expects.
+async fn sign_permit_digest(db: &DbPool, agent_id: &str, digest: B256) -> Result<[u8; 65]> {
+    let vault = db
+        .resolve_vault(agent_id)
+        .await
+        .context("vault resolution failed")?;
+
+    match vault {
+        VaultInfo::Orbitport { kms_signing_key_id, .. } => {
+            orbitport_sign_digest(&kms_signing_key_id, digest).await
+        }
+
+        VaultInfo::Oneclaw { vault_id, signing_key_path } => {
+            let private_key = oneclaw_get_private_key(&vault_id, &signing_key_path).await?;
+            let signer: PrivateKeySigner = private_key
+                .parse()
+                .context("invalid private key returned from 1Claw")?;
+
+            let sig = signer
+                .sign_hash(&digest)
+                .await
+                .context("local Permit2 digest signing failed")?;
+
+            let mut out = [0u8; 65];
+            out[0..32].copy_from_slice(&sig.r().to_be_bytes::<32>());
+            out[32..64].copy_from_slice(&sig.s().to_be_bytes::<32>());
+            out[64] = if sig.v() { 28 } else { 27 };
+            Ok(out)
+        }
+    }
+}
+
+/// Calls Orbitport KMS (`kms.Sign`) to sign an arbitrary 32-byte digest. Returns the raw
+/// 65-byte secp256k1 signature (r[32] || s[32] || v[1]), v normalised to 27/28.
+///
+/// Mirrors the digest-signing half of vault::sign_transaction's Orbitport path (KMSService
+/// in the Orbitport SDK) — duplicated here rather than imported, per the constraint that
+/// Permit2 signing stays local to this file.
+async fn orbitport_sign_digest(kms_signing_key_id: &str, digest: B256) -> Result<[u8; 65]> {
+    let token = orbitport_access_token().await?;
+
+    let api_url = std::env::var("ORBITPORT_API_URL")
+        .unwrap_or_else(|_| "https://op.spacecomputer.io".to_string());
+
+    let resp: Value = reqwest::Client::new()
+        .post(format!("{api_url}/api/v1/rpc"))
+        .bearer_auth(&token)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "kms.Sign",
+            "params": {
+                "KeyId": kms_signing_key_id,
+                "Message": B64.encode(digest.as_slice()),
+                "SigningAlgorithm": "ETHEREUM_SECP256K1",
+                "MessageType": "DIGEST",
+            },
+        }))
+        .send()
+        .await
+        .context("Orbitport kms.Sign request failed")?
+        .error_for_status()
+        .context("Orbitport kms.Sign returned HTTP error")?
+        .json()
+        .await
+        .context("failed to parse Orbitport kms.Sign response")?;
+
+    if let Some(err) = resp.get("error") {
+        let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("unknown");
+        let code = err.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
+        anyhow::bail!("Orbitport kms.Sign JSON-RPC error {code}: {msg}");
+    }
+
+    let raw_sig = resp["result"]["Signature"]
+        .as_str()
+        .context("missing Signature in Orbitport kms.Sign result")?;
+
+    let sig_bytes = decode_orbitport_signature(raw_sig)?;
+    anyhow::ensure!(
+        sig_bytes.len() == 65,
+        "Orbitport signature length is {} (want 65)",
+        sig_bytes.len()
+    );
+
+    let v_raw = sig_bytes[64];
+    let v = if v_raw < 27 { v_raw + 27 } else { v_raw };
+
+    let mut out = [0u8; 65];
+    out[..64].copy_from_slice(&sig_bytes[..64]);
+    out[64] = v;
+    Ok(out)
+}
+
+/// Mirrors decodeSignature() in vault-providers/orbitport.js: accepts hex (with/without 0x,
+/// 130 hex chars) with a base64 fallback.
+fn decode_orbitport_signature(raw: &str) -> Result<Vec<u8>> {
+    let hex_body = raw
+        .strip_prefix("0x")
+        .or_else(|| raw.strip_prefix("0X"))
+        .unwrap_or(raw);
+
+    if hex_body.len() == 130 && hex_body.chars().all(|c| c.is_ascii_hexdigit()) {
+        return alloy::hex::decode(hex_body).context("hex decode of Orbitport signature failed");
+    }
+
+    B64.decode(raw).context("base64 decode of Orbitport signature failed")
+}
+
+/// Fetches a private-key secret from a 1Claw vault.
+/// GET {base_url}/v1/vaults/{vault_id}/secrets/{path} → { type: "private_key", value: "0x..." }
+///
+/// Mirrors client.secrets.get(vaultId, signingKeyPath) in the 1Claw SDK — duplicated here
+/// rather than imported, per the constraint that Permit2 signing stays local to this file.
+///
+/// Env vars:
+///   ONECLAW_API_KEY  – vault API key (ocv_... or 1ck_...)
+///   ONECLAW_BASE_URL – base URL (default: https://api.1claw.xyz)
+async fn oneclaw_get_private_key(vault_id: &str, path: &str) -> Result<String> {
+    let api_key = std::env::var("ONECLAW_API_KEY").context("ONECLAW_API_KEY not set")?;
+    let base_url = std::env::var("ONECLAW_BASE_URL")
+        .unwrap_or_else(|_| "https://api.1claw.xyz".to_string());
+
+    let bearer = oneclaw_bearer_token(&base_url, &api_key).await?;
+
+    let resp: Value = reqwest::Client::new()
+        .get(format!("{base_url}/v1/vaults/{vault_id}/secrets/{path}"))
+        .bearer_auth(&bearer)
+        .send()
+        .await
+        .context("1Claw secrets.get request failed")?
+        .error_for_status()
+        .context("1Claw secrets.get returned error")?
+        .json()
+        .await
+        .context("failed to parse 1Claw secrets.get response")?;
+
+    let secret_type = resp["type"].as_str().unwrap_or("");
+    anyhow::ensure!(
+        secret_type == "private_key",
+        "1Claw secret at {path} is not a private_key (type={secret_type})"
+    );
+
+    let value = resp["value"]
+        .as_str()
+        .context("missing value in 1Claw secret response")?;
+
+    Ok(if value.starts_with("0x") {
+        value.to_string()
+    } else {
+        format!("0x{value}")
+    })
+}
+
+/// Polls for a transaction receipt, bounded to ~60s. Used only for the Permit2 approval step —
+/// waiting for on-chain confirmation before signing/broadcasting the swap avoids racing a nonce
+/// or attempting a swap that would predictably fail from insufficient allowance.
+async fn wait_for_receipt(provider: &impl Provider, hash: B256) -> Result<()> {
+    for _ in 0..30 {
+        if let Some(receipt) = provider
+            .get_transaction_receipt(hash)
+            .await
+            .context("eth_getTransactionReceipt failed")?
+        {
+            anyhow::ensure!(receipt.status(), "Permit2 approval transaction {hash:#x} reverted");
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    anyhow::bail!("timed out waiting for Permit2 approval transaction {hash:#x} to confirm")
+}
+
 struct QuoteParams<'a> {
     chain_id: u64,
     token_in: &'a str,
@@ -513,62 +705,19 @@ impl UniswapMcpServer {
     }
 
     async fn handle_quote(&self, args: &Map<String, Value>) -> Result<String> {
-        let chain_id = args
-            .get("chainId")
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| anyhow::anyhow!("missing 'chainId' argument"))?;
-        let token_in = args
-            .get("tokenIn")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("missing 'tokenIn' argument"))?;
-        let token_out = args
-            .get("tokenOut")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("missing 'tokenOut' argument"))?;
-        let amount = args
-            .get("amount")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("missing 'amount' argument"))?;
-        let swapper = args
-            .get("swapper")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("missing 'swapper' argument"))?;
-        let swap_type = args.get("type").and_then(|v| v.as_str()).unwrap_or("EXACT_INPUT");
-        let slippage = args.get("slippageTolerance").and_then(|v| v.as_f64());
-
-        let quote = self
-            .fetch_quote(QuoteParams {
-                chain_id,
-                token_in,
-                token_out,
-                amount,
-                swapper,
-                swap_type,
-                slippage,
-            })
-            .await?;
-
-        Ok(quote.to_string())
-    }
-
-    async fn handle_swap(&self, args: &Map<String, Value>) -> Result<String> {
         let agent_id = self
             .agent_id
             .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("swap requires an authenticated agent"))?;
+            .ok_or_else(|| anyhow::anyhow!("quote requires an authenticated agent"))?;
         let db = self
             .db
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("swap requires a database connection"))?;
+            .ok_or_else(|| anyhow::anyhow!("quote requires a database connection"))?;
 
         let chain_id = args
             .get("chainId")
             .and_then(|v| v.as_u64())
             .ok_or_else(|| anyhow::anyhow!("missing 'chainId' argument"))?;
-        let rpc_url = args
-            .get("rpcUrl")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("missing 'rpcUrl' argument"))?;
         let token_in = args
             .get("tokenIn")
             .and_then(|v| v.as_str())
@@ -588,7 +737,7 @@ impl UniswapMcpServer {
             .await
             .context("resolving agent wallet failed")?;
 
-        let quote_resp = self
+        let quote = self
             .fetch_quote(QuoteParams {
                 chain_id,
                 token_in,
@@ -600,10 +749,158 @@ impl UniswapMcpServer {
             })
             .await?;
 
-        let quote = quote_resp
-            .get("quote")
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("uniswap /quote response missing 'quote' field: {quote_resp}"))?;
+        Ok(quote.to_string())
+    }
+
+    /// Lists the `networks` table's rows as { chainId, name } pairs — the chains `swap`
+    /// can resolve an rpcUrl for automatically, without the caller passing one.
+    async fn handle_supported_networks(&self) -> Result<String> {
+        let db = self
+            .db
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("supported_networks requires a database connection"))?;
+
+        let networks = db.list_networks().await.context("listing networks failed")?;
+
+        let list: Vec<Value> = networks
+            .into_iter()
+            .map(|n| json!({ "chainId": n.chain_id, "name": n.name }))
+            .collect();
+
+        Ok(json!(list).to_string())
+    }
+
+    async fn handle_swap(&self, args: &Map<String, Value>) -> Result<String> {
+        let agent_id = self
+            .agent_id
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("swap requires an authenticated agent"))?;
+        let db = self
+            .db
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("swap requires a database connection"))?;
+
+        let chain_id = args
+            .get("chainId")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("missing 'chainId' argument"))?;
+
+        // rpcUrl is optional — fall back to the `networks` directory by chainId when omitted.
+        let rpc_url: String = match args.get("rpcUrl").and_then(|v| v.as_str()) {
+            Some(url) => url.to_string(),
+            _none => db
+                .get_network(chain_id)
+                .await
+                .context("looking up network config failed")?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no 'rpcUrl' argument and no network registered for chainId {chain_id} \
+                         — pass rpcUrl explicitly, or check `supported_networks` for what's \
+                         already registered"
+                    )
+                })?
+                .rpc_url,
+        };
+        let rpc_url = rpc_url.as_str();
+
+        let token_in = args
+            .get("tokenIn")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("missing 'tokenIn' argument"))?;
+        let token_out = args
+            .get("tokenOut")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("missing 'tokenOut' argument"))?;
+        let amount = args
+            .get("amount")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("missing 'amount' argument"))?;
+        let swap_type = args.get("type").and_then(|v| v.as_str()).unwrap_or("EXACT_INPUT");
+        let slippage = args
+            .get("slippageTolerance")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(DEFAULT_SLIPPAGE_TOLERANCE_PCT);
+
+        let swapper = resolve_agent_address(db, agent_id)
+            .await
+            .context("resolving agent wallet failed")?;
+        let swapper_str = swapper.to_string();
+
+        let provider = ProviderBuilder::new()
+            .connect(rpc_url)
+            .await
+            .context("rpc connect failed")?;
+
+        let mut quote_resp = self
+            .fetch_quote(QuoteParams {
+                chain_id,
+                token_in,
+                token_out,
+                amount,
+                swapper: &swapper_str,
+                swap_type,
+                slippage: Some(slippage),
+            })
+            .await?;
+        let mut quote = quote_resp.get("quote").cloned().ok_or_else(|| {
+            anyhow::anyhow!("uniswap /quote response missing 'quote' field: {quote_resp}")
+        })?;
+
+        // Layer 1: on-chain ERC-20 → Permit2 allowance. Skipped for native-currency input,
+        // which never needs it. Uses the quote's resolved input amount (not the raw `amount`
+        // arg) since for type=EXACT_OUTPUT the caller's amount is the *output* token's amount.
+        if !token_in.eq_ignore_ascii_case(NATIVE_TOKEN_ADDRESS) {
+            let required_input_amount = quote
+                .get("input")
+                .and_then(|i| i.get("amount"))
+                .and_then(|a| a.as_str())
+                .unwrap_or(amount);
+
+            let approval_resp = self
+                .check_approval(chain_id, &swapper_str, token_in, required_input_amount)
+                .await?;
+
+            if let Some(approval_tx) = approval_resp.get("approval").filter(|v| !v.is_null()) {
+                let hash = self
+                    .sign_and_send(db, agent_id, chain_id, rpc_url, &provider, approval_tx)
+                    .await
+                    .context("Permit2 token approval failed")?;
+
+                wait_for_receipt(&provider, hash)
+                    .await
+                    .context("Permit2 token approval did not confirm")?;
+
+                // The wait can take a while — refresh so pricing / Permit2 nonce / sigDeadline
+                // in the quote we're about to sign against are still current.
+                quote_resp = self
+                    .fetch_quote(QuoteParams {
+                        chain_id,
+                        token_in,
+                        token_out,
+                        amount,
+                        swapper: &swapper_str,
+                        swap_type,
+                        slippage: Some(slippage),
+                    })
+                    .await?;
+                quote = quote_resp.get("quote").cloned().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "uniswap /quote response missing 'quote' field: {quote_resp}"
+                    )
+                })?;
+            }
+        }
+
+        // Layer 2: off-chain, per-swap Permit2 EIP-712 signature — only when the quote needs one.
+        let mut swap_body = json!({ "quote": quote });
+        if let Some(permit) = quote_resp.get("permitData").filter(|v| !v.is_null()) {
+            let digest = permit2_digest(permit).context("failed to compute Permit2 signing hash")?;
+            let raw_sig = sign_permit_digest(db, agent_id, digest)
+                .await
+                .context("signing Permit2 permit failed")?;
+            swap_body["signature"] = json!(alloy::hex::encode_prefixed(raw_sig));
+            swap_body["permitData"] = permit.clone();
+        }
 
         let api_key = std::env::var("UNISWAP_API_KEY").context("UNISWAP_API_KEY not set")?;
 
@@ -612,7 +909,7 @@ impl UniswapMcpServer {
             .post(format!("{}/swap", uniswap_api_base()))
             .header("x-api-key", &api_key)
             .header("Accept", "application/json")
-            .json(&json!({ "quote": quote }))
+            .json(&swap_body)
             .send()
             .await
             .context("uniswap /swap request failed")?;
@@ -620,11 +917,7 @@ impl UniswapMcpServer {
         if !swap_resp.status().is_success() {
             let status = swap_resp.status();
             let text = swap_resp.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "uniswap /swap returned {status}: {text} — if this mentions a required Permit2 \
-                 signature, the token needs a one-time on-chain Permit2 approval first \
-                 (see https://developers.uniswap.org/docs/api-reference/check_approval)"
-            );
+            anyhow::bail!("uniswap /swap returned {status}: {text}");
         }
 
         let swap_json: Value = swap_resp
@@ -636,53 +929,12 @@ impl UniswapMcpServer {
             .get("swap")
             .ok_or_else(|| anyhow::anyhow!("uniswap /swap response missing 'swap' field: {swap_json}"))?;
 
-        let to: Address = tx
-            .get("to")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("swap transaction missing 'to'"))?
-            .parse()
-            .context("invalid 'to' in swap transaction")?;
-
-        let data: Bytes = tx
-            .get("data")
-            .and_then(|v| v.as_str())
-            .unwrap_or("0x")
-            .parse()
-            .context("invalid 'data' in swap transaction")?;
-
-        let value = tx
-            .get("value")
-            .and_then(|v| v.as_str())
-            .map(parse_flexible_u256)
-            .transpose()?
-            .unwrap_or(U256::ZERO);
-
-        let signed = sign_transaction(
-            db,
-            SignTransactionParams {
-                agent_id: agent_id.to_string(),
-                chain_id,
-                rpc_url: rpc_url.to_string(),
-                to,
-                value,
-                data,
-                nonce: None,
-            },
-        )
-        .await
-        .context("signing swap transaction failed")?;
-
-        let provider = ProviderBuilder::new()
-            .connect(rpc_url)
+        let hash = self
+            .sign_and_send(db, agent_id, chain_id, rpc_url, &provider, tx)
             .await
-            .context("rpc connect failed")?;
+            .context("signing/broadcasting swap transaction failed")?;
 
-        let pending = provider
-            .send_raw_transaction(&signed)
-            .await
-            .context("eth_sendRawTransaction failed")?;
-
-        Ok(json!({ "hash": format!("{:#x}", pending.tx_hash()) }).to_string())
+        Ok(json!({ "hash": format!("{hash:#x}") }).to_string())
     }
 
     /// JSON-RPC dispatch used by the HTTP registry transport.
@@ -701,7 +953,7 @@ impl UniswapMcpServer {
                         "name": "uniswap-mcp",
                         "version": "1.0.0",
                     },
-                    "instructions": "Chain-agnostic Uniswap swaps. Every call takes an explicit chainId so token addresses are never ambiguous across networks. quote(chainId, tokenIn, tokenOut, amount, swapper, type?, slippageTolerance?) returns pricing and routing with no side effects. swap(chainId, rpcUrl, tokenIn, tokenOut, amount, type?, slippageTolerance?) resolves your agent's own wallet, fetches a quote, and signs + broadcasts the swap automatically — you do not provide private keys or manage nonces/gas yourself.",
+                    "instructions": "Chain-agnostic Uniswap swaps. Every call takes an explicit chainId so token addresses are never ambiguous across networks. quote and swap act on the authenticated agent's own wallet, resolved automatically from its vault — you never supply a wallet/swapper address. supported_networks() lists the chainIds with a registered rpc_url (name + chainId). quote(chainId, tokenIn, tokenOut, amount, type?, slippageTolerance?) returns pricing and routing with no side effects. swap(chainId, tokenIn, tokenOut, amount, rpcUrl?, type?, slippageTolerance?) fetches a quote, transparently handles Permit2 approval/signing if needed, and signs + broadcasts the swap automatically — you do not provide private keys or manage nonces/gas yourself. rpcUrl is optional if the chain is already registered (see supported_networks).",
                 }),
             ),
             "notifications/initialized" | "notifications/cancelled" => Value::Null,
@@ -718,6 +970,7 @@ impl UniswapMcpServer {
                 let result = match tool_name {
                     "quote" => self.handle_quote(&args).await,
                     "swap" => self.handle_swap(&args).await,
+                    "supported_networks" => self.handle_supported_networks().await,
                     other => Err(anyhow::anyhow!("unknown tool: {other}")),
                 };
 
@@ -762,10 +1015,12 @@ impl ServerHandler for UniswapMcpServer {
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             instructions: Some(
                 "Chain-agnostic Uniswap swaps. Every call takes an explicit chainId so token \
-                 addresses are never ambiguous across networks. quote(...) returns pricing and \
-                 routing with no side effects. swap(...) resolves your agent's own wallet, \
-                 fetches a quote, and signs + broadcasts the swap automatically — you do not \
-                 provide private keys or manage nonces/gas yourself."
+                 addresses are never ambiguous across networks. Both tools act on the \
+                 authenticated agent's own wallet, resolved automatically from its vault — you \
+                 never supply a wallet/swapper address. quote(...) returns pricing and routing \
+                 with no side effects. swap(...) fetches a quote, transparently handles Permit2 \
+                 approval/signing if needed, and signs + broadcasts the swap automatically — you \
+                 do not provide private keys or manage nonces/gas yourself."
                     .to_string(),
             ),
             ..Default::default()
@@ -793,6 +1048,7 @@ impl ServerHandler for UniswapMcpServer {
         let result = match request.name.as_ref() {
             "quote" => self.handle_quote(&args).await,
             "swap" => self.handle_swap(&args).await,
+            "supported_networks" => self.handle_supported_networks().await,
             other => Err(anyhow::anyhow!("unknown tool: {other}")),
         };
 

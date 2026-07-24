@@ -47,6 +47,16 @@ pub struct ContractMetaRow {
     pub rpc_url: Option<String>,
 }
 
+/// Row in the `networks` table — a chainId-indexed RPC directory, independent of the
+/// contract-registration flow. Lets chain-agnostic MCPs (e.g. uniswap_mcp) resolve an
+/// rpc_url from just a chainId instead of requiring the caller to pass one every time.
+pub struct NetworkRow {
+    pub chain_id: u64,
+    pub name: String,
+    pub rpc_url: String,
+    pub native_token: String,
+}
+
 // ---------------------------------------------------------------------------
 // Pool
 // ---------------------------------------------------------------------------
@@ -94,7 +104,94 @@ impl DbPool {
         .await
         .context("ensure_tables failed")?;
 
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS networks (
+                chain_id      INTEGER      PRIMARY KEY,
+                name          TEXT         NOT NULL,
+                rpc_url       TEXT         NOT NULL,
+                native_token  TEXT         NOT NULL,
+                registered_at TIMESTAMPTZ  NOT NULL DEFAULT now()
+            )",
+        )
+        .execute(&self.pool)
+        .await
+        .context("ensure_tables failed (networks)")?;
+
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Network directory — chainId -> { name, rpc_url, native_token }
+// ---------------------------------------------------------------------------
+
+impl DbPool {
+    /// Upsert a network's RPC/name/native-token config, keyed by chain_id.
+    pub async fn upsert_network(
+        &self,
+        chain_id: u64,
+        name: &str,
+        rpc_url: &str,
+        native_token: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO networks (chain_id, name, rpc_url, native_token) \
+             VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (chain_id) DO UPDATE SET \
+               name         = EXCLUDED.name, \
+               rpc_url      = EXCLUDED.rpc_url, \
+               native_token = EXCLUDED.native_token",
+        )
+        .bind(chain_id as i32)
+        .bind(name)
+        .bind(rpc_url)
+        .bind(native_token)
+        .execute(&self.pool)
+        .await
+        .context("upsert_network failed")?;
+
+        Ok(())
+    }
+
+    /// Look up a network's config by chain_id.
+    pub async fn get_network(&self, chain_id: u64) -> Result<Option<NetworkRow>> {
+        let row = sqlx::query(
+            "SELECT chain_id, name, rpc_url, native_token FROM networks WHERE chain_id = $1",
+        )
+        .bind(chain_id as i32)
+        .fetch_optional(&self.pool)
+        .await
+        .context("get_network failed")?;
+
+        let Some(row) = row else { return Ok(None) };
+
+        Ok(Some(NetworkRow {
+            chain_id: row.try_get::<i32, _>("chain_id")? as u64,
+            name: row.try_get("name")?,
+            rpc_url: row.try_get("rpc_url")?,
+            native_token: row.try_get("native_token")?,
+        }))
+    }
+
+    /// List all configured networks, ordered by chain_id.
+    pub async fn list_networks(&self) -> Result<Vec<NetworkRow>> {
+        let rows = sqlx::query(
+            "SELECT chain_id, name, rpc_url, native_token FROM networks ORDER BY chain_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("list_networks failed")?;
+
+        rows.into_iter()
+            .map(|r| {
+                Ok(NetworkRow {
+                    chain_id: r.try_get::<i32, _>("chain_id")? as u64,
+                    name: r.try_get("name")?,
+                    rpc_url: r.try_get("rpc_url")?,
+                    native_token: r.try_get("native_token")?,
+                })
+            })
+            .collect()
     }
 }
 
