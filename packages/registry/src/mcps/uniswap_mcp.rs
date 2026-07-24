@@ -8,20 +8,37 @@
 // `quote` is a read-only call to Uniswap's /quote endpoint — no wallet/signing needed beyond
 // the `swapper` address supplied by the caller.
 //
-// `swap` resolves the authenticated agent's own wallet address (via the vault, no raw keys),
-// fetches a quote for that swapper, requests the built transaction from /swap, then signs and
-// broadcasts it through the same vault-signing path as EvmMcpServer write calls. Routes that
-// require an off-chain Permit2 signature (ERC-20 input without a standing Permit2 allowance)
-// are not supported — Uniswap's error response is surfaced with a pointer to /check_approval.
+// `swap` resolves the authenticated agent's own wallet address (via the vault, no raw keys) and
+// executes the full flow with no manual approval step required by the caller:
+//   1. Get a quote for the resolved swapper (defaults slippageTolerance to a conservative 0.5%
+//      if the caller doesn't specify one — this is what actually bounds the min output Uniswap's
+//      router will accept on-chain, so it's the real fund-protection lever here).
+//   2. POST /check_approval for the resolved input amount. If the ERC-20 token doesn't yet trust
+//      Permit2 on-chain, sign + broadcast the returned approval tx and wait for it to confirm
+//      before moving on (native-currency input skips this layer entirely).
+//   3. If an approval tx had to be mined, re-fetch the quote — the wait can make the first one
+//      stale (quote pricing / Permit2 nonce / sigDeadline).
+//   4. If the (possibly refreshed) quote carries `permitData`, that's Permit2's per-swap
+//      EIP-712 message (the canonical PermitSingle struct — same shape on every chain). Its
+//      signing hash is computed by hand from `alloy::primitives::keccak256` (see permit2_digest
+//      below) and signed via the vault's generic sign_digest() — no raw keys leave the vault.
+//   5. POST /swap with the quote (+ signature/permitData if step 4 ran), then sign + broadcast
+//      the returned transaction through the same vault-signing path as EvmMcpServer write calls.
+//
+// A wrong Permit2 digest just makes Permit2's own signature check revert on-chain — it can't
+// authorize a transfer it wasn't actually signed for, so a bug here fails closed rather than
+// risking funds.
 //
 // Env vars:
 //   UNISWAP_API_KEY  – Uniswap Trading API key (required)
 //   UNISWAP_API_URL  – base URL (default: https://trade-api.gateway.uniswap.org/v1)
 
 use std::sync::Arc;
+use std::time::Duration;
 
+use alloy::primitives::keccak256;
 use alloy::{
-    primitives::{Address, Bytes, U256},
+    primitives::{Address, B256, Bytes, U256},
     providers::{Provider, ProviderBuilder},
 };
 use anyhow::{Context, Result};
@@ -35,8 +52,19 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     db::DbPool,
-    vault::sign_transaction::{SignTransactionParams, resolve_agent_address, sign_transaction},
+    vault::sign_transaction::{
+        SignTransactionParams, resolve_agent_address, sign_digest, sign_transaction,
+    },
 };
+
+/// Applied to `swap` when the caller doesn't supply `slippageTolerance`. Chosen deliberately
+/// rather than leaving it to whatever Uniswap's own undocumented default is, since this is the
+/// value that bounds acceptable price movement for a fund-moving call.
+const DEFAULT_SLIPPAGE_TOLERANCE_PCT: f64 = 0.5;
+
+/// Sentinel used by the Uniswap Trading API for a chain's native currency (ETH, MATIC, ...).
+/// Native input never needs an ERC-20 → Permit2 allowance, so `swap` skips /check_approval for it.
+const NATIVE_TOKEN_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
 
 // ---------------------------------------------------------------------------
 // Config & server struct
@@ -134,7 +162,7 @@ pub fn build_uniswap_tools() -> Vec<Tool> {
 
     let swap = Tool::new(
         "swap".to_string(),
-        "Execute a Uniswap swap on behalf of the authenticated agent. Fetches a quote for the agent's own wallet, builds the swap transaction via Uniswap, then signs and broadcasts it. Does not support routes requiring a fresh Permit2 signature (ERC-20 input without a standing Permit2 allowance) — approve the token to Permit2 on-chain first in that case.".to_string(),
+        "Execute a Uniswap swap on behalf of the authenticated agent — fully automatic, no separate approval call needed. Resolves the agent's own wallet, gets a quote, transparently handles both Permit2 layers if required (on-chain ERC-20→Permit2 approval, signed off-chain via the vault if the token needs it — waits for it to confirm; then the per-swap Permit2 EIP-712 signature, also signed via the vault), then signs and broadcasts the swap transaction.".to_string(),
         {
             let mut props = Map::new();
             props.insert("chainId".to_string(), chain_id_prop);
@@ -142,14 +170,20 @@ pub fn build_uniswap_tools() -> Vec<Tool> {
                 "rpcUrl".to_string(),
                 json!({
                     "type": "string",
-                    "description": "HTTPS or WSS RPC endpoint for `chainId`, used to sign and broadcast the swap transaction."
+                    "description": "HTTPS or WSS RPC endpoint for `chainId`, used to sign and broadcast the swap (and, if needed, the Permit2 approval) transaction."
                 }),
             );
             props.insert("tokenIn".to_string(), token_in_prop);
             props.insert("tokenOut".to_string(), token_out_prop);
             props.insert("amount".to_string(), amount_prop);
             props.insert("type".to_string(), type_prop);
-            props.insert("slippageTolerance".to_string(), slippage_prop);
+            props.insert(
+                "slippageTolerance".to_string(),
+                json!({
+                    "type": "number",
+                    "description": "Maximum acceptable slippage in percent (e.g. 0.5 for 0.5%). Defaults to 0.5% if omitted — this is what bounds the minimum output Uniswap's router will accept on-chain, protecting the swap from bad fills."
+                }),
+            );
 
             let mut schema = Map::new();
             schema.insert("type".to_string(), Value::String("object".to_string()));
@@ -181,9 +215,158 @@ fn uniswap_api_base() -> String {
 
 fn parse_flexible_u256(s: &str) -> Result<U256> {
     match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-        Some(hex) => U256::from_str_radix(hex, 16).context("invalid hex value in swap transaction"),
-        _none => U256::from_str_radix(s, 10).context("invalid decimal value in swap transaction"),
+        Some(hex) => U256::from_str_radix(hex, 16).context("invalid hex value in transaction"),
+        _none => U256::from_str_radix(s, 10).context("invalid decimal value in transaction"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Permit2 EIP-712 signing hash — hand-computed from alloy::primitives::keccak256.
+//
+// permitData.values is always Permit2's canonical PermitSingle struct (confirmed against
+// Uniswap's OpenAPI spec at trade-api.gateway.uniswap.org/v1/api.json — same field names,
+// same shape as the open-source Permit2 contract's AllowanceTransfer.PermitSingle):
+//
+//   struct PermitDetails { address token; uint160 amount; uint48 expiration; uint48 nonce; }
+//   struct PermitSingle { PermitDetails details; address spender; uint256 sigDeadline; }
+//
+// This is the one canonical Permit2 deployment (same address on every chain), so the struct
+// shape is fixed — no need for a generic runtime EIP-712 type decoder. `domain` still comes
+// straight from Uniswap's response rather than being hardcoded, since that's the authoritative
+// per-chain value.
+// ---------------------------------------------------------------------------
+
+const PERMIT_DETAILS_TYPE: &str =
+    "PermitDetails(address token,uint160 amount,uint48 expiration,uint48 nonce)";
+const PERMIT_SINGLE_TYPE: &str = "PermitSingle(PermitDetails details,address spender,uint256 sigDeadline)PermitDetails(address token,uint160 amount,uint48 expiration,uint48 nonce)";
+
+fn word_from_address(addr: Address) -> B256 {
+    addr.into_word()
+}
+
+fn word_from_decimal_str(s: &str) -> Result<B256> {
+    Ok(B256::from(parse_flexible_u256(s)?.to_be_bytes::<32>()))
+}
+
+/// EIP-712 domain separator, built only from whichever of {name, version, chainId,
+/// verifyingContract} are present in `domain` — in that fixed canonical order, per spec.
+/// Permit2's own domain only ever sets name/chainId/verifyingContract (no version, no salt),
+/// but this doesn't hardcode that assumption beyond refusing an unsupported `salt` field.
+fn eip712_domain_separator(domain: &Value) -> Result<B256> {
+    anyhow::ensure!(
+        domain.get("salt").is_none(),
+        "unsupported EIP-712 domain field 'salt' in Permit2 permitData"
+    );
+
+    let name = domain.get("name").and_then(|v| v.as_str());
+    let version = domain.get("version").and_then(|v| v.as_str());
+    let chain_id = domain.get("chainId").and_then(|v| v.as_u64());
+    let verifying_contract = domain.get("verifyingContract").and_then(|v| v.as_str());
+
+    let mut type_fields = Vec::new();
+    if name.is_some() {
+        type_fields.push("string name");
+    }
+    if version.is_some() {
+        type_fields.push("string version");
+    }
+    if chain_id.is_some() {
+        type_fields.push("uint256 chainId");
+    }
+    if verifying_contract.is_some() {
+        type_fields.push("address verifyingContract");
+    }
+
+    let type_hash = keccak256(format!("EIP712Domain({})", type_fields.join(",")).as_bytes());
+
+    let mut words = vec![type_hash];
+    if let Some(name) = name {
+        words.push(keccak256(name.as_bytes()));
+    }
+    if let Some(version) = version {
+        words.push(keccak256(version.as_bytes()));
+    }
+    if let Some(chain_id) = chain_id {
+        let mut word = [0u8; 32];
+        word[24..].copy_from_slice(&chain_id.to_be_bytes());
+        words.push(B256::from(word));
+    }
+    if let Some(vc) = verifying_contract {
+        let addr: Address = vc.parse().context("invalid domain.verifyingContract")?;
+        words.push(word_from_address(addr));
+    }
+
+    let mut buf = Vec::with_capacity(32 * words.len());
+    for w in &words {
+        buf.extend_from_slice(w.as_slice());
+    }
+    Ok(keccak256(&buf))
+}
+
+/// Computes the EIP-712 signing hash for a Permit2 `permitData` object as returned by
+/// Uniswap's /quote (`{ domain, types, values: { details: {...}, spender, sigDeadline } }`).
+fn permit2_digest(permit_data: &Value) -> Result<B256> {
+    let domain = permit_data
+        .get("domain")
+        .context("permitData missing 'domain'")?;
+    let values = permit_data
+        .get("values")
+        .context("permitData missing 'values'")?;
+    let details = values
+        .get("details")
+        .context("permitData.values missing 'details'")?;
+
+    let domain_separator = eip712_domain_separator(domain)?;
+
+    let token: Address = details
+        .get("token")
+        .and_then(|v| v.as_str())
+        .context("permitData.values.details missing 'token'")?
+        .parse()
+        .context("invalid permitData.values.details.token")?;
+    let amount = details
+        .get("amount")
+        .and_then(|v| v.as_str())
+        .context("permitData.values.details missing 'amount'")?;
+    let expiration = details
+        .get("expiration")
+        .and_then(|v| v.as_str())
+        .context("permitData.values.details missing 'expiration'")?;
+    let nonce = details
+        .get("nonce")
+        .and_then(|v| v.as_str())
+        .context("permitData.values.details missing 'nonce'")?;
+    let spender: Address = values
+        .get("spender")
+        .and_then(|v| v.as_str())
+        .context("permitData.values missing 'spender'")?
+        .parse()
+        .context("invalid permitData.values.spender")?;
+    let sig_deadline = values
+        .get("sigDeadline")
+        .and_then(|v| v.as_str())
+        .context("permitData.values missing 'sigDeadline'")?;
+
+    let mut details_buf = Vec::with_capacity(32 * 5);
+    details_buf.extend_from_slice(keccak256(PERMIT_DETAILS_TYPE.as_bytes()).as_slice());
+    details_buf.extend_from_slice(word_from_address(token).as_slice());
+    details_buf.extend_from_slice(word_from_decimal_str(amount)?.as_slice());
+    details_buf.extend_from_slice(word_from_decimal_str(expiration)?.as_slice());
+    details_buf.extend_from_slice(word_from_decimal_str(nonce)?.as_slice());
+    let details_struct_hash = keccak256(&details_buf);
+
+    let mut single_buf = Vec::with_capacity(32 * 4);
+    single_buf.extend_from_slice(keccak256(PERMIT_SINGLE_TYPE.as_bytes()).as_slice());
+    single_buf.extend_from_slice(details_struct_hash.as_slice());
+    single_buf.extend_from_slice(word_from_address(spender).as_slice());
+    single_buf.extend_from_slice(word_from_decimal_str(sig_deadline)?.as_slice());
+    let single_struct_hash = keccak256(&single_buf);
+
+    let mut digest_buf = Vec::with_capacity(2 + 32 + 32);
+    digest_buf.extend_from_slice(&[0x19, 0x01]);
+    digest_buf.extend_from_slice(domain_separator.as_slice());
+    digest_buf.extend_from_slice(single_struct_hash.as_slice());
+    Ok(keccak256(&digest_buf))
 }
 
 struct QuoteParams<'a> {
@@ -234,6 +417,99 @@ impl UniswapMcpServer {
         resp.json::<Value>()
             .await
             .context("uniswap /quote response is not JSON")
+    }
+
+    /// POST {base}/check_approval — returns Value with an `approval` field that is either
+    /// `null` (token already trusts Permit2 for at least `amount`) or a TransactionRequest
+    /// that must be signed and confirmed before the swap will succeed.
+    async fn check_approval(
+        &self,
+        chain_id: u64,
+        wallet_address: &str,
+        token: &str,
+        amount: &str,
+    ) -> Result<Value> {
+        let api_key = std::env::var("UNISWAP_API_KEY").context("UNISWAP_API_KEY not set")?;
+
+        let resp = self
+            .http
+            .post(format!("{}/check_approval", uniswap_api_base()))
+            .header("x-api-key", api_key)
+            .header("Accept", "application/json")
+            .json(&json!({
+                "chainId": chain_id,
+                "walletAddress": wallet_address,
+                "token": token,
+                "amount": amount,
+            }))
+            .send()
+            .await
+            .context("uniswap /check_approval request failed")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("uniswap /check_approval returned {status}: {text}");
+        }
+
+        resp.json::<Value>()
+            .await
+            .context("uniswap /check_approval response is not JSON")
+    }
+
+    /// Signs a Uniswap `TransactionRequest`-shaped JSON value (`to`/`data`/`value`) through the
+    /// agent's vault and broadcasts it. Shared by the Permit2 approval step and the final swap.
+    async fn sign_and_send(
+        &self,
+        db: &DbPool,
+        agent_id: &str,
+        chain_id: u64,
+        rpc_url: &str,
+        provider: &impl Provider,
+        tx: &Value,
+    ) -> Result<B256> {
+        let to: Address = tx
+            .get("to")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("transaction missing 'to'"))?
+            .parse()
+            .context("invalid 'to' in transaction")?;
+
+        let data: Bytes = tx
+            .get("data")
+            .and_then(|v| v.as_str())
+            .unwrap_or("0x")
+            .parse()
+            .context("invalid 'data' in transaction")?;
+
+        let value = tx
+            .get("value")
+            .and_then(|v| v.as_str())
+            .map(parse_flexible_u256)
+            .transpose()?
+            .unwrap_or(U256::ZERO);
+
+        let signed = sign_transaction(
+            db,
+            SignTransactionParams {
+                agent_id: agent_id.to_string(),
+                chain_id,
+                rpc_url: rpc_url.to_string(),
+                to,
+                value,
+                data,
+                nonce: None,
+            },
+        )
+        .await
+        .context("signing transaction failed")?;
+
+        let pending = provider
+            .send_raw_transaction(&signed)
+            .await
+            .context("eth_sendRawTransaction failed")?;
+
+        Ok(*pending.tx_hash())
     }
 
     async fn handle_quote(&self, args: &Map<String, Value>) -> Result<String> {
