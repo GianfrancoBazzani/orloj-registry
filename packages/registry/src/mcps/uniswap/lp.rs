@@ -1293,6 +1293,13 @@ const MIN_NATIVE_GAS_RESERVE_WEI: u128 = 10_000_000_000_000_000; // 0.01 ETH
 /// How many times the create flow will re-fund/re-approve and refetch before giving up.
 const MAX_RECONCILIATION_ATTEMPTS: usize = 3;
 
+/// Most positions `list_v3_positions` will enumerate in one call.
+///
+/// Each position costs two eth_calls plus a factory lookup, so an unbounded list would be a
+/// slow request against a wallet holding hundreds. Far above what an agent wallet realistically
+/// holds; when it is hit the response says so rather than silently returning a prefix.
+const LIST_POSITIONS_LIMIT: usize = 50;
+
 /// A token as named by the caller: either an ERC-20 address, or native ETH.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TokenArg {
@@ -1999,9 +2006,25 @@ pub(super) fn build_uniswap_lp_tools() -> Vec<Tool> {
         ),
     );
 
+    let list_v3_positions = Tool::new(
+        "list_v3_positions".to_string(),
+        format!(
+            "List the Uniswap V3 liquidity positions the authenticated agent's own wallet holds \
+             on Ethereum Sepolia. Read-only: pure on-chain reads, no Uniswap API call, no \
+             signing, no funds moved. The wallet is resolved from the agent's vault — you do not \
+             pass an address, and positions owned by anyone else are never returned. Each entry \
+             carries the same fields as get_v3_position, including the tokensOwed0/1 caveat: \
+             those are a cached balance from the position's last on-chain touch, not its live \
+             claimable fees. At most {LIST_POSITIONS_LIMIT} positions are returned; if the wallet \
+             holds more, `truncated` is true and `totalOwned` reports the real count."
+        ),
+        object_schema(vec![("chainId", sepolia_chain_id_prop())], &["chainId"]),
+    );
+
     vec![
         get_v3_position,
         get_v3_pool_state,
+        list_v3_positions,
         create_v3_position,
         decrease_v3_position,
         claim_v3_fees,
@@ -2072,6 +2095,78 @@ impl UniswapMcpServer {
             provider,
             rpc_url,
         })
+    }
+
+    pub(super) async fn handle_list_v3_positions(
+        &self,
+        args: &Map<String, Value>,
+    ) -> Result<String> {
+        require_sepolia(args)?;
+
+        let s = self.lp_session("list_v3_positions").await?;
+
+        let balance_out = call_view(
+            &s.provider,
+            SEPOLIA_V3.position_manager,
+            abi_function(position_manager_abi(), "balanceOf")?,
+            &[DynSolValue::Address(s.wallet)],
+        )
+        .await
+        .context("stage=position read")?;
+        let balance = as_u256(out(&balance_out, 0, "balanceOf")?, "balanceOf")
+            .context("stage=position read")?;
+
+        let total = usize::try_from(balance).unwrap_or(usize::MAX);
+        let shown = total.min(LIST_POSITIONS_LIMIT);
+
+        let mut positions = Vec::with_capacity(shown);
+        for index in 0..shown {
+            let id_out = call_view(
+                &s.provider,
+                SEPOLIA_V3.position_manager,
+                abi_function(position_manager_abi(), "tokenOfOwnerByIndex")?,
+                &[
+                    DynSolValue::Address(s.wallet),
+                    DynSolValue::Uint(U256::from(index), 256),
+                ],
+            )
+            .await
+            .context("stage=position read")?;
+            let token_id = as_u256(
+                out(&id_out, 0, "tokenOfOwnerByIndex")?,
+                "tokenOfOwnerByIndex",
+            )
+            .context("stage=position read")?;
+
+            // Deliberately re-confirms ownership per item rather than trusting that enumeration
+            // implies it: one code path that always checks beats a second that assumes.
+            let pos = read_v3_position(&s.provider, token_id, s.wallet)
+                .await
+                .context("stage=position read")?;
+
+            positions.push(json!({
+                "nftTokenId": token_id.to_string(),
+                "poolAddress": pos.pool.to_checksum(None),
+                "token0": pos.token0.to_checksum(None),
+                "token1": pos.token1.to_checksum(None),
+                "fee": pos.fee.to_string(),
+                "tickLower": pos.tick_lower.to_string(),
+                "tickUpper": pos.tick_upper.to_string(),
+                "liquidity": pos.liquidity.to_string(),
+                "tokensOwed0": pos.tokens_owed0.to_string(),
+                "tokensOwed1": pos.tokens_owed1.to_string(),
+            }));
+        }
+
+        Ok(json!({
+            "chainId": SEPOLIA_V3.chain_id,
+            "walletAddress": s.wallet.to_checksum(None),
+            "count": positions.len(),
+            "totalOwned": total,
+            "truncated": total > shown,
+            "positions": positions,
+        })
+        .to_string())
     }
 
     pub(super) async fn handle_get_v3_pool_state(
@@ -3532,6 +3627,66 @@ mod tests {
         );
     }
 
+    // ─── position enumeration ────────────────────────────────────────────────
+
+    /// Mirrors the handler's `total`/`shown`/`truncated` arithmetic. Kept in step with it by
+    /// the assertions below; the handler's own version needs a live position manager.
+    fn enumeration_window(total: usize) -> (usize, bool) {
+        let shown = total.min(LIST_POSITIONS_LIMIT);
+        (shown, total > shown)
+    }
+
+    #[test]
+    fn enumerates_every_position_below_the_limit() {
+        for total in [0usize, 1, 3, 49, LIST_POSITIONS_LIMIT] {
+            let (shown, truncated) = enumeration_window(total);
+            assert_eq!(shown, total, "should list all {total}");
+            assert!(!truncated, "{total} is within the limit");
+        }
+    }
+
+    #[test]
+    fn flags_truncation_past_the_limit() {
+        // Silently returning a prefix would let an agent conclude a position does not exist.
+        for total in [LIST_POSITIONS_LIMIT + 1, 100, 10_000] {
+            let (shown, truncated) = enumeration_window(total);
+            assert_eq!(shown, LIST_POSITIONS_LIMIT, "capped at the limit");
+            assert!(truncated, "{total} exceeds the limit and must say so");
+        }
+    }
+
+    #[test]
+    fn the_enumeration_limit_is_documented_in_the_tool_description() {
+        let d = description_of("list_v3_positions");
+        assert!(
+            d.contains(&LIST_POSITIONS_LIMIT.to_string()),
+            "the cap must be stated, not discovered: {d}"
+        );
+        assert!(d.contains("truncated"), "the flag must be named: {d}");
+        // The staleness caveat has to travel with the fields it applies to.
+        assert!(d.contains("tokensOwed0/1"), "got: {d}");
+        assert!(d.contains("cached"), "got: {d}");
+    }
+
+    #[test]
+    fn list_positions_takes_no_wallet_argument() {
+        // Accepting one would let a caller enumerate somebody else's positions.
+        let tools = build_uniswap_lp_tools();
+        let list = tools
+            .iter()
+            .find(|t| t.name == "list_v3_positions")
+            .unwrap();
+        let props = list.input_schema.get("properties").unwrap();
+
+        assert!(props.get("walletAddress").is_none());
+        assert!(props.get("owner").is_none());
+        assert_eq!(
+            props.as_object().map(|o| o.len()),
+            Some(1),
+            "chainId should be the only argument"
+        );
+    }
+
     // ─── completed-transaction reporting ─────────────────────────────────────
 
     #[test]
@@ -3993,7 +4148,7 @@ mod tests {
     #[test]
     fn every_lp_tool_is_pinned_to_sepolia() {
         let tools = build_uniswap_lp_tools();
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 6);
 
         for tool in &tools {
             let props = tool.input_schema.get("properties").unwrap();
