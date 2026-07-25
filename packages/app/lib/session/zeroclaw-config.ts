@@ -46,6 +46,10 @@ const templateConfigPath = (): string =>
     "config.toml",
   );
 
+// The model provider key. Never in the template — that file is tracked in a public repo — so
+// it is patched into each provisioned config instead.
+const modelApiKey = (): string | undefined => process.env.ZEROCLAW_MODEL_API_KEY || undefined;
+
 const intEnv = (name: string, fallback: number): number => {
   const raw = process.env[name];
   if (!raw) return fallback;
@@ -154,12 +158,27 @@ const runZeroclaw = (args: string[], stdin?: string): Promise<string> =>
     else child.stdin.end();
   });
 
-// Called by the caller AFTER the managed block is written, and only when the dir was just
-// created: `config patch` re-validates the whole config, and the template's
-// `mcp_bundles = ["remote"]` grant is dangling until the block defines the bundle.
-export const patchAcpEnableMcp = async (dir: string): Promise<void> => {
-  const ops = JSON.stringify([
+// Called AFTER the managed block is written: `config patch` re-validates the whole config, and
+// the `mcp_bundles = ["remote"]` grant in the template is dangling until the block defines the
+// bundle. Run on every start, not just on create, so rotating ZEROCLAW_MODEL_API_KEY reaches
+// agents that already have a config dir — the key lives above the managed marker, so
+// writeMcpSelection alone would never refresh it.
+//
+// It doubles as the config's only parse check, which is why it is not conditional. zeroclaw
+// does not fail a malformed config — `acp` resets the WHOLE config to defaults for the run,
+// warns on stderr, and then rejects session/new with `Unknown agent default — no
+// [agents.default] entry configured`, naming a symptom three steps from the typo. `config
+// patch` refuses to write an unparseable config and exits non-zero with the TOML error and
+// line number, so the same defect surfaces here instead, before anything spawns.
+export const applyManagedConfig = async (dir: string): Promise<void> => {
+  const ops: Array<{ op: string; path: string; value: unknown }> = [
     { op: "add", path: "/agents/default/acp_enable_mcp", value: true },
-  ]);
-  await runZeroclaw(["config", "patch", "--config-dir", dir, "-"], ops);
+  ];
+  const key = modelApiKey();
+  // Omitted rather than written as "" when unset: an empty patch value would overwrite a key
+  // an operator had set by hand in the config dir.
+  if (key) {
+    ops.push({ op: "add", path: "/providers/models/custom/default/api_key", value: key });
+  }
+  await runZeroclaw(["config", "patch", "--config-dir", dir, "-"], JSON.stringify(ops));
 };

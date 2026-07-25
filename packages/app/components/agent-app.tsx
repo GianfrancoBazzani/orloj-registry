@@ -1,7 +1,13 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useAuth } from "./auth-context";
 import { useT } from "./i18n-context";
 import { InstallAppModal, type InstallOutcome } from "./install-app-modal";
@@ -17,18 +23,25 @@ const PROMPT_REFRESH_MS = 2000;
 
 const STANDALONE = "(display-mode: standalone)";
 
-function subscribeStandalone(onChange: () => void) {
-  const media = window.matchMedia(STANDALONE);
-  media.addEventListener("change", onChange);
-  return () => media.removeEventListener("change", onChange);
-}
+// Touch as the *primary* pointer — phones and tablets. A touchscreen laptop still reports a fine
+// primary pointer, so it reads as desktop, which is what we want: a home-screen app only earns
+// its keep on a device that has a home screen.
+const MOBILE = "(pointer: coarse)";
 
-// Read through the store rather than in state: the server cannot know the display mode, and its
-// snapshot of `false` is what hydration matches against.
-function useStandalone(): boolean {
+// Read through the store rather than in state: the server cannot know the display mode or the
+// pointer type, and its snapshot of `false` is what hydration matches against.
+function useMediaQuery(query: string): boolean {
+  const subscribe = useCallback(
+    (onChange: () => void) => {
+      const media = window.matchMedia(query);
+      media.addEventListener("change", onChange);
+      return () => media.removeEventListener("change", onChange);
+    },
+    [query],
+  );
   return useSyncExternalStore(
-    subscribeStandalone,
-    () => window.matchMedia(STANDALONE).matches,
+    subscribe,
+    () => window.matchMedia(query).matches,
     () => false,
   );
 }
@@ -75,7 +88,8 @@ export function AgentAppBar({
   const [justInstalled, setJustInstalled] = useState(false);
   const [open, setOpen] = useState(false);
   // Launched from the home screen, or installed a moment ago in this tab.
-  const installed = useStandalone() || justInstalled;
+  const installed = useMediaQuery(STANDALONE) || justInstalled;
+  const mobile = useMediaQuery(MOBILE);
   const promptRef = useRef<BeforeInstallPromptEvent | null>(null);
   const waiterRef = useRef<((event: BeforeInstallPromptEvent) => void) | null>(
     null,
@@ -164,7 +178,7 @@ export function AgentAppBar({
           height={32}
           style={{ marginRight: "auto" }}
         />
-        {!installed && (
+        {mobile && !installed && (
           <Btn kind="brass" size="sm" onClick={() => setOpen(true)}>
             {t("agentApp.install")}
           </Btn>

@@ -5,9 +5,9 @@ import { ZeroClawAcpSession } from "./acp-client";
 import { writeMcpSelection, type McpSelectionItem } from "./mcp-block";
 import { resolveMcpServers } from "./mcp-servers";
 import {
+  applyManagedConfig,
   ensureWorkspaceDir,
   idleTimeoutMs,
-  patchAcpEnableMcp,
   provisionConfigDir,
 } from "./zeroclaw-config";
 
@@ -156,7 +156,7 @@ const doCreate = async (opts: {
     entries.map((e) => e.mcpName),
   );
 
-  const { dir, created } = await provisionConfigDir(agentId);
+  const { dir } = await provisionConfigDir(agentId);
   // session/new rejects a cwd that does not exist yet, and zeroclaw only creates the
   // workspace once a session exists. Idempotent, so it also repairs an older dir.
   const workspaceDir = await ensureWorkspaceDir(agentId);
@@ -168,7 +168,9 @@ const doCreate = async (opts: {
   // entries is also what retires a stale name for good — the next read of the sidecar no
   // longer carries it.
   const mcps = await writeMcpSelection(dir, entries);
-  if (created) await patchAcpEnableMcp(dir);
+  // Must follow writeMcpSelection: it validates the config it patches, and the `remote` bundle
+  // grant does not resolve until the managed block has defined the bundle.
+  await applyManagedConfig(dir);
 
   const session = new ZeroClawAcpSession({ configDir: dir, workspaceDir });
   try {

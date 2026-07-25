@@ -70,6 +70,11 @@ max_tokens = 8192
 model = "kimi-k2.7-code"
 uri = "https://router-api.0g.ai/v1"
 api_key = <api key placeholder>
+# into each provisioned agent config from ZEROCLAW_MODEL_API_KEY on every session start.
+# It must still be a quoted empty string — an unquoted placeholder is a TOML syntax error,
+# and zeroclaw answers a malformed config by resetting the WHOLE config to defaults for the
+# run, which drops [agents.default] and fails session/new with `Unknown agent default`.
+api_key = ""
 
 [agents]
 
@@ -96,5 +101,6 @@ quickstart_completed = true
 
 [risk_profiles]
 
-[mcp_bundles.remote]
-servers = []
+# No [mcp_bundles.remote] here. The app owns that table: writeMcpSelection emits it in the
+# managed block on every session start, even for an empty selection. Defining it here too is
+# a TOML duplicate key, which zeroclaw answers by resetting the whole config to defaults.
