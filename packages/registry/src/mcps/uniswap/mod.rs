@@ -90,8 +90,11 @@ movement allowed on EACH side of the current price (default 1000 = about -10%/+1
 ticks are derived from the pool's live price and snapped outward so the range always brackets \
 it. DO NOT try to compute ticks — the tool does not accept them, and get_v3_pool_state is for \
 inspection, not a prerequisite. poolAddress is optional: omit it and the standard fee tiers \
-(100, 500, 3000, 10000) are searched, using the pool with the most liquidity and preferring the \
-lower fee tier on an exact tie; pass it only to reach a nonstandard-fee pool. The tool wraps ETH \
+(100, 500, 3000, 10000) are ranked by active liquidity, using the deepest pool the Liquidity API \
+can size and preferring the lower fee tier on an exact tie. Only a pool-specific unavailable or \
+unindexed response is skipped; auth, rate-limit, transport and generic service failures abort. \
+Passing poolAddress selects exactly that pool with no fallback, and also reaches nonstandard fee \
+tiers. The tool wraps ETH \
 if needed, runs approvals, re-prices if the quote moved while they confirmed, then simulates, \
 signs and broadcasts the mint, returning the transaction hash and the new position NFT's token \
 id along with the pool, ticks and amounts actually used. \

@@ -181,10 +181,13 @@ default) is roughly -10%/+10%. The ticks are derived from the pool's live tick a
 would silently build a one-sided position holding only one of the two tokens.
 
 **`poolAddress` is optional.** Omitted, the standard fee tiers (100, 500, 3000, 10000) are probed
-and the pool with the most liquidity wins; on an exact tie the **lower fee tier** wins. That
-tie-break is fixed and tested rather than incidental, so the same request cannot land in a
-different pool on a retry. Pools with no liquidity are skipped. Supply `poolAddress` to reach a
-nonstandard-fee pool; it is verified against the factory and must hold exactly the requested pair.
+and ranked by active liquidity; the deepest pool the Liquidity API can actually size wins. On an
+exact tie the **lower fee tier** wins. A candidate is skipped only when the API specifically says
+that pool is unavailable or unindexed. Authentication, rate-limit, transport and generic service
+failures abort instead of being hidden by retries. Pools with no liquidity are skipped. Supply
+`poolAddress` to select exactly that pool with no fallback, or to reach a nonstandard-fee pool; it
+is verified against the factory and must hold exactly the requested pair. The response's
+`skippedPools` records any higher-ranked candidates skipped during automatic selection.
 
 The token pair always comes from the pool, never from the caller alongside it — accepting both
 would let a client pair a genuine pool with unrelated token addresses and get approvals issued
@@ -196,8 +199,8 @@ A quote goes stale while its own approvals confirm: by the time a wrap and two a
 mined, Uniswap may want a slightly different amount, needing *more* WETH or *more* allowance than
 was just provided. Signing the stale quote reverts; signing the fresh one unfunded reverts too. So
 each pass re-reads what the current quote needs, provides exactly that, refetches, and only signs
-a quote that needs nothing further — **bounded to three passes**, then declining rather than
-chasing a pool that volatile.
+a quote that needs nothing further — **bounded to three rounds that move funds**, followed by one
+final inspection of the resulting quote, then declining rather than chasing a pool that volatile.
 
 Immediately before signing, both token balances are re-read from chain rather than trusted from
 internal bookkeeping, in case something else moved the wallet meanwhile.

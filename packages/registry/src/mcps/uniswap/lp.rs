@@ -12,7 +12,7 @@
 // rejected up front rather than silently sent to an API that would price it against the wrong
 // deployment.
 
-use std::sync::OnceLock;
+use std::{fmt, sync::OnceLock};
 
 use alloy::{
     dyn_abi::{DynSolValue, FunctionExt, JsonAbiExt},
@@ -134,7 +134,10 @@ const ERC20_ABI: &str = r#"[
    "outputs":[{"name":"","type":"uint8"}]},
   {"name":"balanceOf","type":"function","stateMutability":"view",
    "inputs":[{"name":"account","type":"address"}],
-   "outputs":[{"name":"","type":"uint256"}]}
+   "outputs":[{"name":"","type":"uint256"}]},
+  {"name":"approve","type":"function","stateMutability":"nonpayable",
+   "inputs":[{"name":"spender","type":"address"},{"name":"amount","type":"uint256"}],
+   "outputs":[{"name":"","type":"bool"}]}
 ]"#;
 
 /// `deposit()` is WETH's own extension, not part of ERC-20 — wrapping native ETH is the one
@@ -483,6 +486,28 @@ fn excerpt(body: &str) -> String {
     format!("{head}… (truncated)")
 }
 
+/// A non-success response from the Liquidity API, kept structured so automatic pool discovery
+/// can distinguish a pool-specific indexing gap from authentication, throttling, transport, or
+/// service-wide failures. Its display text is already bounded and contains no request headers.
+#[derive(Debug)]
+struct LpHttpError {
+    path: String,
+    status: reqwest::StatusCode,
+    body_excerpt: String,
+}
+
+impl fmt::Display for LpHttpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "uniswap {} returned {}: {}",
+            self.path, self.status, self.body_excerpt
+        )
+    }
+}
+
+impl std::error::Error for LpHttpError {}
+
 async fn lp_post(http: &reqwest::Client, path: &str, body: &Value) -> Result<Value> {
     let api_key = std::env::var("UNISWAP_API_KEY").context("UNISWAP_API_KEY not set")?;
 
@@ -501,14 +526,53 @@ async fn lp_post(http: &reqwest::Client, path: &str, body: &Value) -> Result<Val
         .await
         .with_context(|| format!("reading uniswap {path} response body failed"))?;
 
-    anyhow::ensure!(
-        status.is_success(),
-        "uniswap {path} returned {status}: {}",
-        excerpt(&text)
-    );
+    if !status.is_success() {
+        return Err(LpHttpError {
+            path: path.to_string(),
+            status,
+            body_excerpt: excerpt(&text),
+        }
+        .into());
+    }
 
     serde_json::from_str(&text)
         .with_context(|| format!("uniswap {path} response is not JSON: {}", excerpt(&text)))
+}
+
+/// Returns a safe explanation only for errors known to be local to one candidate pool.
+///
+/// A generic 5xx is deliberately not enough: retrying other pools during a service outage would
+/// hide the real failure and multiply API traffic. Likewise 401/403/429 and transport errors
+/// always abort immediately. The first signature is the exact live Sepolia failure observed for
+/// a valid on-chain pool that the Liquidity API had not indexed.
+fn pool_local_api_failure(error: &anyhow::Error) -> Option<String> {
+    let http_error = error
+        .chain()
+        .find_map(|source| source.downcast_ref::<LpHttpError>())?;
+    let message = http_error.body_excerpt.to_ascii_lowercase();
+    let pool_specific = [
+        "slot 0 info not available",
+        "slot0 info not available",
+        "pool not found",
+        "pool is not indexed",
+        "pool not indexed",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle));
+
+    if pool_specific
+        && (http_error.status.is_client_error() || http_error.status.is_server_error())
+        && !matches!(
+            http_error.status,
+            reqwest::StatusCode::UNAUTHORIZED
+                | reqwest::StatusCode::FORBIDDEN
+                | reqwest::StatusCode::TOO_MANY_REQUESTS
+        )
+    {
+        Some(http_error.to_string())
+    } else {
+        None
+    }
 }
 
 /// Everything /lp/create needs about the position being opened. Grouped, following the
@@ -617,9 +681,14 @@ fn build_lp_claim_fees_body(wallet: Address, nft_token_id: U256) -> Value {
 
 /// Pulls the approval transactions out of a /lp/check_approval response.
 ///
-/// Documented shape: `{ transactions: [{ transaction, cancelApproval, action, gasFee }] }`.
+/// Documented shape, confirmed against a live Sepolia response:
+/// `{ requestId, transactions: [{ transaction, cancelApproval, action }], kycRequiredWarnings }`.
 /// An empty array is the normal "already approved" case. Anything else is an error naming the
 /// field, not a fallback — guessing at an undocumented shape risks signing the wrong calldata.
+///
+/// `action` is checked here rather than ignored: a response describing some other operation is
+/// not one we asked for, and executing it would approve spending for a flow the caller did not
+/// request.
 fn parse_approval_transactions(resp: &Value) -> Result<Vec<Value>> {
     let transactions = resp
         .get("transactions")
@@ -641,6 +710,21 @@ fn parse_approval_transactions(resp: &Value) -> Result<Vec<Value>> {
         .iter()
         .enumerate()
         .map(|(i, entry)| {
+            let action = entry
+                .get("action")
+                .and_then(|a| a.as_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "uniswap /lp/check_approval transactions[{i}] has no 'action': {}",
+                        excerpt(&entry.to_string())
+                    )
+                })?;
+            anyhow::ensure!(
+                action == "CREATE",
+                "uniswap /lp/check_approval transactions[{i}] describes a '{action}' approval, \
+                 but this flow only requested CREATE — refusing to execute it"
+            );
+
             entry
                 .get("transaction")
                 .filter(|t| !t.is_null())
@@ -829,6 +913,67 @@ fn validate_api_transaction(
     };
 
     Ok(ValidatedTx { to, data, value })
+}
+
+/// The only spender any approval from this flow may name.
+///
+/// Every /lp/create transaction is pinned to the position manager, so it is also the only
+/// contract that ever needs to move the agent's tokens. An approval naming anything else — a
+/// router, a permit contract, an attacker — would hand spending rights to a party this flow
+/// never transacts with, and is refused.
+const ALLOWED_APPROVAL_SPENDER: Address = SEPOLIA_V3.position_manager;
+
+/// Structural checks on an approval returned by /lp/check_approval.
+///
+/// Approvals cannot be destination-pinned to a single address the way create/decrease/claim can
+/// — an approval necessarily targets the ERC-20 being approved. That does not mean they should
+/// go unchecked: this confirms the destination is one of the two tokens this position actually
+/// uses, that the call is ERC-20 `approve` and nothing else, that the spender is the position
+/// manager, and that no ether rides along.
+///
+/// Verified against a live Sepolia response: `to` is the token, `data` is
+/// `approve(0x1238…DA52, uint256::MAX)`, `value` is `"0x00"`.
+fn validate_approval_transaction(
+    tx: &Value,
+    expected_from: Address,
+    expected_chain_id: u64,
+    pool_tokens: (Address, Address),
+) -> Result<ValidatedTx> {
+    // Destination is checked below against the pair, so no single-address pin here.
+    let validated = validate_api_transaction(tx, expected_from, expected_chain_id, None)?;
+
+    anyhow::ensure!(
+        validated.to == pool_tokens.0 || validated.to == pool_tokens.1,
+        "approval targets {:#x}, which is neither token of this position ({:#x}/{:#x}) — \
+         refusing to approve a token the position does not use",
+        validated.to,
+        pool_tokens.0,
+        pool_tokens.1
+    );
+
+    anyhow::ensure!(
+        validated.value.is_zero(),
+        "approval carries {} wei of ether — an ERC-20 approval must not transfer value",
+        validated.value
+    );
+
+    let approve = abi_function(erc20_abi(), "approve")?;
+    let selector = approve.selector();
+    anyhow::ensure!(
+        validated.data.len() == 4 + 32 + 32 && validated.data.starts_with(selector.as_slice()),
+        "approval calldata is not a bare ERC-20 approve(address,uint256) call — refusing to \
+         sign an approval whose operation cannot be identified"
+    );
+
+    // The spender is the first argument: a left-padded address in the word after the selector.
+    let spender = Address::from_slice(&validated.data[16..36]);
+    anyhow::ensure!(
+        spender == ALLOWED_APPROVAL_SPENDER,
+        "approval would let {spender:#x} spend the agent's tokens, but the only permitted \
+         spender is the Uniswap position manager at {ALLOWED_APPROVAL_SPENDER:#x}"
+    );
+
+    Ok(validated)
 }
 
 /// Dry-runs a validated transaction with eth_call before it is signed, so a revert costs
@@ -1168,7 +1313,7 @@ async fn probe_standard_pools(
     Ok(found)
 }
 
-/// Picks the deepest pool, preferring the lower fee tier on an exact tie.
+/// Ranks non-empty pools deepest first, preferring the lower fee tier on an exact tie.
 ///
 /// Deepest wins because liquidity is what determines how little the position's own deposit moves
 /// the price. The tie-break is arbitrary but must be *deterministic* — the same request should
@@ -1177,18 +1322,26 @@ async fn probe_standard_pools(
 /// counterparties and the more conventional default.
 ///
 /// Kept separate from the probing loop so the choice is testable without a live provider.
-fn choose_pool(candidates: &[PoolCandidate]) -> Option<PoolCandidate> {
-    candidates
+fn rank_pools(candidates: &[PoolCandidate]) -> Vec<PoolCandidate> {
+    let mut ranked: Vec<_> = candidates
         .iter()
-        .filter(|c| !c.liquidity.is_zero())
+        .filter(|candidate| !candidate.liquidity.is_zero())
         .copied()
-        .reduce(|best, c| {
-            if c.liquidity > best.liquidity {
-                c
-            } else {
-                best
-            }
-        })
+        .collect();
+    ranked.sort_by(|left, right| {
+        right
+            .liquidity
+            .cmp(&left.liquidity)
+            .then_with(|| left.fee.cmp(&right.fee))
+    });
+    ranked
+}
+
+/// Picks the first-ranked pool. Automatic creation goes one step further: it tries the ranked
+/// candidates in order until the Liquidity API can actually size one.
+#[cfg(test)]
+fn choose_pool(candidates: &[PoolCandidate]) -> Option<PoolCandidate> {
+    rank_pools(candidates).into_iter().next()
 }
 
 // ---------------------------------------------------------------------------
@@ -1284,10 +1437,11 @@ fn parse_liquidity_percentage(args: &Map<String, Value>) -> Result<u8> {
 /// Native ETH held back from wrapping so the wallet can still pay for the wrap, the approvals
 /// and the mint.
 ///
-/// A fixed, deliberately generous figure rather than a gas estimate: this is a fail-fast bound
-/// that produces a clear error before anything is broadcast, not the real protection. The real
-/// protection is that every transaction is `eth_call`-simulated first, which catches an actual
-/// insufficient-funds condition precisely and regardless of what this constant says.
+/// A fixed, deliberately generous figure rather than a gas estimate, and the only thing standing
+/// between a full-balance wrap and a wallet that cannot afford its own next transaction.
+/// `eth_call` simulation does *not* cover this: nodes generally execute calls without charging
+/// gas against the caller's balance, so a simulation passes happily for an account that could
+/// never pay to broadcast. Re-checked against a fresh balance before every wrap.
 const MIN_NATIVE_GAS_RESERVE_WEI: u128 = 10_000_000_000_000_000; // 0.01 ETH
 
 /// How many times the create flow will re-fund/re-approve and refetch before giving up.
@@ -1391,10 +1545,15 @@ fn with_completed_txs<T>(result: Result<T>, completed: &[String]) -> Result<T> {
 // Create planning
 //
 // Everything between "the caller said this" and "we are about to sign something" lives here, in
-// one function that *cannot* sign. `plan_create_v3_position` reads chain state and asks the
-// Liquidity API to size a position; it holds no reference to a vault, a signer or a DbPool, so
-// there is no path from it to sign_and_broadcast. That is what makes a read-only dry run
-// trustworthy: not discipline, but the absence of the capability.
+// one function that *cannot* sign: it holds no vault, no signer and no DbPool, so there is no
+// path from it to sign_and_broadcast. That makes a read-only dry run trustworthy by construction
+// rather than by discipline.
+//
+// It also never asks for a *simulated* create. Every quote it fetches is
+// `simulateTransaction: false`, which the API answers with amounts but which we treat as
+// sizing information only. A signable transaction is fetched exactly once, after funding and
+// approvals are in place, by the reconciliation loop — so planning cannot leave a signable
+// payload lying around, and nothing signable is ever produced before it could succeed.
 // ---------------------------------------------------------------------------
 
 /// The caller's request, parsed but not yet resolved against the chain.
@@ -1410,10 +1569,45 @@ struct CreateRequest {
 }
 
 /// A fully-resolved, ready-to-execute position — the output of planning, the input to signing.
+#[derive(Debug)]
+struct SkippedPool {
+    fee: u32,
+    address: Address,
+    liquidity: U256,
+    reason: String,
+}
+
+/// Applies the automatic-selection policy to one candidate result. Only a structured,
+/// pool-local Liquidity API failure is skippable; every other error aborts selection.
+fn consider_auto_candidate<T>(
+    candidate: PoolCandidate,
+    result: Result<T>,
+    skipped: &mut Vec<SkippedPool>,
+) -> Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error) => {
+            let Some(reason) = pool_local_api_failure(&error) else {
+                return Err(error);
+            };
+            skipped.push(SkippedPool {
+                fee: candidate.fee,
+                address: candidate.address,
+                liquidity: candidate.liquidity,
+                reason,
+            });
+            Ok(None)
+        }
+    }
+}
+
 struct CreatePlan {
     pool_address: Address,
     pool: V3PoolState,
     selection_method: &'static str,
+    /// Auto-discovery candidates that ranked higher but could not be sized because the
+    /// Liquidity API specifically reported that pool as unavailable or unindexed.
+    skipped_pools: Vec<SkippedPool>,
     range: TickRange,
     /// Base-unit ceilings after clamping the caller's request to what the wallet can actually
     /// fund. Never larger than what was requested.
@@ -1428,9 +1622,8 @@ struct CreatePlan {
     /// True when token0/token1 is the side the caller named "ETH" and may need wrapping.
     native_is_token0: bool,
     native_is_token1: bool,
-    /// Balances as of planning, used to compute the first wrap.
-    weth_balance: U256,
-    /// The first `simulateTransaction: true` quote. Re-fetched during reconciliation.
+    /// The accepted sizing quote — deliberately unsimulated, and therefore not signable. The
+    /// reconciliation loop replaces it with a freshly simulated one before anything is signed.
     quote: Value,
 }
 
@@ -1518,13 +1711,24 @@ async fn plan_create_v3_position(
     wallet: Address,
     req: &CreateRequest,
 ) -> Result<CreatePlan> {
-    // --- pool: either the one named, verified, or the deepest standard tier ---
-    let (pool_address, pool, selection_method) = match req.explicit_pool {
+    match req.explicit_pool {
         Some(addr) => {
             let state = read_v3_pool_state(provider, addr)
                 .await
                 .context("stage=pool read")?;
-            (addr, state, "explicit")
+            // Explicit means explicit: never silently redirect the caller's funds to another
+            // fee tier, even if this pool is temporarily unavailable in the Liquidity API.
+            plan_create_v3_position_in_pool(
+                provider,
+                http,
+                wallet,
+                req,
+                addr,
+                state,
+                "explicit",
+                Vec::new(),
+            )
+            .await
         }
         None => {
             let candidates =
@@ -1532,23 +1736,76 @@ async fn plan_create_v3_position(
                     .await
                     .context("stage=pool read")?;
 
-            let chosen = choose_pool(&candidates).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "no Uniswap V3 pool with liquidity exists for {:#x}/{:#x} on Sepolia at any \
-                     standard fee tier (100, 500, 3000, 10000) — pass poolAddress explicitly to \
-                     use a nonstandard-fee pool",
-                    req.token_a.address,
-                    req.token_b.address
+            let ranked = rank_pools(&candidates);
+            anyhow::ensure!(
+                !ranked.is_empty(),
+                "no Uniswap V3 pool with liquidity exists for {:#x}/{:#x} on Sepolia at any \
+                 standard fee tier (100, 500, 3000, 10000) — pass poolAddress explicitly to \
+                 use a nonstandard-fee pool",
+                req.token_a.address,
+                req.token_b.address
+            );
+
+            let mut skipped = Vec::new();
+            for candidate in ranked {
+                let state = read_v3_pool_state(provider, candidate.address)
+                    .await
+                    .context("stage=pool read")?;
+
+                let attempt = plan_create_v3_position_in_pool(
+                    provider,
+                    http,
+                    wallet,
+                    req,
+                    candidate.address,
+                    state,
+                    "auto:deepest-api-usable",
+                    Vec::new(),
                 )
-            })?;
+                .await;
 
-            let state = read_v3_pool_state(provider, chosen.address)
-                .await
-                .context("stage=pool read")?;
-            (chosen.address, state, "auto:greatest-liquidity")
+                match consider_auto_candidate(candidate, attempt, &mut skipped)? {
+                    Some(mut plan) => {
+                        plan.skipped_pools = skipped;
+                        return Ok(plan);
+                    }
+                    None => continue,
+                }
+            }
+
+            let failures = skipped
+                .iter()
+                .map(|pool| {
+                    format!(
+                        "fee {} pool {:#x} (liquidity {}): {}",
+                        pool.fee, pool.address, pool.liquidity, pool.reason
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            Err(anyhow::anyhow!(
+                "none of the liquid standard-tier pools for {:#x}/{:#x} could be sized by the \
+                 Uniswap Liquidity API: {failures}",
+                req.token_a.address,
+                req.token_b.address
+            ))
         }
-    };
+    }
+}
 
+/// Builds a plan for exactly one already-verified pool. Automatic selection calls this for
+/// candidates in depth order; explicit selection calls it once and propagates every error.
+#[allow(clippy::too_many_arguments)]
+async fn plan_create_v3_position_in_pool(
+    provider: &impl Provider,
+    http: &reqwest::Client,
+    wallet: Address,
+    req: &CreateRequest,
+    pool_address: Address,
+    pool: V3PoolState,
+    selection_method: &'static str,
+    skipped_pools: Vec<SkippedPool>,
+) -> Result<CreatePlan> {
     // The pool decides the pair; the caller's two tokens must be exactly that pair.
     let requested = [req.token_a.address, req.token_b.address];
     anyhow::ensure!(
@@ -1619,9 +1876,21 @@ async fn plan_create_v3_position(
     let effective1 = requested1.min(available1);
 
     // Fail here, before any transaction exists, rather than after wrapping or approving.
-    for (effective, token, native, decimals) in [
-        (effective0, pool.token0, native_is_token0, decimals0),
-        (effective1, pool.token1, native_is_token1, decimals1),
+    for (effective, available, token, native, decimals) in [
+        (
+            effective0,
+            available0,
+            pool.token0,
+            native_is_token0,
+            decimals0,
+        ),
+        (
+            effective1,
+            available1,
+            pool.token1,
+            native_is_token1,
+            decimals1,
+        ),
     ] {
         anyhow::ensure!(
             !effective.is_zero(),
@@ -1642,7 +1911,7 @@ async fn plan_create_v3_position(
             } else {
                 format!(
                     "its balance is {}",
-                    format_human_amount(available0.min(available1), decimals)
+                    format_human_amount(available, decimals)
                 )
             }
         );
@@ -1700,8 +1969,10 @@ async fn plan_create_v3_position(
     params.independent_token = independent_token;
     params.independent_amount = independent_amount;
 
-    // The first quote we might actually sign, so simulation is meaningful now.
-    let quote = lp_post(http, "/lp/create", &build_lp_create_body(&params, true))
+    // Still unsimulated: nothing is funded or approved yet, so a simulated create would fail
+    // for reasons that say nothing about the position, and would hand back a signable payload
+    // before it could possibly succeed. Reconciliation fetches the signable one later.
+    let quote = lp_post(http, "/lp/create", &build_lp_create_body(&params, false))
         .await
         .context("stage=API request")?;
     let (q0, q1) = quote_amounts(&quote, &pool)?;
@@ -1711,6 +1982,7 @@ async fn plan_create_v3_position(
         pool_address,
         pool,
         selection_method,
+        skipped_pools,
         range,
         effective0,
         effective1,
@@ -1720,7 +1992,6 @@ async fn plan_create_v3_position(
         independent_amount,
         native_is_token0,
         native_is_token1,
-        weth_balance,
         quote,
     })
 }
@@ -1758,6 +2029,296 @@ fn ensure_within_budgets(
         );
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Reconciliation
+//
+// A create quote goes stale while its own approvals confirm. By the time a wrap and two
+// approvals are mined, Uniswap may want a slightly different amount — which can need *more*
+// WETH or *more* allowance than was just provided. Signing the stale quote reverts; signing the
+// fresh one unfunded reverts too.
+//
+// So this loop converges instead of assuming: each pass asks what the current quote needs,
+// provides exactly that, fetches a fresh quote, and only stops when a quote needs nothing
+// further AND is one that was fetched with simulation on. That second condition is what
+// guarantees the mint is never signed from a sizing-only response.
+//
+// The side effects are behind a trait so the ordering logic can be tested without a chain, an
+// API or a vault — the sequencing is the part that is easy to get wrong, and the part that
+// moves real funds.
+// ---------------------------------------------------------------------------
+
+/// Everything the loop needs to do that touches the outside world.
+trait ReconcileEffects {
+    /// Current WETH balance. Re-read every pass, never cached: a wrap changes it, and so can
+    /// anything else using this wallet.
+    async fn weth_balance(&self) -> Result<U256>;
+
+    /// Native ether available to wrap, with the gas reserve already deducted. Re-read before
+    /// every wrap so the reserve is honoured against the balance that actually exists then.
+    async fn spendable_native(&self) -> Result<U256>;
+
+    async fn wrap(&self, amount: U256) -> Result<B256>;
+
+    /// Approvals still outstanding for these amounts; empty when allowances already cover them.
+    async fn check_approvals(&self, want0: U256, want1: U256) -> Result<Vec<Value>>;
+
+    async fn execute_approval(&self, tx: &Value, label: &str) -> Result<B256>;
+
+    /// Fetch a fresh create quote **with simulation on** — i.e. one that may be signed.
+    async fn fetch_signable_quote(&self) -> Result<Value>;
+
+    /// Reads the two token amounts out of a quote, verifying the pair.
+    fn quote_amounts(&self, quote: &Value) -> Result<(U256, U256)>;
+
+    /// Rejects a quote that exceeds either budget.
+    fn check_budgets(&self, amount0: U256, amount1: U256) -> Result<()>;
+
+    /// Which side of the pair is WETH-funded, if either.
+    fn weth_side(&self, amounts: (U256, U256)) -> Option<U256>;
+}
+
+/// A settled, simulated quote plus everything that had to happen on-chain to get there.
+#[derive(Debug)]
+struct Reconciled {
+    quote: Value,
+    attempts: usize,
+    wrap_hashes: Vec<String>,
+    approval_hashes: Vec<String>,
+    completed: Vec<String>,
+}
+
+/// Drives a sizing quote to a funded, approved, simulated one that is safe to sign.
+///
+/// `sizing_quote` is the unsimulated quote planning settled on. It is used only to work out what
+/// funding and approvals are needed; it can never be returned, because the loop refuses to stop
+/// on a quote it did not fetch with simulation on.
+///
+/// Errors carry every wrap and approval already broadcast. Those moved real funds, and a caller
+/// retrying needs to know the wallet is not where it started.
+async fn reconcile<E: ReconcileEffects>(effects: &E, sizing_quote: Value) -> Result<Reconciled> {
+    let mut quote = sizing_quote;
+    let mut signable = false;
+    let mut attempts = 0usize;
+    let mut side_effect_rounds = 0usize;
+
+    let mut wrap_hashes: Vec<String> = Vec::new();
+    let mut approval_hashes: Vec<String> = Vec::new();
+    let mut completed: Vec<String> = Vec::new();
+
+    loop {
+        attempts += 1;
+        let (want0, want1) = with_completed_txs(effects.quote_amounts(&quote), &completed)?;
+        with_completed_txs(effects.check_budgets(want0, want1), &completed)?;
+
+        // Fresh balance every pass: the previous wrap moved it, and so may anything else.
+        let needed_wrap = match effects.weth_side((want0, want1)) {
+            Some(needed) => {
+                let held = with_completed_txs(
+                    effects.weth_balance().await.context("stage=balance read"),
+                    &completed,
+                )?;
+                needed.saturating_sub(held)
+            }
+            None => U256::ZERO,
+        };
+
+        let approvals = with_completed_txs(
+            effects
+                .check_approvals(want0, want1)
+                .await
+                .context("stage=API request"),
+            &completed,
+        )?;
+
+        if needed_wrap.is_zero() && approvals.is_empty() {
+            // Nothing outstanding. Stop only if this quote is one we may actually sign;
+            // otherwise fetch a simulated one and re-check it, since its amounts may differ.
+            if signable {
+                return Ok(Reconciled {
+                    quote,
+                    attempts,
+                    wrap_hashes,
+                    approval_hashes,
+                    completed,
+                });
+            }
+        } else {
+            // The bound applies to rounds that can move funds, not to inspections. In
+            // particular, the quote fetched after the third allowed round must still be
+            // inspected: it may already be settled and safe to return.
+            if side_effect_rounds >= MAX_RECONCILIATION_ATTEMPTS {
+                return with_completed_txs(
+                    Err(anyhow::anyhow!(
+                        "the quote did not settle after {MAX_RECONCILIATION_ATTEMPTS} rounds of \
+                         funding and approval — the pool's price is moving faster than \
+                         transactions confirm; try again or widen rangeWidthBps"
+                    )),
+                    &completed,
+                );
+            }
+            side_effect_rounds += 1;
+
+            if !needed_wrap.is_zero() {
+                // Re-read spendable native here, not once up front: earlier wraps have already
+                // spent from it, and the gas reserve has to hold against what is left now.
+                let spendable = with_completed_txs(
+                    effects
+                        .spendable_native()
+                        .await
+                        .context("stage=balance read"),
+                    &completed,
+                )?;
+                with_completed_txs(
+                    if spendable >= needed_wrap {
+                        Ok(())
+                    } else {
+                        Err(anyhow::anyhow!(
+                            "stage=wrap: need to wrap {needed_wrap} wei more into WETH but only \
+                             {spendable} wei of native ether is spendable after holding back the \
+                             gas reserve"
+                        ))
+                    },
+                    &completed,
+                )?;
+
+                let hash = with_completed_txs(
+                    effects.wrap(needed_wrap).await.context("stage=wrap"),
+                    &completed,
+                )?;
+                completed.push(format!("{hash:#x}"));
+                wrap_hashes.push(format!("{hash:#x}"));
+            }
+
+            for (i, approval) in approvals.iter().enumerate() {
+                let label = format!("approval {}/{}", i + 1, approvals.len());
+                let hash = with_completed_txs(
+                    effects.execute_approval(approval, &label).await,
+                    &completed,
+                )?;
+                completed.push(format!("{hash:#x}"));
+                approval_hashes.push(format!("{hash:#x}"));
+            }
+        }
+
+        // Whether we just funded something or merely need a signable version, the next quote is
+        // always freshly fetched with simulation on.
+        quote = with_completed_txs(
+            effects
+                .fetch_signable_quote()
+                .await
+                .context("stage=API request"),
+            &completed,
+        )?;
+        signable = true;
+    }
+}
+
+/// The real effects: chain, Liquidity API and vault.
+///
+/// Deliberately thin. Every method delegates to machinery that already exists and is tested on
+/// its own, so what is unique to reconciliation is the *ordering* in `reconcile` — which the
+/// scripted tests exercise without needing any of this.
+struct LiveReconcileEffects<'a> {
+    session: &'a LpSession<'a>,
+    http: &'a reqwest::Client,
+    plan: &'a CreatePlan,
+    slippage: Option<f64>,
+}
+
+impl ReconcileEffects for LiveReconcileEffects<'_> {
+    async fn weth_balance(&self) -> Result<U256> {
+        erc20_balance_of(&self.session.provider, SEPOLIA_V3.weth, self.session.wallet).await
+    }
+
+    async fn spendable_native(&self) -> Result<U256> {
+        let native = self
+            .session
+            .provider
+            .get_balance(self.session.wallet)
+            .await
+            .context("eth_getBalance failed")?;
+        Ok(native.saturating_sub(U256::from(MIN_NATIVE_GAS_RESERVE_WEI)))
+    }
+
+    async fn wrap(&self, amount: U256) -> Result<B256> {
+        self.session.wrap_native_to_weth(amount).await
+    }
+
+    async fn check_approvals(&self, want0: U256, want1: U256) -> Result<Vec<Value>> {
+        let resp = lp_post(
+            self.http,
+            "/lp/check_approval",
+            &build_check_approval_body(
+                self.session.wallet,
+                &[
+                    (self.plan.pool.token0, want0),
+                    (self.plan.pool.token1, want1),
+                ],
+            ),
+        )
+        .await?;
+        parse_approval_transactions(&resp)
+    }
+
+    async fn execute_approval(&self, tx: &Value, label: &str) -> Result<B256> {
+        let validated = validate_approval_transaction(
+            tx,
+            self.session.wallet,
+            SEPOLIA_V3.chain_id,
+            (self.plan.pool.token0, self.plan.pool.token1),
+        )
+        .with_context(|| format!("stage=approval ({label})"))?;
+
+        simulate_tx(&self.session.provider, self.session.wallet, &validated)
+            .await
+            .with_context(|| format!("stage=simulation ({label})"))?;
+
+        let hash = self
+            .session
+            .sign_and_broadcast(&validated)
+            .await
+            .with_context(|| format!("stage=broadcast ({label})"))?;
+
+        wait_for_receipt(&self.session.provider, hash, label)
+            .await
+            .with_context(|| format!("stage=receipt ({label})"))?;
+
+        Ok(hash)
+    }
+
+    async fn fetch_signable_quote(&self) -> Result<Value> {
+        lp_post(
+            self.http,
+            "/lp/create",
+            &build_lp_create_body(
+                &self.plan.refetch_params(self.session.wallet, self.slippage),
+                true,
+            ),
+        )
+        .await
+    }
+
+    fn quote_amounts(&self, quote: &Value) -> Result<(U256, U256)> {
+        quote_amounts(quote, &self.plan.pool)
+    }
+
+    fn check_budgets(&self, amount0: U256, amount1: U256) -> Result<()> {
+        ensure_within_budgets(
+            amount0,
+            amount1,
+            self.plan.effective0,
+            self.plan.effective1,
+            self.plan.decimals0,
+            self.plan.decimals1,
+            &self.plan.pool,
+        )
+    }
+
+    fn weth_side(&self, amounts: (U256, U256)) -> Option<U256> {
+        self.plan.weth_side_amount(amounts)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1909,12 +2470,15 @@ pub(super) fn build_uniswap_lp_tools() -> Vec<Tool> {
                     "poolAddress",
                     json!({
                         "type": "string",
-                        "description": "Optional. A specific Uniswap V3 pool to use, verified against \
-                                        the V3 factory and required to hold exactly the requested \
-                                        pair. Omit it to search the standard fee tiers (100, 500, \
-                                        3000, 10000) and use the one with the most liquidity, \
-                                        preferring the lower fee tier on an exact tie. Supply it to \
-                                        reach a pool with a nonstandard fee tier."
+                        "description": "Optional. Omit it to rank the standard fee tiers (100, 500, \
+                                        3000, 10000) by active liquidity and use the deepest pool \
+                                        the Liquidity API can size, preferring the lower fee tier \
+                                        on an exact tie. A candidate is skipped only when the API \
+                                        specifically reports that pool unavailable or unindexed; \
+                                        authentication, rate-limit, transport and generic service \
+                                        failures abort. Supply an address to select exactly that \
+                                        pool (with no fallback) or reach a nonstandard fee tier. It \
+                                        is verified against the factory and requested pair."
                     }),
                 ),
                 ("slippageTolerance", slippage_prop()),
@@ -2245,138 +2809,21 @@ impl UniswapMcpServer {
 
         let s = self.lp_session("create_v3_position").await?;
 
-        let mut plan = plan_create_v3_position(&s.provider, &self.http, s.wallet, &req).await?;
+        let plan = plan_create_v3_position(&s.provider, &self.http, s.wallet, &req).await?;
 
-        // Every hash below is on-chain and irreversible; each is recorded the moment it is
-        // broadcast so that any later failure can report it.
-        let mut completed: Vec<String> = Vec::new();
-        let mut wrap_hashes: Vec<String> = Vec::new();
-        let mut approval_hashes: Vec<String> = Vec::new();
-        let mut total_wrapped = U256::ZERO;
-        let mut attempts = 0usize;
+        // Funding, approvals and re-quoting until a simulated quote needs nothing further. The
+        // sizing quote handed in here is unsimulated and can never be what gets signed.
+        let effects = LiveReconcileEffects {
+            session: &s,
+            http: &self.http,
+            plan: &plan,
+            slippage: req.slippage,
+        };
+        let settled = reconcile(&effects, plan.quote.clone()).await?;
+        let mut completed = settled.completed;
 
-        loop {
-            attempts += 1;
-            let (want0, want1) = quote_amounts(&plan.quote, &plan.pool)?;
-
-            // What this quote still needs that the wallet does not already have.
-            let needed_wrap = match plan.weth_side_amount((want0, want1)) {
-                Some(needed) => needed.saturating_sub(plan.weth_balance + total_wrapped),
-                None => U256::ZERO,
-            };
-
-            let approvals = with_completed_txs(
-                lp_post(
-                    &self.http,
-                    "/lp/check_approval",
-                    &build_check_approval_body(
-                        s.wallet,
-                        &[(plan.pool.token0, want0), (plan.pool.token1, want1)],
-                    ),
-                )
-                .await
-                .context("stage=API request")
-                .and_then(|r| parse_approval_transactions(&r).context("stage=API request")),
-                &completed,
-            )?;
-
-            if needed_wrap.is_zero() && approvals.is_empty() {
-                break;
-            }
-
-            anyhow::ensure!(
-                attempts <= MAX_RECONCILIATION_ATTEMPTS,
-                "{}",
-                with_completed_txs::<()>(
-                    Err(anyhow::anyhow!(
-                        "the quote did not settle after {MAX_RECONCILIATION_ATTEMPTS} rounds of \
-                         funding and approval — the pool's price is moving faster than \
-                         transactions confirm; try again or widen rangeWidthBps"
-                    )),
-                    &completed,
-                )
-                .unwrap_err()
-            );
-
-            if !needed_wrap.is_zero() {
-                let hash = with_completed_txs(
-                    s.wrap_native_to_weth(needed_wrap)
-                        .await
-                        .context("stage=wrap"),
-                    &completed,
-                )?;
-                let hash = format!("{hash:#x}");
-                completed.push(hash.clone());
-                wrap_hashes.push(hash);
-                total_wrapped += needed_wrap;
-            }
-
-            for (i, approval) in approvals.iter().enumerate() {
-                let step = format!("approval {}/{}", i + 1, approvals.len());
-
-                // No destination pin: an approval's `to` is legitimately the ERC-20 being
-                // approved, which varies per pool.
-                let validated = with_completed_txs(
-                    validate_api_transaction(approval, s.wallet, SEPOLIA_V3.chain_id, None)
-                        .with_context(|| format!("stage=approval ({step})")),
-                    &completed,
-                )?;
-
-                with_completed_txs(
-                    simulate_tx(&s.provider, s.wallet, &validated)
-                        .await
-                        .with_context(|| format!("stage=simulation ({step})")),
-                    &completed,
-                )?;
-
-                let hash = with_completed_txs(
-                    s.sign_and_broadcast(&validated)
-                        .await
-                        .with_context(|| format!("stage=broadcast ({step})")),
-                    &completed,
-                )?;
-                completed.push(format!("{hash:#x}"));
-                approval_hashes.push(format!("{hash:#x}"));
-
-                with_completed_txs(
-                    wait_for_receipt(&s.provider, hash, &step)
-                        .await
-                        .with_context(|| format!("stage=receipt ({step})")),
-                    &completed,
-                )?;
-            }
-
-            // Those transactions took real block time; the quote we just funded may already be
-            // stale, so re-price before deciding anything.
-            plan.quote = with_completed_txs(
-                lp_post(
-                    &self.http,
-                    "/lp/create",
-                    &build_lp_create_body(&plan.refetch_params(s.wallet, req.slippage), true),
-                )
-                .await
-                .context("stage=API request"),
-                &completed,
-            )?;
-
-            let (fresh0, fresh1) =
-                with_completed_txs(quote_amounts(&plan.quote, &plan.pool), &completed)?;
-            with_completed_txs(
-                ensure_within_budgets(
-                    fresh0,
-                    fresh1,
-                    plan.effective0,
-                    plan.effective1,
-                    plan.decimals0,
-                    plan.decimals1,
-                    &plan.pool,
-                ),
-                &completed,
-            )?;
-        }
-
-        // --- the quote is settled; last checks before it becomes irreversible ---
-        let (final0, final1) = quote_amounts(&plan.quote, &plan.pool)?;
+        // --- the quote is settled and simulated; last checks before it becomes irreversible ---
+        let (final0, final1) = quote_amounts(&settled.quote, &plan.pool)?;
 
         with_completed_txs(
             ensure_within_budgets(
@@ -2419,7 +2866,7 @@ impl UniswapMcpServer {
         }
 
         let create_tx = with_completed_txs(
-            require_field(&plan.quote, "create", "/lp/create").context("stage=API request"),
+            require_field(&settled.quote, "create", "/lp/create").context("stage=API request"),
             &completed,
         )?;
 
@@ -2472,20 +2919,26 @@ impl UniswapMcpServer {
         Ok(json!({
             "hash": format!("{hash:#x}"),
             "nftTokenId": nft_token_id.to_string(),
-            "wrapHash": wrap_hashes.last().cloned().map(Value::String).unwrap_or(Value::Null),
-            "wrapHashes": wrap_hashes,
-            "approvalHashes": approval_hashes,
-            "reconciliationAttempts": attempts,
+            "wrapHash": settled.wrap_hashes.last().cloned().map(Value::String).unwrap_or(Value::Null),
+            "wrapHashes": settled.wrap_hashes,
+            "approvalHashes": settled.approval_hashes,
+            "reconciliationAttempts": settled.attempts,
             "poolAddress": plan.pool_address.to_checksum(None),
             "poolSelectionMethod": plan.selection_method,
+            "skippedPools": plan.skipped_pools.iter().map(|pool| json!({
+                "fee": pool.fee.to_string(),
+                "poolAddress": pool.address.to_checksum(None),
+                "liquidity": pool.liquidity.to_string(),
+                "reason": pool.reason,
+            })).collect::<Vec<_>>(),
             "fee": plan.pool.fee.to_string(),
             "currentTick": plan.pool.current_tick.to_string(),
             "tickSpacing": plan.pool.tick_spacing.to_string(),
             "tickLower": plan.range.lower.to_string(),
             "tickUpper": plan.range.upper.to_string(),
             "rangeWidthBps": req.range_width_bps,
-            "adjustedMinPrice": plan.quote.get("adjustedMinPrice").cloned().unwrap_or(Value::Null),
-            "adjustedMaxPrice": plan.quote.get("adjustedMaxPrice").cloned().unwrap_or(Value::Null),
+            "adjustedMinPrice": settled.quote.get("adjustedMinPrice").cloned().unwrap_or(Value::Null),
+            "adjustedMaxPrice": settled.quote.get("adjustedMaxPrice").cloned().unwrap_or(Value::Null),
             "token0": {
                 "tokenAddress": plan.pool.token0.to_checksum(None),
                 "amount": final0.to_string(),
@@ -2496,7 +2949,7 @@ impl UniswapMcpServer {
                 "amount": final1.to_string(),
                 "humanAmount": format_human_amount(final1, plan.decimals1),
             },
-            "wethFundedFromNativeEth": !wrap_hashes.is_empty(),
+            "wethFundedFromNativeEth": !settled.wrap_hashes.is_empty(),
         })
         .to_string())
     }
@@ -3549,7 +4002,7 @@ mod tests {
         assert_eq!(choose_pool(&candidates).unwrap().fee, 500);
         // Order of discovery must not change the answer.
         let reversed = [candidate(3000, 1000), candidate(500, 1000)];
-        assert_eq!(choose_pool(&reversed).unwrap().fee, 3000);
+        assert_eq!(choose_pool(&reversed).unwrap().fee, 500);
     }
 
     #[test]
@@ -3571,8 +4024,103 @@ mod tests {
 
     #[test]
     fn standard_fee_tiers_are_probed_low_to_high() {
-        // Ascending order is what makes the tie-break "lower fee wins" hold.
+        // Probe order is stable, although ranking now enforces its tie-break independently.
         assert_eq!(STANDARD_FEE_TIERS, [100, 500, 3000, 10000]);
+    }
+
+    fn lp_http_error(status: reqwest::StatusCode, body: &str) -> anyhow::Error {
+        anyhow::Error::new(LpHttpError {
+            path: "/lp/create".to_string(),
+            status,
+            body_excerpt: body.to_string(),
+        })
+        .context("stage=API request")
+    }
+
+    #[test]
+    fn auto_pool_falls_back_from_deepest_pool_local_failure() {
+        let ranked = rank_pools(&[candidate(500, 20), candidate(10000, 100)]);
+        assert_eq!(
+            ranked.iter().map(|pool| pool.fee).collect::<Vec<_>>(),
+            [10000, 500]
+        );
+
+        let mut skipped = Vec::new();
+        let first: Option<&str> = consider_auto_candidate(
+            ranked[0],
+            Err(lp_http_error(
+                reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                r#"{"error":"Slot 0 Info not available"}"#,
+            )),
+            &mut skipped,
+        )
+        .expect("the observed pool-local indexing gap is skippable");
+        assert!(first.is_none());
+
+        let second = consider_auto_candidate(ranked[1], Ok("usable"), &mut skipped)
+            .expect("the next candidate succeeds");
+        assert_eq!(second, Some("usable"));
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].fee, 10000);
+    }
+
+    #[test]
+    fn auto_pool_allows_all_candidates_to_report_local_unavailability() {
+        let mut skipped = Vec::new();
+        for pool in [candidate(10000, 100), candidate(500, 20)] {
+            let selected: Option<()> = consider_auto_candidate(
+                pool,
+                Err(lp_http_error(
+                    reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                    "pool is not indexed",
+                )),
+                &mut skipped,
+            )
+            .expect("a pool-local failure is skippable");
+            assert!(selected.is_none());
+        }
+        assert_eq!(skipped.len(), 2);
+        assert!(skipped.iter().all(|pool| !pool.reason.is_empty()));
+    }
+
+    #[test]
+    fn auto_pool_never_masks_auth_rate_limit_or_generic_service_failures() {
+        for (status, body) in [
+            (
+                reqwest::StatusCode::UNAUTHORIZED,
+                "Slot 0 Info not available",
+            ),
+            (
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                "pool is not indexed",
+            ),
+            (
+                reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal Server Error",
+            ),
+        ] {
+            let mut skipped = Vec::new();
+            let result: Result<Option<()>> = consider_auto_candidate(
+                candidate(10000, 100),
+                Err(lp_http_error(status, body)),
+                &mut skipped,
+            );
+            assert!(result.is_err(), "{status} must abort auto-selection");
+            assert!(skipped.is_empty());
+        }
+    }
+
+    #[test]
+    fn explicit_pool_errors_are_not_reclassified_as_fallbacks() {
+        // The explicit path calls the one-pool planner directly. Even an otherwise skippable
+        // indexing response therefore remains the caller-visible error.
+        let error = lp_http_error(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            "Slot 0 Info not available",
+        );
+        assert!(pool_local_api_failure(&error).is_some());
+        let direct: Result<()> = Err(error);
+        assert!(direct.is_err());
     }
 
     // ─── budget enforcement ──────────────────────────────────────────────────
@@ -3873,6 +4421,618 @@ mod tests {
             plan.range.lower <= plan.pool.current_tick
                 && plan.pool.current_tick <= plan.range.upper
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "live: needs UNISWAP_API_KEY and STAGE_A_WALLET"]
+    async fn stage_a_plans_weth_usdc_with_api_aware_pool_selection() {
+        let Some((rpc, wallet)) = stage_a_env() else {
+            return;
+        };
+        let provider = stage_a_provider(&rpc).await;
+        let req = parse_create_request(&args(&[
+            ("tokenA", json!("ETH")),
+            (
+                "tokenB",
+                json!("0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"),
+            ),
+            ("maxTokenAAmount", json!("0.01")),
+            ("maxTokenBAmount", json!("20")),
+            ("rangeWidthBps", json!(1000)),
+        ]))
+        .expect("request should parse");
+
+        let plan = plan_create_v3_position(&provider, &reqwest::Client::new(), wallet, &req)
+            .await
+            .expect("automatic selection should find an API-usable WETH/USDC pool");
+        let (amount0, amount1) = quote_amounts(&plan.quote, &plan.pool).unwrap();
+
+        println!(
+            "[stage A WETH/USDC] selected fee={} pool={:#x}; skipped={:?}",
+            plan.pool.fee, plan.pool_address, plan.skipped_pools
+        );
+        assert_eq!(plan.selection_method, "auto:deepest-api-usable");
+        assert!(amount0 <= plan.effective0 && amount1 <= plan.effective1);
+        assert!(
+            plan.range.lower <= plan.pool.current_tick
+                && plan.pool.current_tick <= plan.range.upper
+        );
+    }
+
+    // ─── approval validation ─────────────────────────────────────────────────
+
+    const POOL_T0_APPROVAL: Address = address!("1f9840a85d5af5bf1d1762f925bdaddc4201f984");
+    const POOL_T1_APPROVAL: Address = address!("fff9976782d46cc05630d1f6ebab18b2324d6b14");
+
+    /// A real approval as returned by /lp/check_approval on Sepolia (captured 2026-07-25):
+    /// `approve(NonfungiblePositionManager, uint256::MAX)` on the token, with zero value.
+    fn live_approval(to: Address) -> Value {
+        json!({
+            "to": to.to_checksum(None),
+            "from": WALLET.to_checksum(None),
+            "chainId": 11155111,
+            "data": "0x095ea7b30000000000000000000000001238536071e1c677a632429e3655c799b22cda52\
+        ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "value": "0x00",
+        })
+    }
+
+    fn check_approval(tx: &Value) -> Result<ValidatedTx> {
+        validate_approval_transaction(
+            tx,
+            WALLET,
+            SEPOLIA_V3.chain_id,
+            (POOL_T0_APPROVAL, POOL_T1_APPROVAL),
+        )
+    }
+
+    #[test]
+    fn accepts_the_real_approval_shape_for_either_token() {
+        for token in [POOL_T0_APPROVAL, POOL_T1_APPROVAL] {
+            let v = check_approval(&live_approval(token))
+                .unwrap_or_else(|e| panic!("live approval for {token:#x} should pass: {e:#}"));
+            assert_eq!(v.to, token);
+            assert_eq!(v.value, U256::ZERO);
+        }
+    }
+
+    #[test]
+    fn rejects_an_approval_for_a_token_outside_the_pair() {
+        // Approving a token this position never touches is not something the flow asked for.
+        let stranger = address!("00000000000000000000000000000000deadbeef");
+        let err = check_approval(&live_approval(stranger))
+            .expect_err("a token outside the pair must be refused")
+            .to_string();
+        assert!(err.contains("neither token of this position"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_an_approval_naming_any_other_spender() {
+        // The single most damaging thing a malformed approval could do: hand spending rights to
+        // an address this flow never transacts with.
+        let mut tx = live_approval(POOL_T0_APPROVAL);
+        tx["data"] = json!(
+            "0x095ea7b3000000000000000000000000deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        );
+
+        let err = check_approval(&tx)
+            .expect_err("a foreign spender must be refused")
+            .to_string();
+        assert!(err.contains("only permitted spender"), "got: {err}");
+        assert!(
+            err.contains("deadbeef"),
+            "the rejected spender should be named: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_an_approval_that_is_not_an_approve_call() {
+        // transfer(address,uint256) — right shape, wrong operation.
+        let mut tx = live_approval(POOL_T0_APPROVAL);
+        tx["data"] = json!(
+            "0xa9059cbb0000000000000000000000001238536071e1c677a632429e3655c799b22cda52\
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        );
+        assert!(
+            check_approval(&tx).is_err(),
+            "a transfer() must not pass as an approval"
+        );
+
+        // Right selector, truncated arguments.
+        let mut short = live_approval(POOL_T0_APPROVAL);
+        short["data"] = json!("0x095ea7b3");
+        assert!(
+            check_approval(&short).is_err(),
+            "a bare selector must not pass"
+        );
+    }
+
+    #[test]
+    fn rejects_an_approval_carrying_ether() {
+        let mut tx = live_approval(POOL_T0_APPROVAL);
+        tx["value"] = json!("1000000000000000000");
+        let err = check_approval(&tx)
+            .expect_err("an approval must not move value")
+            .to_string();
+        assert!(err.contains("must not transfer value"), "got: {err}");
+    }
+
+    #[test]
+    fn approval_validation_still_enforces_sender_and_chain() {
+        let mut wrong_from = live_approval(POOL_T0_APPROVAL);
+        wrong_from["from"] = json!(OTHER.to_checksum(None));
+        assert!(check_approval(&wrong_from).is_err());
+
+        let mut wrong_chain = live_approval(POOL_T0_APPROVAL);
+        wrong_chain["chainId"] = json!(1);
+        assert!(check_approval(&wrong_chain).is_err());
+    }
+
+    #[test]
+    fn the_only_permitted_spender_is_the_position_manager() {
+        // Everything this flow signs is pinned to the position manager, so it is also the only
+        // contract that ever needs to move the agent's tokens.
+        assert_eq!(ALLOWED_APPROVAL_SPENDER, SEPOLIA_V3.position_manager);
+    }
+
+    #[test]
+    fn rejects_an_approval_response_for_a_different_operation() {
+        // The wrapper's `action` says what the approval is for; a MIGRATE approval is not
+        // something a create flow requested.
+        let resp = json!({
+            "transactions": [
+                { "transaction": { "to": "0x1", "data": "0xaa" }, "action": "MIGRATE" }
+            ]
+        });
+        let err = parse_approval_transactions(&resp)
+            .expect_err("a non-CREATE approval must be refused")
+            .to_string();
+        assert!(err.contains("MIGRATE"), "got: {err}");
+
+        let missing = json!({ "transactions": [ { "transaction": { "to": "0x1" } } ] });
+        assert!(
+            parse_approval_transactions(&missing).is_err(),
+            "an entry with no action must not be executed blindly"
+        );
+    }
+
+    // ─── reconciliation loop (scripted: no chain, no API, no vault) ──────────
+    //
+    // The loop's job is ordering: fund what the current quote needs, re-quote, and never sign
+    // anything that was not fetched with simulation on. That sequencing moves real funds, so it
+    // is scripted here rather than left to a live run to discover.
+
+    use std::cell::RefCell;
+
+    /// One programmed pass: what the quote asks for, and what is outstanding for it.
+    #[derive(Clone)]
+    struct ScriptedPass {
+        want0: u64,
+        want1: u64,
+        /// WETH the wallet holds when this pass reads it.
+        weth_held: u64,
+        /// How many approvals /lp/check_approval still returns on this pass.
+        approvals: usize,
+    }
+
+    #[derive(Default)]
+    struct ScriptLog {
+        weth_reads: usize,
+        native_reads: usize,
+        wraps: Vec<U256>,
+        approvals_executed: usize,
+        signable_fetches: usize,
+    }
+
+    struct ScriptedEffects {
+        passes: Vec<ScriptedPass>,
+        cursor: RefCell<usize>,
+        log: RefCell<ScriptLog>,
+        spendable_native: U256,
+        /// False models a pair with no ETH side at all.
+        weth_is_token1: bool,
+        budget0: U256,
+        budget1: U256,
+    }
+
+    impl ScriptedEffects {
+        fn new(passes: Vec<ScriptedPass>) -> Self {
+            Self {
+                passes,
+                cursor: RefCell::new(0),
+                log: RefCell::new(ScriptLog::default()),
+                spendable_native: U256::from(u64::MAX),
+                weth_is_token1: true,
+                budget0: U256::from(u64::MAX),
+                budget1: U256::from(u64::MAX),
+            }
+        }
+
+        /// The pass the loop is currently on. Saturates on the last entry, so a script can say
+        /// "and it stays like this" without repeating itself.
+        fn current(&self) -> ScriptedPass {
+            let i = (*self.cursor.borrow()).min(self.passes.len() - 1);
+            self.passes[i].clone()
+        }
+    }
+
+    impl ReconcileEffects for ScriptedEffects {
+        async fn weth_balance(&self) -> Result<U256> {
+            self.log.borrow_mut().weth_reads += 1;
+            Ok(U256::from(self.current().weth_held))
+        }
+
+        async fn spendable_native(&self) -> Result<U256> {
+            self.log.borrow_mut().native_reads += 1;
+            Ok(self.spendable_native)
+        }
+
+        async fn wrap(&self, amount: U256) -> Result<B256> {
+            self.log.borrow_mut().wraps.push(amount);
+            Ok(B256::repeat_byte(0x11))
+        }
+
+        async fn check_approvals(&self, _want0: U256, _want1: U256) -> Result<Vec<Value>> {
+            Ok((0..self.current().approvals)
+                .map(|i| json!({ "to": "0x1", "data": format!("0x{i:02x}") }))
+                .collect())
+        }
+
+        async fn execute_approval(&self, _tx: &Value, _label: &str) -> Result<B256> {
+            self.log.borrow_mut().approvals_executed += 1;
+            Ok(B256::repeat_byte(0xa1))
+        }
+
+        async fn fetch_signable_quote(&self) -> Result<Value> {
+            self.log.borrow_mut().signable_fetches += 1;
+            // Advancing here is what lets a script mean "after funding, the next quote is…".
+            *self.cursor.borrow_mut() += 1;
+            let p = self.current();
+            Ok(json!({ "token0": p.want0, "token1": p.want1, "simulated": true }))
+        }
+
+        fn quote_amounts(&self, quote: &Value) -> Result<(U256, U256)> {
+            Ok((
+                U256::from(quote["token0"].as_u64().unwrap_or_default()),
+                U256::from(quote["token1"].as_u64().unwrap_or_default()),
+            ))
+        }
+
+        fn check_budgets(&self, amount0: U256, amount1: U256) -> Result<()> {
+            anyhow::ensure!(amount0 <= self.budget0, "token0 over budget");
+            anyhow::ensure!(amount1 <= self.budget1, "token1 over budget");
+            Ok(())
+        }
+
+        fn weth_side(&self, amounts: (U256, U256)) -> Option<U256> {
+            self.weth_is_token1.then_some(amounts.1)
+        }
+    }
+
+    fn sizing_quote(want0: u64, want1: u64) -> Value {
+        json!({ "token0": want0, "token1": want1, "simulated": false })
+    }
+
+    #[tokio::test]
+    async fn never_signs_the_unsimulated_sizing_quote() {
+        // Even when the sizing quote needs nothing at all, a simulated one must still be
+        // fetched: the sizing response carries no signable transaction.
+        let effects = ScriptedEffects::new(vec![ScriptedPass {
+            want0: 100,
+            want1: 50,
+            weth_held: 50,
+            approvals: 0,
+        }]);
+
+        let out = reconcile(&effects, sizing_quote(100, 50)).await.unwrap();
+
+        assert_eq!(
+            out.quote["simulated"],
+            json!(true),
+            "must return a simulated quote"
+        );
+        assert_eq!(effects.log.borrow().signable_fetches, 1);
+        assert!(effects.log.borrow().wraps.is_empty(), "nothing to fund");
+        assert_eq!(effects.log.borrow().approvals_executed, 0);
+        assert!(out.wrap_hashes.is_empty() && out.approval_hashes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn wraps_only_the_shortfall() {
+        // Holds 20, quote wants 50 → wrap exactly 30, not 50.
+        let effects = ScriptedEffects::new(vec![
+            ScriptedPass {
+                want0: 100,
+                want1: 50,
+                weth_held: 20,
+                approvals: 0,
+            },
+            ScriptedPass {
+                want0: 100,
+                want1: 50,
+                weth_held: 50,
+                approvals: 0,
+            },
+        ]);
+
+        let out = reconcile(&effects, sizing_quote(100, 50)).await.unwrap();
+
+        assert_eq!(effects.log.borrow().wraps, vec![U256::from(30)]);
+        assert_eq!(out.wrap_hashes.len(), 1);
+        assert_eq!(out.quote["simulated"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn funds_an_additional_wrap_when_the_refreshed_quote_wants_more() {
+        // The audit case: the refetched quote needs MORE WETH than the one just funded.
+        let effects = ScriptedEffects::new(vec![
+            ScriptedPass {
+                want0: 100,
+                want1: 50,
+                weth_held: 0,
+                approvals: 0,
+            },
+            ScriptedPass {
+                want0: 100,
+                want1: 80,
+                weth_held: 50,
+                approvals: 0,
+            },
+            ScriptedPass {
+                want0: 100,
+                want1: 80,
+                weth_held: 80,
+                approvals: 0,
+            },
+        ]);
+
+        let out = reconcile(&effects, sizing_quote(100, 50)).await.unwrap();
+
+        assert_eq!(
+            effects.log.borrow().wraps,
+            vec![U256::from(50), U256::from(30)],
+            "the second wrap tops up the difference, it does not re-wrap the whole amount"
+        );
+        assert_eq!(out.wrap_hashes.len(), 2, "both wraps reported");
+        assert_eq!(out.attempts, 3);
+    }
+
+    #[tokio::test]
+    async fn runs_an_additional_approval_when_the_refreshed_quote_needs_one() {
+        let effects = ScriptedEffects::new(vec![
+            ScriptedPass {
+                want0: 100,
+                want1: 50,
+                weth_held: 50,
+                approvals: 1,
+            },
+            ScriptedPass {
+                want0: 100,
+                want1: 50,
+                weth_held: 50,
+                approvals: 1,
+            },
+            ScriptedPass {
+                want0: 100,
+                want1: 50,
+                weth_held: 50,
+                approvals: 0,
+            },
+        ]);
+
+        let out = reconcile(&effects, sizing_quote(100, 50)).await.unwrap();
+
+        assert_eq!(effects.log.borrow().approvals_executed, 2);
+        assert_eq!(out.approval_hashes.len(), 2);
+        assert!(
+            effects.log.borrow().wraps.is_empty(),
+            "nothing needed wrapping"
+        );
+    }
+
+    #[tokio::test]
+    async fn handles_a_wrap_and_an_approval_in_the_same_pass() {
+        let effects = ScriptedEffects::new(vec![
+            ScriptedPass {
+                want0: 100,
+                want1: 50,
+                weth_held: 10,
+                approvals: 2,
+            },
+            ScriptedPass {
+                want0: 100,
+                want1: 50,
+                weth_held: 50,
+                approvals: 0,
+            },
+        ]);
+
+        let out = reconcile(&effects, sizing_quote(100, 50)).await.unwrap();
+
+        assert_eq!(effects.log.borrow().wraps, vec![U256::from(40)]);
+        assert_eq!(effects.log.borrow().approvals_executed, 2);
+        assert_eq!(out.wrap_hashes.len(), 1);
+        assert_eq!(out.approval_hashes.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn gives_up_after_the_attempt_limit_and_reports_everything_broadcast() {
+        // A quote that always wants more than is held never settles. It must stop — and account
+        // for every transaction it already sent.
+        let effects = ScriptedEffects::new(vec![ScriptedPass {
+            want0: 100,
+            want1: 50,
+            weth_held: 0,
+            approvals: 1,
+        }]);
+
+        let err = reconcile(&effects, sizing_quote(100, 50))
+            .await
+            .expect_err("a quote that never settles must fail")
+            .to_string();
+
+        assert!(err.contains("did not settle"), "got: {err}");
+        assert!(
+            err.contains("completed transactions"),
+            "hashes must be reported: {err}"
+        );
+        assert_eq!(
+            effects.log.borrow().wraps.len(),
+            MAX_RECONCILIATION_ATTEMPTS,
+            "one wrap per attempt, then stop"
+        );
+    }
+
+    #[tokio::test]
+    async fn accepts_a_quote_that_settles_after_the_third_side_effect_round() {
+        let effects = ScriptedEffects::new(vec![
+            ScriptedPass {
+                want0: 100,
+                want1: 50,
+                weth_held: 0,
+                approvals: 0,
+            },
+            ScriptedPass {
+                want0: 100,
+                want1: 60,
+                weth_held: 50,
+                approvals: 0,
+            },
+            ScriptedPass {
+                want0: 100,
+                want1: 70,
+                weth_held: 60,
+                approvals: 0,
+            },
+            ScriptedPass {
+                want0: 100,
+                want1: 70,
+                weth_held: 70,
+                approvals: 0,
+            },
+        ]);
+
+        let out = reconcile(&effects, sizing_quote(100, 50))
+            .await
+            .expect("the quote fetched after the third allowed funding round is settled");
+
+        assert_eq!(
+            effects.log.borrow().wraps,
+            vec![U256::from(50), U256::from(10), U256::from(10)]
+        );
+        assert_eq!(
+            out.attempts, 4,
+            "three funding rounds plus final inspection"
+        );
+        assert_eq!(out.quote["simulated"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn refuses_to_wrap_more_native_than_is_spendable() {
+        // spendable_native already has the gas reserve deducted, so this is the guard that keeps
+        // a wallet able to pay for its own next transaction.
+        let mut effects = ScriptedEffects::new(vec![ScriptedPass {
+            want0: 100,
+            want1: 50,
+            weth_held: 0,
+            approvals: 0,
+        }]);
+        effects.spendable_native = U256::from(10);
+
+        let err = reconcile(&effects, sizing_quote(100, 50))
+            .await
+            .expect_err("wrapping beyond the reserve must fail")
+            .to_string();
+
+        assert!(err.contains("stage=wrap"), "got: {err}");
+        assert!(
+            effects.log.borrow().wraps.is_empty(),
+            "must fail before wrapping, not after"
+        );
+    }
+
+    #[tokio::test]
+    async fn re_reads_balances_every_pass() {
+        // Caching balances is how a loop like this silently over- or under-wraps.
+        let effects = ScriptedEffects::new(vec![
+            ScriptedPass {
+                want0: 100,
+                want1: 50,
+                weth_held: 0,
+                approvals: 0,
+            },
+            ScriptedPass {
+                want0: 100,
+                want1: 70,
+                weth_held: 50,
+                approvals: 0,
+            },
+            ScriptedPass {
+                want0: 100,
+                want1: 70,
+                weth_held: 70,
+                approvals: 0,
+            },
+        ]);
+
+        reconcile(&effects, sizing_quote(100, 50)).await.unwrap();
+
+        let log = effects.log.borrow();
+        assert_eq!(log.weth_reads, 3, "WETH re-read on every pass");
+        assert_eq!(
+            log.native_reads, 2,
+            "native re-read before each of the two wraps"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_a_refreshed_quote_that_breaks_a_budget() {
+        // Price moved enough that the new quote exceeds the caller's ceiling: stop rather than
+        // keep funding toward it.
+        let mut effects = ScriptedEffects::new(vec![
+            ScriptedPass {
+                want0: 100,
+                want1: 50,
+                weth_held: 50,
+                approvals: 1,
+            },
+            ScriptedPass {
+                want0: 100,
+                want1: 999,
+                weth_held: 50,
+                approvals: 0,
+            },
+        ]);
+        effects.budget1 = U256::from(100);
+
+        let err = reconcile(&effects, sizing_quote(100, 50))
+            .await
+            .expect_err("an over-budget refresh must fail")
+            .to_string();
+
+        assert!(err.contains("over budget"), "got: {err}");
+        assert!(
+            err.contains("completed transactions"),
+            "the approval already sent must be reported: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pair_with_no_eth_side_never_wraps() {
+        let mut effects = ScriptedEffects::new(vec![ScriptedPass {
+            want0: 100,
+            want1: 50,
+            weth_held: 0,
+            approvals: 0,
+        }]);
+        effects.weth_is_token1 = false;
+
+        reconcile(&effects, sizing_quote(100, 50)).await.unwrap();
+
+        let log = effects.log.borrow();
+        assert!(log.wraps.is_empty(), "no ETH side means no wrapping");
+        assert_eq!(log.weth_reads, 0, "and no reason to read a WETH balance");
     }
 
     // ─── completed-transaction reporting ─────────────────────────────────────

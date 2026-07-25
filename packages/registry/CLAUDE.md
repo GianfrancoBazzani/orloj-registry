@@ -107,8 +107,10 @@ Conventions worth preserving when editing `lp.rs`:
 - **Token pairs are never caller-supplied.** `create_v3_position` derives them from the pool
   (`read_v3_pool`, which round-trips the pool through the factory); the others derive them from
   the position NFT. Every LP tool checks `ownerOf` first.
-- **`/lp/create` is called twice** — `simulateTransaction: false` to size the position (allowances
-  may not exist yet), then again with `true` after approvals confirm, for a fresh deadline.
+- **`/lp/create` is first called with `simulateTransaction: false`** to size the position
+  (allowances may not exist yet), then with `true` after funding/approvals and again whenever
+  reconciliation needs a fresh quote. Automatic pool discovery may also try another fee tier, but
+  only after a structured pool-specific unavailable/unindexed response; global failures abort.
 - **`validate_api_transaction` before signing**, then `eth_call` simulation. Calldata is passed
   through byte-for-byte, never rewritten.
 - Errors are contexted
@@ -125,8 +127,9 @@ Conventions worth preserving when editing `lp.rs`:
   into it.
 - **The reconciliation loop is not optional cleverness.** A quote can need more WETH or allowance
   after its own approvals confirm; the loop re-checks and re-funds, bounded to
-  `MAX_RECONCILIATION_ATTEMPTS`. Balances are re-read from chain immediately before signing rather
-  than trusted from local bookkeeping.
+  `MAX_RECONCILIATION_ATTEMPTS` rounds that move funds, then still inspects the quote produced by
+  the final allowed round. Balances are re-read from chain immediately before signing rather than
+  trusted from local bookkeeping.
 
 ## Auth flow
 
