@@ -105,6 +105,13 @@ pub struct UniswapMcpConfig {
     pub db: Option<Arc<DbPool>>,
 }
 
+/// Tool count for the `/mcp` marketplace listing. No DB and no networks: the tool *set* is
+/// fixed — only `chainId`'s enum varies with the `networks` table — so the count is stable
+/// without touching Postgres.
+pub fn uniswap_tool_count() -> usize {
+    build_uniswap_tools(&[]).len() + build_uniswap_lp_tools().len()
+}
+
 #[derive(Clone)]
 pub struct UniswapMcpServer {
     http: reqwest::Client,

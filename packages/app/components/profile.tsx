@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import type { Hex } from "viem";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "./auth-context";
 import { authClient } from "@/lib/auth-client";
@@ -14,6 +15,7 @@ import {
   Select,
   GearIcon,
   OrlojMark,
+  Tag,
 } from "./ornaments";
 import {
   MCP_REGISTRY,
@@ -105,6 +107,7 @@ export const Profile = () => {
             name: string;
             is_active?: boolean;
             created_at?: string;
+            mcps?: string[];
           }>;
           error?: string;
         }
@@ -157,7 +160,7 @@ export const Profile = () => {
           vaultId: g?.vaultId,
           grantId: g?.id,
           keyPath: g?.secretPathPattern,
-          mcps: [],
+          mcps: a.mcps ?? [],
           status: a.is_active === false ? "paused" : "active",
           runs: 0,
           lastRun: a.created_at ? "—" : "never",
@@ -542,7 +545,7 @@ const Overview = ({
         {t("profile.recentActivity")}
       </h3>
       <ActivityFeed
-        compact
+        maxHeight={340}
         events={metrics?.recentActivity ?? []}
         agents={agents}
       />
@@ -2219,6 +2222,7 @@ const Agents = ({
   reloadMetrics: (signal?: AbortSignal) => Promise<void>;
 }) => {
   const t = useT();
+  const locale = useLocale();
   const [revealing, setRevealing] = useState<Agent | null>(null);
   const [changingKey, setChangingKey] = useState<Agent | null>(null);
   const [newApiKey, setNewApiKey] = useState<{
@@ -2423,6 +2427,22 @@ const Agents = ({
                     No key granted yet.
                   </div>
                 )}
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 6,
+                    flexWrap: "wrap",
+                    marginTop: 8,
+                  }}
+                >
+                  {a.mcps.length > 0 ? (
+                    a.mcps.map((mcp) => <Tag key={mcp}>{mcp}</Tag>)
+                  ) : (
+                    <span style={{ fontSize: 12, color: "var(--ink-soft)" }}>
+                      {t("agentApp.noMcps")}
+                    </span>
+                  )}
+                </div>
               </div>
               <div
                 style={{
@@ -2432,6 +2452,19 @@ const Agents = ({
                   justifyContent: "flex-end",
                 }}
               >
+                {/* One destination, not two: /{locale}/session/{id} is the agent app — the
+                    chat, and the URL the installed PWA launches. Wrapped in next/link rather
+                    than router.push so middle-click and open-in-new-tab keep working. Never
+                    disabled: an agent with no granted key can still chat and make read-only
+                    calls. */}
+                <Link
+                  href={`/${locale}/session/${a.id}`}
+                  style={{ textDecoration: "none" }}
+                >
+                  <Btn size="sm" kind="brass">
+                    {t("profile.startSession")}
+                  </Btn>
+                </Link>
                 <Btn
                   size="sm"
                   kind="ghost"
@@ -2610,6 +2643,26 @@ const CreateAgent = ({
         throw new Error(
           grantPayload?.error ?? `Failed to grant key (${grantRes.status})`,
         );
+      }
+
+      if (bindMcp) {
+        const bindRes = await fetch(`/api/agents/${agentId}/mcps`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ mcpName: bindMcp.id }),
+        });
+        if (!bindRes.ok) {
+          const bindPayload = (await bindRes.json().catch(() => null)) as
+            | { error?: string }
+            | null;
+          await onCreated(apiKey, name.trim());
+          window.alert(
+            `Agent created, but MCP assignment failed: ${
+              bindPayload?.error ?? bindRes.status
+            }`,
+          );
+          return;
+        }
       }
 
       await onCreated(apiKey, name.trim());
@@ -3310,15 +3363,15 @@ const summarizeResult = (row: ActivityRow): string => {
 };
 
 const ActivityFeed = ({
-  compact,
+  maxHeight,
   events,
   agents,
 }: {
-  compact?: boolean;
+  maxHeight?: number;
   events: ActivityRow[];
   agents: Agent[];
 }) => {
-  const slice = compact ? events.slice(0, 5) : events;
+  const slice = events;
   if (slice.length === 0) {
     return (
       <div
@@ -3342,6 +3395,9 @@ const ActivityFeed = ({
         marginTop: 12,
         border: "1px solid var(--line)",
         background: "rgba(241,233,212,0.5)",
+        maxHeight,
+        overflowY: maxHeight ? "auto" : undefined,
+        overscrollBehavior: "contain",
       }}
     >
       {slice.map((e, i) => {
