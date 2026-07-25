@@ -38,17 +38,18 @@ pub struct ContractRow {
     pub rpc_url: Option<String>,
 }
 
-/// Lightweight row returned by `list_contracts_meta` — no ABI.
+/// Row returned by `list_contracts_meta`.
 pub struct ContractMetaRow {
     pub chain_id: u64,
     pub address: String,
+    pub abi: Value,
     pub contract_name: String,
     pub implementation: Option<String>,
     pub rpc_url: Option<String>,
 }
 
 /// Row in the `networks` table — a chainId-indexed RPC directory, independent of the
-/// contract-registration flow. Lets chain-agnostic MCPs (e.g. uniswap_mcp) resolve an
+/// contract-registration flow. Lets chain-agnostic MCPs (e.g. the uniswap MCP) resolve an
 /// rpc_url from just a chainId instead of requiring the caller to pass one every time.
 pub struct NetworkRow {
     pub chain_id: u64,
@@ -241,7 +242,7 @@ impl DbPool {
     /// alongside EVM contract and native-token MCPs.
     ///
     /// uniswap-mcp is chain-agnostic (chainId is a per-call tool argument, not a fixed
-    /// address/chain — see mcps/uniswap_mcp.rs), so there's no real (chain_id, address) pair
+    /// address/chain — see mcps/uniswap/), so there's no real (chain_id, address) pair
     /// to key off. Uses chain_id=0 (no real chain has id 0) and address='uniswap' as sentinels,
     /// mirroring the existing address='native' sentinel convention for native-token chains.
     /// Called once at startup (see main.rs) — there's no dynamic registration flow for it,
@@ -360,11 +361,10 @@ impl DbPool {
         }))
     }
 
-    /// List all registered contracts from the database (no ABI — lightweight).
-    /// Used by GET /mcp to enumerate available MCPs without loading their ABIs.
+    /// List registered contracts with the ABI needed to derive marketplace metadata.
     pub async fn list_contracts_meta(&self) -> Result<Vec<ContractMetaRow>> {
         let rows = sqlx::query(
-            "SELECT chain_id, address, contract_name, implementation, rpc_url \
+            "SELECT chain_id, address, abi, contract_name, implementation, rpc_url \
                FROM registered_contracts",
         )
         .fetch_all(&self.pool)
@@ -376,6 +376,7 @@ impl DbPool {
                 Ok(ContractMetaRow {
                     chain_id: r.try_get::<i32, _>("chain_id")? as u64,
                     address: r.try_get("address")?,
+                    abi: r.try_get("abi")?,
                     contract_name: r.try_get("contract_name")?,
                     implementation: r.try_get("implementation")?,
                     rpc_url: r.try_get("rpc_url")?,

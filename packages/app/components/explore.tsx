@@ -2,14 +2,12 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Pill,
   Btn,
   Divider,
   Identicon,
   Tag,
   Input,
   Select,
-  StainedPanel,
 } from "./ornaments";
 import { SHORT_ADDR, type Mcp } from "./data";
 import { LaunchModal, type RegisterResult } from "./launch-modal";
@@ -32,16 +30,14 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
     });
   };
 
-  const ALL_CHAINS = t("explore.allChains");
-  const ALL_CAPS = t("explore.allCapabilities");
-  const SORT_ACTIVE = t("explore.sortActive");
-  const SORT_STARRED = t("explore.sortStarred");
-  const SORT_RECENT = t("explore.sortRecent");
+  const ALL_PLATFORMS = t("explore.allPlatforms");
+  const ALL_TOKENS = t("explore.allTokens");
+  const ALL_INTERACTIONS = t("explore.allInteractions");
 
   const [q, setQ] = useState("");
-  const [chain, setChain] = useState(ALL_CHAINS);
-  const [tag, setTag] = useState(ALL_CAPS);
-  const [sort, setSort] = useState(SORT_ACTIVE);
+  const [platform, setPlatform] = useState(ALL_PLATFORMS);
+  const [token, setToken] = useState(ALL_TOKENS);
+  const [interaction, setInteraction] = useState(ALL_INTERACTIONS);
   const [view, setView] = useState<"grid" | "list">("grid");
   const [selected, setSelected] = useState<Mcp | null>(null);
 
@@ -54,29 +50,42 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
     return () => mq.removeEventListener("change", apply);
   }, []);
 
-  const allTags = [ALL_CAPS, ...new Set(mcps.flatMap((m) => m.tags))];
-  const allChains = [ALL_CHAINS, ...new Set(mcps.map((m) => m.chain))];
+  const allPlatforms = [
+    ALL_PLATFORMS,
+    ...new Set(mcps.map((m) => m.platform)),
+  ];
+  const allTokens = [
+    ALL_TOKENS,
+    ...new Set(mcps.flatMap((m) => m.tokens)),
+  ];
+  const interactionOptions = [
+    ALL_INTERACTIONS,
+    t("explore.interactionReadOnly"),
+    t("explore.interactionTransactional"),
+    t("explore.interactionMixed"),
+  ];
 
-  let list = mcps.filter((m) => {
+  const list = mcps.filter((m) => {
+    const interactionLabel = t(
+      m.interactionType === "read-only"
+        ? "explore.interactionReadOnly"
+        : m.interactionType === "transactional"
+          ? "explore.interactionTransactional"
+          : "explore.interactionMixed",
+    );
     if (
       q &&
-      !`${m.name} ${m.summary} ${m.author} ${m.tags.join(" ")}`
+      !`${m.name} ${m.summary} ${m.author} ${m.platform} ${m.tokens.join(" ")} ${interactionLabel} ${m.contract}`
         .toLowerCase()
         .includes(q.toLowerCase())
     )
       return false;
-    if (chain !== ALL_CHAINS && m.chain !== chain) return false;
-    if (tag !== ALL_CAPS && !m.tags.includes(tag)) return false;
+    if (platform !== ALL_PLATFORMS && m.platform !== platform) return false;
+    if (token !== ALL_TOKENS && !m.tokens.includes(token)) return false;
+    if (interaction !== ALL_INTERACTIONS && interactionLabel !== interaction)
+      return false;
     return true;
   });
-
-  console.log(list);
-
-  if (sort === SORT_ACTIVE)
-    list = [...list].sort((a, b) => b.callsLast24h - a.callsLast24h);
-  if (sort === SORT_STARRED)
-    list = [...list].sort((a, b) => b.stars - a.stars);
-  if (sort === SORT_RECENT) list = [...list].reverse();
 
   return (
     <main className="page-pad" style={{ padding: "40px 32px 80px" }}>
@@ -151,12 +160,16 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
               ⌕
             </span>
           </div>
-          <Select value={chain} onChange={setChain} options={allChains} />
-          <Select value={tag} onChange={setTag} options={allTags} />
           <Select
-            value={sort}
-            onChange={setSort}
-            options={[SORT_ACTIVE, SORT_STARRED, SORT_RECENT]}
+            value={platform}
+            onChange={setPlatform}
+            options={allPlatforms}
+          />
+          <Select value={token} onChange={setToken} options={allTokens} />
+          <Select
+            value={interaction}
+            onChange={setInteraction}
+            options={interactionOptions}
           />
           <div
             className="explore-view-toggle"
@@ -190,38 +203,6 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
           </div>
         </div>
 
-        {/* Tag chip rail */}
-        <div
-          style={{
-            display: "flex",
-            gap: 8,
-            flexWrap: "wrap",
-            paddingBottom: 24,
-          }}
-        >
-          {allTags.slice(0, 10).map((t) => (
-            <button
-              key={t}
-              onClick={() => setTag(t)}
-              className="smallcaps"
-              style={{
-                padding: "6px 12px",
-                fontSize: 11,
-                fontFamily: "var(--font-ui)",
-                background: tag === t ? "var(--brass)" : "transparent",
-                color: tag === t ? "var(--ink)" : "var(--ink-soft)",
-                border: `1px solid ${
-                  tag === t ? "var(--brass-deep)" : "var(--line)"
-                }`,
-                cursor: "pointer",
-                letterSpacing: "0.16em",
-              }}
-            >
-              {t}
-            </button>
-          ))}
-        </div>
-
         {/* Listing */}
         {view === "grid" ? (
           <div
@@ -238,7 +219,7 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
                 m={m}
                 onClick={() => setSelected(m)}
                 onAddMcp={() => openLaunchModal(m)}
-                onChainClick={(c) => setChain(c)}
+                onPlatformClick={(value) => setPlatform(value)}
               />
             ))}
           </div>
@@ -265,7 +246,12 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
                   borderBottom: "1px solid var(--line)",
                 }}
               >
-                {(["Interface", "Author", "Chain", "Calls / 24h"] as const).map(
+                {([
+                  t("explore.interfaceColumn"),
+                  t("explore.platformColumn"),
+                  t("explore.tokenColumn"),
+                  t("explore.interactionColumn"),
+                ] as const).map(
                   (h) => (
                     <th
                       key={h}
@@ -321,13 +307,19 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
                       color: "var(--verdigris-deep)",
                     }}
                   >
-                    {m.author}
+                    {m.platform}
                   </td>
                   <td style={{ padding: "14px 16px", fontSize: 13 }}>
-                    {m.chain}
+                    {m.tokens.join(", ") || t("explore.noToken")}
                   </td>
-                  <td className="mono" style={{ padding: "14px 16px", fontSize: 13 }}>
-                    {m.callsLast24h.toLocaleString()}
+                  <td style={{ padding: "14px 16px", fontSize: 13 }}>
+                    {t(
+                      m.interactionType === "read-only"
+                        ? "explore.interactionReadOnly"
+                        : m.interactionType === "transactional"
+                          ? "explore.interactionTransactional"
+                          : "explore.interactionMixed",
+                    )}
                   </td>
                   <td style={{ padding: "14px 16px", textAlign: "right" }}>
                     <Btn
@@ -338,7 +330,7 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
                         openLaunchModal(m);
                       }}
                     >
-                      Add MCP →
+                      {t("explore.connectAgent")} →
                     </Btn>
                   </td>
                 </tr>
@@ -386,13 +378,14 @@ const MCPCard = ({
   m,
   onClick,
   onAddMcp,
-  onChainClick,
+  onPlatformClick,
 }: {
   m: Mcp;
   onClick: () => void;
   onAddMcp: () => void;
-  onChainClick: (chain: string) => void;
+  onPlatformClick: (platform: string) => void;
 }) => {
+  const t = useT();
   const accent =
     m.color === "verdigris"
       ? "var(--verdigris)"
@@ -401,6 +394,13 @@ const MCPCard = ({
       : m.color === "wine"
       ? "var(--wine)"
       : "var(--stained-blue)";
+  const interactionLabel = t(
+    m.interactionType === "read-only"
+      ? "explore.interactionReadOnly"
+      : m.interactionType === "transactional"
+        ? "explore.interactionTransactional"
+        : "explore.interactionMixed",
+  );
   return (
     <div
       onClick={onClick}
@@ -409,6 +409,7 @@ const MCPCard = ({
         position: "relative",
         background: "rgba(241,233,212,0.55)",
         border: "1px solid var(--line)",
+        padding: 18,
         cursor: "pointer",
         transition: "transform 0.18s, box-shadow 0.18s",
       }}
@@ -423,168 +424,146 @@ const MCPCard = ({
     >
       <div
         style={{
-          height: 80,
-          background: accent,
-          position: "relative",
-          overflow: "hidden",
+          display: "flex",
+          alignItems: "flex-start",
+          gap: 12,
         }}
       >
-        <div style={{ position: "absolute", inset: 0, opacity: 0.35 }}>
-          <StainedPanel seed={m.id.length} width={400} height={80} />
-        </div>
         <div
           style={{
-            position: "absolute",
-            top: 12,
-            left: 16,
-            display: "flex",
-            gap: 8,
-            alignItems: "center",
+            padding: 3,
+            background: "var(--parchment)",
+            border: `2px solid ${accent}`,
+            flex: "0 0 auto",
           }}
         >
-          <Identicon seed={m.id} size={36} />
+          <Identicon seed={m.id} size={42} />
         </div>
         <div
           style={{
-            position: "absolute",
-            top: 12,
-            right: 12,
-            display: "flex",
-            gap: 6,
-            alignItems: "center",
-          }}
-        >
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onChainClick(m.chain);
-            }}
-            className="smallcaps"
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 4,
-              padding: "3px 10px",
-              borderRadius: 999,
-              background: "rgba(241,233,212,0.95)",
-              color: "var(--ink)",
-              border: "1px solid var(--ink)",
-              fontFamily: "var(--font-ui)",
-              fontSize: 11,
-              fontWeight: 500,
-              letterSpacing: "0.16em",
-              cursor: "pointer",
-            }}
-            title={`Filter by ${m.chain}`}
-          >
-            ⛓ {m.chain}
-          </button>
-          {m.verified && (
-            <Pill
-              tone="brass"
-              style={{ background: "rgba(241,233,212,0.95)" }}
-            >
-              ✓ verified
-            </Pill>
-          )}
-        </div>
-      </div>
-
-      <div style={{ padding: "16px 18px 18px" }}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "baseline",
-            gap: 12,
+            minWidth: 0,
+            flex: 1,
           }}
         >
           <div
             className="display"
-            style={{ fontSize: 17, color: "var(--ink)" }}
+            title={m.name}
+            style={{
+              fontSize: 18,
+              color: "var(--ink)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
           >
             {m.name}
           </div>
+          <div
+            className="mono"
+            style={{
+              fontSize: 10.5,
+              color: "var(--ink-soft)",
+              marginTop: 3,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {m.contract ? SHORT_ADDR(m.contract) : m.author}
+          </div>
         </div>
-        <div
-          style={{
-            display: "flex",
-            gap: 8,
-            alignItems: "center",
-            marginTop: 4,
-            fontSize: 12.5,
-            color: "var(--verdigris-deep)",
-          }}
-        >
-          <span>{m.author}</span>
-          <span style={{ color: "var(--ink-soft)" }}>·</span>
-          <span style={{ color: "var(--ink-soft)" }}>{m.chain}</span>
+        <div style={{ flex: "0 1 auto", minWidth: 0, maxWidth: "45%" }}>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onPlatformClick(m.platform);
+            }}
+            className="smallcaps"
+            style={{
+              display: "block",
+              maxWidth: "100%",
+              padding: "4px 8px",
+              borderRadius: 999,
+              background: "var(--parchment-2)",
+              color: "var(--ink)",
+              border: "1px solid var(--line)",
+              fontFamily: "var(--font-ui)",
+              fontSize: 9,
+              fontWeight: 500,
+              letterSpacing: "0.1em",
+              cursor: "pointer",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+            title={t("explore.filterByPlatform", { platform: m.platform })}
+          >
+            {m.platform}
+          </button>
         </div>
-        <p
-          style={{
-            fontSize: 13,
-            color: "var(--ink-soft)",
-            marginTop: 10,
-            lineHeight: 1.5,
-            minHeight: 60,
-          }}
-        >
-          {m.summary}
-        </p>
-        <div
-          style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}
-        >
-          {m.tags.map((t) => (
-            <Tag key={t}>{t}</Tag>
-          ))}
-        </div>
+      </div>
 
-        <div
-          className="mcp-card-footer"
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            marginTop: 16,
-            paddingTop: 12,
-            borderTop: "1px dashed var(--line)",
+      <p
+        style={{
+          fontSize: 13,
+          color: "var(--ink-soft)",
+          margin: "12px 0 0",
+          lineHeight: 1.45,
+          display: "-webkit-box",
+          WebkitLineClamp: 2,
+          WebkitBoxOrient: "vertical",
+          overflow: "hidden",
+        }}
+      >
+        {m.summary}
+      </p>
+
+      <div
+        style={{
+          display: "flex",
+          gap: 6,
+          flexWrap: "wrap",
+          marginTop: 12,
+        }}
+      >
+        <Tag>{interactionLabel}</Tag>
+        {m.tokens.slice(0, 2).map((value) => (
+          <Tag key={value}>{value}</Tag>
+        ))}
+        <Tag>{t("explore.toolsCount", { count: m.interfaces })}</Tag>
+      </div>
+
+      <div
+        className="mcp-card-footer"
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 12,
+          marginTop: 14,
+          paddingTop: 12,
+          borderTop: "1px dashed var(--line)",
+        }}
+      >
+        <span
+          className="smallcaps"
+          style={{ fontSize: 9, color: "var(--ink-soft)" }}
+        >
+          {m.tokens.length > 0
+            ? t("explore.tokenLabel", { token: m.tokens.join(", ") })
+            : t("explore.noToken")}
+        </span>
+        <Btn
+          size="sm"
+          kind="ghost"
+          onClick={(e) => {
+            e.stopPropagation();
+            onAddMcp();
           }}
         >
-          <div>
-            <div
-              className="smallcaps"
-              style={{ fontSize: 10, color: "var(--ink-soft)" }}
-            >
-              tools
-            </div>
-            <div className="mono" style={{ fontSize: 14 }}>
-              {m.interfaces}
-            </div>
-          </div>
-          <div>
-            <div
-              className="smallcaps"
-              style={{ fontSize: 10, color: "var(--ink-soft)" }}
-            >
-              calls / 24h
-            </div>
-            <div className="mono" style={{ fontSize: 14 }}>
-              {m.callsLast24h.toLocaleString()}
-            </div>
-          </div>
-          <div style={{ alignSelf: "flex-end" }}>
-            <Btn
-              size="sm"
-              kind="primary"
-              onClick={(e) => {
-                e.stopPropagation();
-                onAddMcp();
-              }}
-            >
-              Add MCP →
-            </Btn>
-          </div>
-        </div>
+          {t("explore.connectAgent")} →
+        </Btn>
       </div>
     </div>
   );
@@ -598,8 +577,17 @@ const DetailDrawer = ({
   m: Mcp;
   onClose: () => void;
   onAddMcp: () => void;
-}) => (
-  <div
+}) => {
+  const t = useT();
+  const interactionLabel = t(
+    m.interactionType === "read-only"
+      ? "explore.interactionReadOnly"
+      : m.interactionType === "transactional"
+        ? "explore.interactionTransactional"
+        : "explore.interactionMixed",
+  );
+  return (
+    <div
     onClick={onClose}
     style={{
       position: "fixed",
@@ -623,20 +611,17 @@ const DetailDrawer = ({
     >
       <div
         style={{
-          height: 140,
-          background: "var(--verdigris-deep)",
+          height: 54,
+          background: "var(--ink)",
           position: "relative",
           overflow: "hidden",
         }}
       >
-        <div style={{ position: "absolute", inset: 0, opacity: 0.4 }}>
-          <StainedPanel seed={m.id.length + 5} width={640} height={140} />
-        </div>
         <button
           onClick={onClose}
           style={{
             position: "absolute",
-            top: 14,
+            top: 9,
             right: 14,
             width: 36,
             height: 36,
@@ -671,7 +656,7 @@ const DetailDrawer = ({
               <span style={{ color: "var(--verdigris-deep)" }}>
                 {m.author}
               </span>{" "}
-              · on {m.chain}
+              · {m.platform}
             </div>
           </div>
         </div>
@@ -688,6 +673,7 @@ const DetailDrawer = ({
         </p>
 
         <div
+          className="detail-metrics"
           style={{
             display: "grid",
             gridTemplateColumns: "repeat(3, 1fr)",
@@ -696,9 +682,9 @@ const DetailDrawer = ({
           }}
         >
           {[
-            ["Tool surface", `${m.interfaces} tools`],
-            ["Calls / 24h", m.callsLast24h.toLocaleString()],
-            ["Stars", m.stars.toLocaleString()],
+            [t("explore.toolSurface"), t("explore.toolsCount", { count: m.interfaces })],
+            [t("explore.platformColumn"), m.platform],
+            [t("explore.interactionColumn"), interactionLabel],
           ].map(([l, v]) => (
             <div
               key={l}
@@ -749,14 +735,16 @@ const DetailDrawer = ({
           className="smallcaps"
           style={{ marginTop: 24, color: "var(--ink-soft)", fontSize: 11 }}
         >
-          capabilities
+          {t("explore.tokensTitle")}
         </h4>
         <div
           style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}
         >
-          {m.tags.map((t) => (
-            <Tag key={t}>{t}</Tag>
-          ))}
+          {m.tokens.length > 0 ? (
+            m.tokens.map((token) => <Tag key={token}>{token}</Tag>)
+          ) : (
+            <Tag>{t("explore.noToken")}</Tag>
+          )}
         </div>
 
         {m.audits.length > 0 && (
@@ -781,10 +769,11 @@ const DetailDrawer = ({
 
         <div style={{ display: "flex", gap: 12, marginTop: 32 }}>
           <Btn kind="brass" size="lg" onClick={onAddMcp}>
-            Add MCP →
+            {t("explore.connectAgent")} →
           </Btn>
         </div>
       </div>
     </div>
-  </div>
-);
+    </div>
+  );
+};

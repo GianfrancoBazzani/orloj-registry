@@ -84,6 +84,20 @@ const ensureSchema = async (pool: Pool): Promise<void> => {
     CREATE INDEX IF NOT EXISTS agent_ownership_user_idx
       ON agent_ownership(user_id)
   `);
+  // Per-agent MCP assignment was removed: a valid bearer token authorizes an agent for every
+  // registry MCP. There is no migration runner in this repo, so the one-time drop lives here —
+  // idempotent, and safe to delete once every environment has booted once.
+  await pool.query(`DROP TABLE IF EXISTS agent_mcp_binding`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS agent_app_branding (
+      agent_id    TEXT PRIMARY KEY REFERENCES agent_ownership(agent_id) ON DELETE CASCADE,
+      app_name    TEXT,
+      icon_png    BYTEA,
+      icon_width  INTEGER,
+      icon_height INTEGER,
+      updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mcp_api_key (
       id           TEXT PRIMARY KEY,

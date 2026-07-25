@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import type { Hex } from "viem";
-import { useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
 import { useAuth } from "./auth-context";
 import { authClient } from "@/lib/auth-client";
 import { useT, useLocale } from "./i18n-context";
@@ -16,12 +16,10 @@ import {
   OrlojMark,
 } from "./ornaments";
 import {
-  MCP_REGISTRY,
   SHORT_ADDR,
   SHORT_NAME,
   type Vault,
   type Agent,
-  type Mcp,
 } from "./data";
 
 interface User {
@@ -54,24 +52,12 @@ interface Metrics {
 }
 
 export const Profile = () => {
-  const router = useRouter();
-  const locale = useLocale();
   const t = useT();
-  const searchParams = useSearchParams();
   const { user, setShowLogin } = useAuth();
 
-  const bindId = searchParams.get("bind");
-  const [bindMcp, setBindMcp] = useState<Mcp | null>(
-    bindId ? (MCP_REGISTRY.find((m) => m.id === bindId) ?? null) : null
-  );
-  const onClearBind = () => {
-    setBindMcp(null);
-    router.replace(`/${locale}/profile`);
-  };
-
-  const [tab, setTab] = useState(bindMcp ? "agents" : "overview");
+  const [tab, setTab] = useState("overview");
   const [creatingVault, setCreatingVault] = useState(false);
-  const [creatingAgent, setCreatingAgent] = useState(!!bindMcp);
+  const [creatingAgent, setCreatingAgent] = useState(false);
   const [vaults, setVaults] = useState<Vault[]>([]);
   const [vaultsLoading, setVaultsLoading] = useState(false);
   const [vaultsError, setVaultsError] = useState<string | null>(null);
@@ -157,7 +143,6 @@ export const Profile = () => {
           vaultId: g?.vaultId,
           grantId: g?.id,
           keyPath: g?.secretPathPattern,
-          mcps: [],
           status: a.is_active === false ? "paused" : "active",
           runs: 0,
           lastRun: a.created_at ? "—" : "never",
@@ -353,40 +338,6 @@ export const Profile = () => {
           ))}
         </div>
 
-        {/* binding banner */}
-        {bindMcp && tab === "agents" && (
-          <div
-            style={{
-              marginTop: 18,
-              padding: 16,
-              background: "rgba(184,137,58,0.18)",
-              border: "1.5px solid var(--brass)",
-              display: "flex",
-              gap: 14,
-              alignItems: "center",
-            }}
-          >
-            <span style={{ fontSize: 22, color: "var(--brass-deep)" }}>🔗</span>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600, fontSize: 14 }}>
-                {t("profile.bindingBanner", { name: bindMcp.name })}
-              </div>
-              <div
-                style={{
-                  fontSize: 12.5,
-                  color: "var(--ink-soft)",
-                  marginTop: 2,
-                }}
-              >
-                {t("profile.bindingSubtitle")}
-              </div>
-            </div>
-            <Btn size="sm" kind="ghost" onClick={onClearBind}>
-              {t("profile.cancelBinding")}
-            </Btn>
-          </div>
-        )}
-
         <div style={{ marginTop: 24 }}>
           {tab === "overview" && (
             <Overview
@@ -414,8 +365,6 @@ export const Profile = () => {
               vaults={vaults}
               creating={creatingAgent}
               setCreating={setCreatingAgent}
-              bindMcp={bindMcp}
-              onClearBind={onClearBind}
               loading={agentsLoading}
               error={agentsError}
               reload={reloadAgents}
@@ -542,7 +491,7 @@ const Overview = ({
         {t("profile.recentActivity")}
       </h3>
       <ActivityFeed
-        compact
+        maxHeight={340}
         events={metrics?.recentActivity ?? []}
         agents={agents}
       />
@@ -2200,8 +2149,6 @@ const Agents = ({
   vaults,
   creating,
   setCreating,
-  bindMcp,
-  onClearBind,
   loading,
   error,
   reload,
@@ -2211,14 +2158,13 @@ const Agents = ({
   vaults: Vault[];
   creating: boolean;
   setCreating: (v: boolean) => void;
-  bindMcp: Mcp | null;
-  onClearBind: () => void;
   loading: boolean;
   error: string | null;
   reload: (signal?: AbortSignal) => Promise<void>;
   reloadMetrics: (signal?: AbortSignal) => Promise<void>;
 }) => {
   const t = useT();
+  const locale = useLocale();
   const [revealing, setRevealing] = useState<Agent | null>(null);
   const [changingKey, setChangingKey] = useState<Agent | null>(null);
   const [newApiKey, setNewApiKey] = useState<{
@@ -2280,7 +2226,7 @@ const Agents = ({
               marginBottom: 0,
             }}
           >
-            Each agent rings a different bell. Bind MCPs and set them off.
+            Each agent rings a different bell. Point them at the chain and set them off.
           </p>
         </div>
         <Btn kind="primary" onClick={() => setCreating(true)}>
@@ -2291,14 +2237,9 @@ const Agents = ({
       {creating && (
         <CreateAgent
           vaults={vaults}
-          bindMcp={bindMcp}
-          onCancel={() => {
-            setCreating(false);
-            onClearBind();
-          }}
+          onCancel={() => setCreating(false)}
           onCreated={async (apiKey, name) => {
             setCreating(false);
-            onClearBind();
             if (apiKey) setNewApiKey({ agentName: name, apiKey });
             await reload();
           }}
@@ -2432,6 +2373,19 @@ const Agents = ({
                   justifyContent: "flex-end",
                 }}
               >
+                {/* One destination, not two: /{locale}/session/{id} is the agent app — the
+                    chat, and the URL the installed PWA launches. Wrapped in next/link rather
+                    than router.push so middle-click and open-in-new-tab keep working. Never
+                    disabled: an agent with no granted key can still chat and make read-only
+                    calls. */}
+                <Link
+                  href={`/${locale}/session/${a.id}`}
+                  style={{ textDecoration: "none" }}
+                >
+                  <Btn size="sm" kind="brass">
+                    {t("profile.startSession")}
+                  </Btn>
+                </Link>
                 <Btn
                   size="sm"
                   kind="ghost"
@@ -2494,12 +2448,10 @@ const Agents = ({
 
 const CreateAgent = ({
   vaults,
-  bindMcp,
   onCancel,
   onCreated,
 }: {
   vaults: Vault[];
-  bindMcp: Mcp | null;
   onCancel: () => void;
   onCreated: (apiKey: string | null, name: string) => Promise<void> | void;
 }) => {
@@ -2644,7 +2596,7 @@ const CreateAgent = ({
       >
         <GearIcon size={20} />
         <h3 className="display" style={{ fontSize: 18, margin: 0 }}>
-          {bindMcp ? t("profile.bindingBanner", { name: bindMcp.name }) : t("profile.vaultsTitle")}
+          {t("profile.vaultsTitle")}
         </h3>
       </div>
       <div
@@ -2708,37 +2660,6 @@ const CreateAgent = ({
         )}
       </div>
 
-      {bindMcp && (
-        <div
-          style={{
-            marginTop: 16,
-            padding: 14,
-            background: "rgba(184,137,58,0.12)",
-            border: "1px solid var(--brass)",
-          }}
-        >
-          <div
-            className="smallcaps"
-            style={{ fontSize: 10, color: "var(--brass-deep)" }}
-          >
-            binding
-          </div>
-          <div style={{ fontSize: 14, fontWeight: 600, marginTop: 2 }}>
-            {bindMcp.name}
-          </div>
-          <div
-            className="mono"
-            style={{
-              fontSize: 11,
-              color: "var(--ink-soft)",
-              marginTop: 2,
-            }}
-          >
-            {SHORT_ADDR(bindMcp.contract)} · {bindMcp.chain}
-          </div>
-        </div>
-      )}
-
       {submitError && (
         <div
           style={{
@@ -2766,11 +2687,7 @@ const CreateAgent = ({
           Cancel
         </Btn>
         <Btn kind="primary" disabled={!canSubmit} onClick={submit}>
-          {submitting
-            ? t("profile.registering")
-            : bindMcp
-              ? t("profile.bindAndRegister")
-              : t("profile.registerAgent")}
+          {submitting ? t("profile.registering") : t("profile.registerAgent")}
         </Btn>
       </div>
     </div>
@@ -3310,15 +3227,15 @@ const summarizeResult = (row: ActivityRow): string => {
 };
 
 const ActivityFeed = ({
-  compact,
+  maxHeight,
   events,
   agents,
 }: {
-  compact?: boolean;
+  maxHeight?: number;
   events: ActivityRow[];
   agents: Agent[];
 }) => {
-  const slice = compact ? events.slice(0, 5) : events;
+  const slice = events;
   if (slice.length === 0) {
     return (
       <div
@@ -3342,6 +3259,9 @@ const ActivityFeed = ({
         marginTop: 12,
         border: "1px solid var(--line)",
         background: "rgba(241,233,212,0.5)",
+        maxHeight,
+        overflowY: maxHeight ? "auto" : undefined,
+        overscrollBehavior: "contain",
       }}
     >
       {slice.map((e, i) => {

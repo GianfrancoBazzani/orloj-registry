@@ -40,3 +40,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# per-agent zeroclaw config dirs: provider key, agent bearer token, session transcripts
+/.zeroclaw/

@@ -17,6 +17,9 @@ export interface Mcp {
   summary: string;
   chain: string;
   chainId: number;
+  platform: string;
+  tokens: string[];
+  interactionType: "read-only" | "transactional" | "mixed";
   contract: string;
   mcpUrl: string;
   tags: string[];
@@ -47,13 +50,14 @@ export interface Agent {
   vaultId?: string;
   grantId?: string;
   keyPath?: string;
-  mcps: string[];
   status: string;
   runs: number;
   lastRun: string;
 }
 
-export const MCP_REGISTRY: Mcp[] = [
+const MCP_FIXTURES: Array<
+  Omit<Mcp, "platform" | "tokens" | "interactionType">
+> = [
   {
     id: "uniswap-v4-mcp", name: "Uniswap v4 Conductor", author: "uniswap.eth",
     summary: "Pool routing, liquidity provisioning, and hook orchestration as natural-language tools.",
@@ -139,5 +143,12 @@ export const MCP_REGISTRY: Mcp[] = [
     audited: false, audits: [], verified: true, stars: 410, color: "blue",
   },
 ];
+
+export const MCP_REGISTRY: Mcp[] = MCP_FIXTURES.map((mcp) => ({
+  ...mcp,
+  platform: mcp.chain,
+  tokens: [],
+  interactionType: "mixed",
+}));
 
 export const USER_AGENTS: Agent[] = [];

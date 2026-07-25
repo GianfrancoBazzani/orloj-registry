@@ -106,12 +106,11 @@ export const LaunchModal = ({
   const [copied, setCopied] = useState(false);
 
   const [agents, setAgents] = useState<AgentOption[]>([]);
-  const [agentsLoading, setAgentsLoading] = useState(false);
+  const [agentsLoading, setAgentsLoading] = useState(true);
   const [agentsError, setAgentsError] = useState<string | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string>("");
 
   useEffect(() => {
-    setAgentsLoading(true);
     fetch("/api/agents")
       .then((r) => r.json() as Promise<{ agents?: AgentOption[]; error?: string }>)
       .then((payload) => {
@@ -292,7 +291,6 @@ export const LaunchModal = ({
                 </select>
               )}
             </div>
-
           </div>
 
           {/* Platform tabs */}

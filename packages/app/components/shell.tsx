@@ -25,6 +25,9 @@ export const Shell = ({ children }: { children: React.ReactNode }) => {
   // pathname is "/{locale}/{segment}" — segment is index 2
   const segment = pathname.split("/")[2] ?? "";
   const route = ROUTE_KEYS[segment] ?? "home";
+  // The agent app is the chat at /{locale}/session/{id} — the URL the installed PWA launches,
+  // which must not carry site chrome.
+  const isAgentApp = segment === "session";
 
   const navigate = (r: string) => {
     if ((r === "profile" || r === "register") && !user) {
@@ -47,17 +50,19 @@ export const Shell = ({ children }: { children: React.ReactNode }) => {
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
-      <TopNav
-        route={route}
-        onNavigate={navigate}
-        user={user}
-        onLogin={() => setShowLogin(true)}
-        onLogout={() => {
-          void signOut();
-        }}
-      />
+      {!isAgentApp && (
+        <TopNav
+          route={route}
+          onNavigate={navigate}
+          user={user}
+          onLogin={() => setShowLogin(true)}
+          onLogout={() => {
+            void signOut();
+          }}
+        />
+      )}
       <div style={{ flex: 1 }}>{children}</div>
-      <Footer />
+      {!isAgentApp && <Footer />}
       {showLogin && (
         <LoginModal
           onClose={() => setShowLogin(false)}
