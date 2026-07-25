@@ -6,14 +6,21 @@
 // resolved from the `networks` table by chainId (db::DbPool::get_network), never accepted
 // as a tool argument. `supported_networks` lists what's registered there.
 //
+// Two distinct Uniswap services are wrapped here, and they are not interchangeable:
+//   the Trading API   (trade-api.gateway.uniswap.org/v1) for swaps, any registered chain
+//   the Liquidity API (liquidity.api.uniswap.org)        for V3 LP positions, Sepolia only
+//
 // Module layout:
 //   common   – argument parsing, Trading API base URL, receipt polling
 //   permit2  – Permit2 EIP-712 digest computation and vault-backed digest signing
 //   trading  – Uniswap Trading API: `quote`, `swap`, `supported_networks`
+//   lp       – Uniswap Liquidity API + on-chain V3 reads: `get_v3_position`,
+//              `create_v3_position`, `decrease_v3_position`, `claim_v3_fees`
 //
 // Env vars:
-//   UNISWAP_API_KEY  – Uniswap API key (required)
-//   UNISWAP_API_URL  – Trading API base URL (default: https://trade-api.gateway.uniswap.org/v1)
+//   UNISWAP_API_KEY     – Uniswap API key, shared by both APIs (required)
+//   UNISWAP_API_URL     – Trading API base URL (default: https://trade-api.gateway.uniswap.org/v1)
+//   UNISWAP_LP_API_URL  – Liquidity API base URL (default: https://liquidity.api.uniswap.org)
 //   ONECLAW_API_KEY / ONECLAW_BASE_URL                                   – needed only if the
 //     agent's vault is 1Claw-backed (ONECLAW_BASE_URL has a default; ONECLAW_API_KEY doesn't)
 //   ORBITPORT_CLIENT_ID / ORBITPORT_CLIENT_SECRET / ORBITPORT_API_URL    – needed only if the
@@ -40,7 +47,42 @@ use crate::db::DbPool;
 use lp::build_uniswap_lp_tools;
 use trading::build_uniswap_tools;
 
-const INSTRUCTIONS: &str = "Chain-agnostic Uniswap swaps. Every call takes an explicit chainId so token addresses are never ambiguous across networks. quote and swap act on the authenticated agent's own wallet, resolved automatically from its vault — you never supply a wallet/swapper address. supported_networks() lists the chainIds registered with an rpc_url (name + chainId) — swap only works on these. quote(chainId, tokenIn, tokenOut, amount, type?, slippageTolerance?) returns pricing and routing for any Uniswap-supported chain, with no side effects. swap(chainId, tokenIn, tokenOut, amount, type?, slippageTolerance?) resolves rpc_url from chainId automatically, fetches a quote, transparently handles Permit2 approval/signing if needed, and signs + broadcasts the swap — you do not provide private keys, an rpc_url, or manage nonces/gas yourself.";
+const INSTRUCTIONS: &str = "Uniswap swaps and Uniswap V3 liquidity positions. \
+Every call takes an explicit chainId so token addresses are never ambiguous across networks. \
+All tools act on the authenticated agent's own wallet, resolved automatically from its vault — \
+you never supply a wallet address, a private key, an rpc_url, or manage nonces/gas yourself. \
+Every write tool signs and broadcasts automatically and waits for the transaction to confirm; \
+there is no separate approval or submission step for you to call. \
+\
+These are two different Uniswap services. SWAPS use the Trading API and work on any registered \
+chain: supported_networks() lists the chainIds with an rpc_url configured. \
+quote(chainId, tokenIn, tokenOut, amount, type?, slippageTolerance?) returns pricing and routing \
+with no side effects. swap(chainId, tokenIn, tokenOut, amount, type?, slippageTolerance?) fetches \
+a quote, transparently handles both Permit2 layers if needed, then signs and broadcasts. \
+\
+LIQUIDITY uses the separate Uniswap Liquidity API and is ETHEREUM SEPOLIA ONLY (chainId \
+11155111); any other chainId is rejected. Uniswap V3 only — not V2, not V4. Contracts used: \
+UniswapV3Factory 0x0227628f3F023bb0B980b67D528571c95c6DaC1c and NonfungiblePositionManager \
+0x1238536071E1c677A632429e3655c799b22cDA52. Every liquidity tool refuses to act on a position \
+NFT the agent's wallet does not own. \
+get_v3_position(chainId, nftTokenId) reads a position — pool, token pair, fee tier, tick range, \
+liquidity and uncollected fees. Read-only, on-chain only, no side effects. \
+create_v3_position(chainId, poolAddress, independentTokenAddress, independentTokenAmount, \
+tickLower, tickUpper, slippageTolerance?) opens a position in an EXISTING pool; it cannot create \
+a pool. Give one side of the pair and Uniswap derives the other. The pool's token0/token1 are \
+read from the pool itself and verified against the factory, so you do not pass them. It runs any \
+required token approvals first, waits for each to confirm, then mints, and returns the \
+transaction hash plus the new position NFT's token id. \
+decrease_v3_position(chainId, nftTokenId, liquidityPercentageToDecrease, slippageTolerance?) \
+withdraws liquidity; pass 100 to close the position out. It does not open a replacement position \
+and does not claim fees. \
+claim_v3_fees(chainId, nftTokenId) sweeps accrued trading fees and leaves liquidity untouched. \
+Decrease and claim withdraw any ETH side as WETH. \
+\
+The agent's Sepolia vault must be funded with gas and with the tokens being deposited before any \
+liquidity write will succeed. On failure, the error names the stage that failed (position read, \
+API request, approval, simulation, broadcast or receipt); if approvals were already broadcast \
+before the failure, their transaction hashes are listed in the error.";
 
 // ---------------------------------------------------------------------------
 // Config & server struct
@@ -87,6 +129,8 @@ impl UniswapMcpServer {
             "supported_networks" => self.handle_supported_networks().await,
             "get_v3_position" => self.handle_get_v3_position(args).await,
             "create_v3_position" => self.handle_create_v3_position(args).await,
+            "decrease_v3_position" => self.handle_decrease_v3_position(args).await,
+            "claim_v3_fees" => self.handle_claim_v3_fees(args).await,
             other => Err(anyhow::anyhow!("unknown tool: {other}")),
         }
     }
@@ -201,4 +245,114 @@ pub async fn run_uniswap_mcp(cfg: UniswapMcpConfig) -> Result<()> {
 
     server.serve(stdio()).await?.waiting().await?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A server with no agent and no database. `tools()` handles a missing db by falling back to
+    /// an empty network list, so the whole tool surface is listable without any infrastructure.
+    fn offline_server() -> UniswapMcpServer {
+        UniswapMcpServer::new(None, None)
+    }
+
+    fn tool_names(result: &Value) -> Vec<String> {
+        result["result"]["tools"]
+            .as_array()
+            .expect("tools/list should return an array")
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn tools_list_exposes_the_swap_and_liquidity_tools() {
+        let result = offline_server()
+            .dispatch(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))
+            .await;
+
+        let names = tool_names(&result);
+        for expected in [
+            "quote",
+            "swap",
+            "supported_networks",
+            "get_v3_position",
+            "create_v3_position",
+            "decrease_v3_position",
+            "claim_v3_fees",
+        ] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "tools/list should contain {expected}, got {names:?}"
+            );
+        }
+        assert_eq!(names.len(), 7, "no unexpected tools: {names:?}");
+    }
+
+    #[tokio::test]
+    async fn every_listed_tool_is_dispatchable() {
+        // A tool advertised by tools/list but missing from the dispatch table would only fail
+        // at call time, for an agent that had every reason to believe it existed.
+        let server = offline_server();
+        let names = tool_names(
+            &server
+                .dispatch(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))
+                .await,
+        );
+
+        for name in names {
+            let err = server
+                .call(&name, &Map::new())
+                .await
+                .expect_err("no tool can succeed without an agent or db")
+                .to_string();
+            assert!(
+                !err.contains("unknown tool"),
+                "{name} is listed but not routed: {err}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_tools_are_rejected() {
+        let result = offline_server()
+            .dispatch(json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "increase_v3_position", "arguments": {}}
+            }))
+            .await;
+
+        assert_eq!(result["result"]["isError"], json!(true));
+        let text = result["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("unknown tool"), "got: {text}");
+    }
+
+    #[tokio::test]
+    async fn initialize_describes_both_apis_and_the_sepolia_limit() {
+        let result = offline_server()
+            .dispatch(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize"}))
+            .await;
+
+        let instructions = result["result"]["instructions"].as_str().unwrap();
+        assert!(instructions.contains("Trading API"));
+        assert!(instructions.contains("Liquidity API"));
+        assert!(instructions.contains("11155111"));
+        // The verified position manager, so the instructions can't drift from the code.
+        assert!(instructions.contains("0x1238536071E1c677A632429e3655c799b22cDA52"));
+    }
+
+    #[tokio::test]
+    async fn notifications_produce_no_response_body() {
+        let result = offline_server()
+            .dispatch(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+            .await;
+        assert!(result.is_null());
+    }
 }

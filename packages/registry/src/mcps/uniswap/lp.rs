@@ -494,6 +494,43 @@ fn build_check_approval_body(wallet: Address, lp_tokens: &[(Address, String)]) -
     })
 }
 
+fn build_lp_decrease_body(
+    wallet: Address,
+    position: &V3Position,
+    nft_token_id: U256,
+    liquidity_percentage_to_decrease: u8,
+    slippage: Option<f64>,
+) -> Value {
+    let mut body = json!({
+        "walletAddress": wallet.to_checksum(None),
+        "chainId": SEPOLIA_V3.chain_id,
+        "protocol": "V3",
+        "token0Address": position.token0.to_checksum(None),
+        "token1Address": position.token1.to_checksum(None),
+        "nftTokenId": nft_token_id.to_string(),
+        "liquidityPercentageToDecrease": liquidity_percentage_to_decrease,
+        // Unwrap-free withdrawal: the agent's wallet may be a contract that cannot receive raw
+        // ETH, and WETH is uniformly transferable.
+        "withdrawAsWeth": true,
+        "simulateTransaction": true,
+    });
+    if let Some(s) = slippage {
+        body["slippageTolerance"] = json!(s);
+    }
+    body
+}
+
+fn build_lp_claim_fees_body(wallet: Address, nft_token_id: U256) -> Value {
+    json!({
+        "protocol": "V3",
+        "walletAddress": wallet.to_checksum(None),
+        "chainId": SEPOLIA_V3.chain_id,
+        "tokenId": nft_token_id.to_string(),
+        "collectAsWeth": true,
+        "simulateTransaction": true,
+    })
+}
+
 /// Pulls the approval transactions out of a /lp/check_approval response.
 ///
 /// Documented shape: `{ transactions: [{ transaction, cancelApproval, action, gasFee }] }`.
@@ -810,6 +847,29 @@ fn parse_slippage_arg(args: &Map<String, Value>) -> Result<Option<f64>> {
     Ok(Some(pct))
 }
 
+/// Percentage of a position's liquidity to withdraw. 100 means close it out entirely.
+fn parse_liquidity_percentage(args: &Map<String, Value>) -> Result<u8> {
+    let v = args
+        .get("liquidityPercentageToDecrease")
+        .ok_or_else(|| anyhow::anyhow!("missing 'liquidityPercentageToDecrease' argument"))?;
+
+    let pct = match v {
+        Value::Number(n) => n.as_u64(),
+        Value::String(s) => s.parse::<u64>().ok(),
+        _ => None,
+    }
+    .ok_or_else(|| {
+        anyhow::anyhow!("'liquidityPercentageToDecrease' must be a whole percentage, got {v}")
+    })?;
+
+    anyhow::ensure!(
+        (1..=100).contains(&pct),
+        "'liquidityPercentageToDecrease' must be between 1 and 100, got {pct}"
+    );
+
+    Ok(pct as u8)
+}
+
 /// Appends any already-broadcast approval hashes to an error.
 ///
 /// Approvals are real on-chain state changes. If the flow dies after some of them land, the
@@ -965,7 +1025,56 @@ pub(super) fn build_uniswap_lp_tools() -> Vec<Tool> {
         ),
     );
 
-    vec![get_v3_position, create_v3_position]
+    let decrease_v3_position = Tool::new(
+        "decrease_v3_position".to_string(),
+        "Withdraw liquidity from a Uniswap V3 position owned by the authenticated agent on \
+         Ethereum Sepolia. Fund-moving: simulates, signs and broadcasts automatically through \
+         the agent's vault. Pass liquidityPercentageToDecrease=100 to close the position out \
+         entirely. Any ETH side is withdrawn as WETH. Does not open a replacement position and \
+         does not claim fees — use claim_v3_fees for those."
+            .to_string(),
+        object_schema(
+            vec![
+                ("chainId", sepolia_chain_id_prop()),
+                ("nftTokenId", nft_token_id_prop()),
+                (
+                    "liquidityPercentageToDecrease",
+                    json!({
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100,
+                        "description": "Whole percentage of the position's liquidity to \
+                                        withdraw, 1-100. Use 100 to withdraw all of it."
+                    }),
+                ),
+                ("slippageTolerance", slippage_prop()),
+            ],
+            &["chainId", "nftTokenId", "liquidityPercentageToDecrease"],
+        ),
+    );
+
+    let claim_v3_fees = Tool::new(
+        "claim_v3_fees".to_string(),
+        "Collect the trading fees accrued by a Uniswap V3 position owned by the authenticated \
+         agent on Ethereum Sepolia. Fund-moving: simulates, signs and broadcasts automatically \
+         through the agent's vault. Any ETH side is collected as WETH. Leaves the position's \
+         liquidity untouched — only the uncollected fees are swept."
+            .to_string(),
+        object_schema(
+            vec![
+                ("chainId", sepolia_chain_id_prop()),
+                ("nftTokenId", nft_token_id_prop()),
+            ],
+            &["chainId", "nftTokenId"],
+        ),
+    );
+
+    vec![
+        get_v3_position,
+        create_v3_position,
+        decrease_v3_position,
+        claim_v3_fees,
+    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -1218,6 +1327,124 @@ impl UniswapMcpServer {
             "approvalHashes": approval_hashes,
         })
         .to_string())
+    }
+
+    pub(super) async fn handle_decrease_v3_position(
+        &self,
+        args: &Map<String, Value>,
+    ) -> Result<String> {
+        require_sepolia(args)?;
+        let nft_token_id = parse_nft_token_id(args)?;
+        let percentage = parse_liquidity_percentage(args)?;
+        let slippage = parse_slippage_arg(args)?;
+
+        let (agent_id, db) = self.lp_agent("decrease_v3_position")?;
+        let (wallet, provider, rpc_url) = self.lp_context("decrease_v3_position").await?;
+
+        // Ownership check and the token pair both come from the NFT itself, so neither is
+        // caller-supplied.
+        let position = read_v3_position(&provider, nft_token_id, wallet)
+            .await
+            .context("stage=position read")?;
+
+        let resp = lp_post(
+            &self.http,
+            "/lp/decrease",
+            &build_lp_decrease_body(wallet, &position, nft_token_id, percentage, slippage),
+        )
+        .await
+        .context("stage=API request")?;
+
+        let token0 =
+            parse_lp_token(&resp, "token0", "/lp/decrease").context("stage=API request")?;
+        let token1 =
+            parse_lp_token(&resp, "token1", "/lp/decrease").context("stage=API request")?;
+        let tx = require_field(&resp, "decrease", "/lp/decrease").context("stage=API request")?;
+
+        let hash = self
+            .execute_lp_transaction(db, agent_id, &rpc_url, &provider, wallet, tx, "decrease")
+            .await?;
+
+        Ok(json!({
+            "hash": format!("{hash:#x}"),
+            "nftTokenId": nft_token_id.to_string(),
+            "liquidityPercentageToDecrease": percentage,
+            "token0": lp_token_json(&token0),
+            "token1": lp_token_json(&token1),
+        })
+        .to_string())
+    }
+
+    pub(super) async fn handle_claim_v3_fees(&self, args: &Map<String, Value>) -> Result<String> {
+        require_sepolia(args)?;
+        let nft_token_id = parse_nft_token_id(args)?;
+
+        let (agent_id, db) = self.lp_agent("claim_v3_fees")?;
+        let (wallet, provider, rpc_url) = self.lp_context("claim_v3_fees").await?;
+
+        // Read purely for the ownership check — /lp/claim_fees takes only the token id.
+        read_v3_position(&provider, nft_token_id, wallet)
+            .await
+            .context("stage=position read")?;
+
+        let resp = lp_post(
+            &self.http,
+            "/lp/claim_fees",
+            &build_lp_claim_fees_body(wallet, nft_token_id),
+        )
+        .await
+        .context("stage=API request")?;
+
+        let token0 =
+            parse_lp_token(&resp, "token0", "/lp/claim_fees").context("stage=API request")?;
+        let token1 =
+            parse_lp_token(&resp, "token1", "/lp/claim_fees").context("stage=API request")?;
+        let tx = require_field(&resp, "claim", "/lp/claim_fees").context("stage=API request")?;
+
+        let hash = self
+            .execute_lp_transaction(db, agent_id, &rpc_url, &provider, wallet, tx, "fee claim")
+            .await?;
+
+        Ok(json!({
+            "hash": format!("{hash:#x}"),
+            "nftTokenId": nft_token_id.to_string(),
+            "token0": lp_token_json(&token0),
+            "token1": lp_token_json(&token1),
+        })
+        .to_string())
+    }
+
+    /// validate → simulate → sign → broadcast → confirm, for the single-transaction LP flows.
+    ///
+    /// `create_v3_position` runs these steps inline instead, because it has to thread already
+    /// completed approval hashes into every possible failure.
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_lp_transaction(
+        &self,
+        db: &DbPool,
+        agent_id: &str,
+        rpc_url: &str,
+        provider: &impl Provider,
+        wallet: Address,
+        tx: &Value,
+        label: &str,
+    ) -> Result<B256> {
+        let validated = validate_api_transaction(tx, wallet, SEPOLIA_V3.chain_id)
+            .context("stage=simulation")?;
+
+        simulate_tx(provider, wallet, &validated)
+            .await
+            .context("stage=simulation")?;
+
+        let hash = sign_and_broadcast(db, agent_id, rpc_url, provider, &validated)
+            .await
+            .context("stage=broadcast")?;
+
+        wait_for_receipt(provider, hash, label)
+            .await
+            .context("stage=receipt")?;
+
+        Ok(hash)
     }
 }
 
@@ -1898,21 +2125,198 @@ mod tests {
         assert_eq!(err, "stage=position read: nope");
     }
 
+    // ─── decrease / claim ────────────────────────────────────────────────────
+
+    #[test]
+    fn validates_the_liquidity_percentage_range() {
+        for (input, expected) in [(json!(1), 1u8), (json!(100), 100), (json!("25"), 25)] {
+            let got = parse_liquidity_percentage(&args(&[(
+                "liquidityPercentageToDecrease",
+                input.clone(),
+            )]))
+            .unwrap_or_else(|e| panic!("{input} should parse: {e}"));
+            assert_eq!(got, expected);
+        }
+
+        // 0 would build a no-op transaction that still costs gas; >100 is meaningless.
+        for bad in [
+            json!(0),
+            json!(101),
+            json!(-1),
+            json!(2.5),
+            json!("all"),
+            json!(null),
+        ] {
+            assert!(
+                parse_liquidity_percentage(&args(&[(
+                    "liquidityPercentageToDecrease",
+                    bad.clone()
+                )]))
+                .is_err(),
+                "{bad} should be rejected as a liquidity percentage"
+            );
+        }
+        assert!(parse_liquidity_percentage(&args(&[])).is_err());
+    }
+
+    fn test_position() -> V3Position {
+        V3Position {
+            token0: address!("1f9840a85d5af5bf1d1762f925bdaddc4201f984"),
+            token1: address!("fff9976782d46cc05630d1f6ebab18b2324d6b14"),
+            fee: 3000,
+            tick_lower: -61380,
+            tick_upper: -33300,
+            liquidity: U256::from(1000u64),
+            tokens_owed0: U256::ZERO,
+            tokens_owed1: U256::ZERO,
+            pool: address!("287b0e934ed0439e2a7b1d5f0fc25ea2c24b64f7"),
+        }
+    }
+
+    #[test]
+    fn builds_the_documented_decrease_body() {
+        let body = build_lp_decrease_body(
+            WALLET,
+            &test_position(),
+            U256::from(1833079u64),
+            100,
+            Some(0.5),
+        );
+
+        assert_eq!(body["protocol"], json!("V3"));
+        assert_eq!(body["chainId"], json!(11155111));
+        assert_eq!(body["nftTokenId"], json!("1833079"));
+        assert_eq!(body["liquidityPercentageToDecrease"], json!(100));
+        assert_eq!(body["withdrawAsWeth"], json!(true));
+        assert_eq!(body["simulateTransaction"], json!(true));
+        assert_eq!(body["slippageTolerance"], json!(0.5));
+        // Token addresses come from the position NFT, never from the caller.
+        assert_eq!(
+            body["token0Address"],
+            json!("0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984")
+        );
+        assert_eq!(
+            body["token1Address"],
+            json!("0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14")
+        );
+    }
+
+    #[test]
+    fn omits_slippage_from_the_decrease_body_when_not_supplied() {
+        let body = build_lp_decrease_body(WALLET, &test_position(), U256::from(1u64), 50, None);
+        assert!(body.get("slippageTolerance").is_none());
+    }
+
+    #[test]
+    fn builds_the_documented_claim_fees_body() {
+        let body = build_lp_claim_fees_body(WALLET, U256::from(1833079u64));
+
+        assert_eq!(body["protocol"], json!("V3"));
+        assert_eq!(body["chainId"], json!(11155111));
+        // claim_fees names the id "tokenId", unlike decrease's "nftTokenId".
+        assert_eq!(body["tokenId"], json!("1833079"));
+        assert!(body.get("nftTokenId").is_none());
+        assert_eq!(body["collectAsWeth"], json!(true));
+        assert_eq!(body["simulateTransaction"], json!(true));
+    }
+
+    #[test]
+    fn parses_the_documented_decrease_and_claim_responses() {
+        let decrease = json!({
+            "requestId": "abc",
+            "token0": {"tokenAddress": "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984", "amount": "10"},
+            "token1": {"tokenAddress": "0xfff9976782d46cc05630d1f6ebab18b2324d6b14", "amount": "20"},
+            "decrease": {"to": "0x1", "from": "0x2", "data": "0xaa", "chainId": 11155111}
+        });
+        assert_eq!(
+            parse_lp_token(&decrease, "token0", "/lp/decrease")
+                .unwrap()
+                .1,
+            "10"
+        );
+        assert!(require_field(&decrease, "decrease", "/lp/decrease").is_ok());
+        // The create/claim field names must not be accepted on a decrease response.
+        assert!(require_field(&decrease, "create", "/lp/decrease").is_err());
+
+        let claim = json!({
+            "token0": {"tokenAddress": "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984", "amount": "3"},
+            "token1": {"tokenAddress": "0xfff9976782d46cc05630d1f6ebab18b2324d6b14", "amount": "4"},
+            "claim": {"to": "0x1", "from": "0x2", "data": "0xbb", "chainId": 11155111}
+        });
+        assert_eq!(
+            parse_lp_token(&claim, "token1", "/lp/claim_fees")
+                .unwrap()
+                .1,
+            "4"
+        );
+        assert!(require_field(&claim, "claim", "/lp/claim_fees").is_ok());
+    }
+
     // ─── tool schema ─────────────────────────────────────────────────────────
 
     #[test]
-    fn get_v3_position_schema_is_sepolia_only() {
+    fn every_lp_tool_is_pinned_to_sepolia() {
         let tools = build_uniswap_lp_tools();
-        let tool = tools
-            .iter()
-            .find(|t| t.name == "get_v3_position")
-            .expect("get_v3_position should be listed");
+        assert_eq!(tools.len(), 4);
 
-        let props = tool.input_schema.get("properties").unwrap();
-        assert_eq!(props["chainId"]["enum"], json!(["11155111"]));
+        for tool in &tools {
+            let props = tool.input_schema.get("properties").unwrap();
+            assert_eq!(
+                props["chainId"]["enum"],
+                json!(["11155111"]),
+                "{} should advertise Sepolia as the only chain",
+                tool.name
+            );
+        }
+    }
+
+    #[test]
+    fn lp_tool_schemas_require_the_right_arguments() {
+        let tools = build_uniswap_lp_tools();
+        let required = |name: &str| {
+            tools
+                .iter()
+                .find(|t| t.name == name)
+                .unwrap_or_else(|| panic!("{name} should be listed"))
+                .input_schema["required"]
+                .clone()
+        };
+
         assert_eq!(
-            tool.input_schema["required"],
+            required("get_v3_position"),
             json!(["chainId", "nftTokenId"])
         );
+        assert_eq!(required("claim_v3_fees"), json!(["chainId", "nftTokenId"]));
+        assert_eq!(
+            required("decrease_v3_position"),
+            json!(["chainId", "nftTokenId", "liquidityPercentageToDecrease"])
+        );
+        assert_eq!(
+            required("create_v3_position"),
+            json!([
+                "chainId",
+                "poolAddress",
+                "independentTokenAddress",
+                "independentTokenAmount",
+                "tickLower",
+                "tickUpper"
+            ])
+        );
+    }
+
+    #[test]
+    fn create_does_not_accept_caller_supplied_token_addresses() {
+        // The pool's pair is read on-chain instead. Exposing these would let a model pair a
+        // real pool with unrelated tokens and get approvals issued for the wrong assets.
+        let tools = build_uniswap_lp_tools();
+        let create = tools
+            .iter()
+            .find(|t| t.name == "create_v3_position")
+            .unwrap();
+        let props = create.input_schema.get("properties").unwrap();
+
+        assert!(props.get("token0Address").is_none());
+        assert!(props.get("token1Address").is_none());
+        assert!(props.get("independentTokenAddress").is_some());
     }
 }
