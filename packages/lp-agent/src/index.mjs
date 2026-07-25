@@ -10,6 +10,16 @@ export {
   toSubgraphPoolId,
   requireSepoliaChainId,
 } from "./config.mjs";
+export {
+  fetchPoolMarketContext,
+  parseGraphHttpJson,
+  normalizePoolMarketContext,
+  asGraphString,
+  POOL_MARKET_CONTEXT_QUERY,
+  DEFAULT_MAX_INDEXED_AGE_SECONDS,
+  DEFAULT_HOUR_LOOKBACK_SECONDS,
+  DEFAULT_SWAP_LOOKBACK_SECONDS,
+} from "./graph-client.mjs";
 export { PHASE1_ACTIONS, validateDecision } from "./decision-schema.mjs";
 export { planAction } from "./action-planner.mjs";
 export { extractFeatures } from "./features.mjs";
