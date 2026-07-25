@@ -437,37 +437,41 @@ async fn lp_post(http: &reqwest::Client, path: &str, body: &Value) -> Result<Val
 /// amount — the wallet may not hold the allowances yet, so server-side simulation would fail for
 /// a reason that says nothing about whether the position is valid. It is true for the refetch
 /// after approvals confirm, when a simulation failure is real signal.
-fn build_lp_create_body(
+/// Everything /lp/create needs about the position being opened. Grouped, following the
+/// `QuoteParams` / `SignTransactionParams` convention elsewhere in the crate, so the two passes
+/// over the same position differ only in `simulate`.
+struct CreateParams<'a> {
     wallet: Address,
     pool: Address,
-    pool_tokens: &V3Pool,
+    pool_tokens: &'a V3Pool,
     independent_token: Address,
-    independent_amount: &str,
+    independent_amount: &'a str,
     tick_lower: i32,
     tick_upper: i32,
     slippage: Option<f64>,
-    simulate: bool,
-) -> Value {
+}
+
+fn build_lp_create_body(p: &CreateParams<'_>, simulate: bool) -> Value {
     let mut body = json!({
-        "walletAddress": wallet.to_checksum(None),
+        "walletAddress": p.wallet.to_checksum(None),
         "chainId": SEPOLIA_V3.chain_id,
         "protocol": "V3",
         "existingPool": {
-            "token0Address": pool_tokens.token0.to_checksum(None),
-            "token1Address": pool_tokens.token1.to_checksum(None),
-            "poolReference": pool.to_checksum(None),
+            "token0Address": p.pool_tokens.token0.to_checksum(None),
+            "token1Address": p.pool_tokens.token1.to_checksum(None),
+            "poolReference": p.pool.to_checksum(None),
         },
         "independentToken": {
-            "tokenAddress": independent_token.to_checksum(None),
-            "amount": independent_amount,
+            "tokenAddress": p.independent_token.to_checksum(None),
+            "amount": p.independent_amount,
         },
         "tickBounds": {
-            "tickLower": tick_lower,
-            "tickUpper": tick_upper,
+            "tickLower": p.tick_lower,
+            "tickUpper": p.tick_upper,
         },
         "simulateTransaction": simulate,
     });
-    if let Some(s) = slippage {
+    if let Some(s) = p.slippage {
         body["slippageTolerance"] = json!(s);
     }
     body
@@ -712,35 +716,42 @@ async fn simulate_tx(provider: &impl Provider, from: Address, tx: &ValidatedTx) 
         .context("eth_call simulation reverted — not broadcasting")
 }
 
-/// Signs a validated transaction through the agent's vault and broadcasts it.
-async fn sign_and_broadcast(
-    db: &DbPool,
-    agent_id: &str,
-    rpc_url: &str,
-    provider: &impl Provider,
-    tx: &ValidatedTx,
-) -> Result<B256> {
-    let signed = sign_transaction(
-        db,
-        SignTransactionParams {
-            agent_id: agent_id.to_string(),
-            chain_id: SEPOLIA_V3.chain_id,
-            rpc_url: rpc_url.to_string(),
-            to: tx.to,
-            value: tx.value,
-            data: tx.data.clone(),
-            nonce: None,
-        },
-    )
-    .await
-    .context("signing transaction failed")?;
+/// The resolved context every LP tool runs in: which agent is acting, its vault-backed wallet,
+/// and the Sepolia endpoint to read and broadcast through.
+struct LpSession<'a> {
+    agent_id: &'a str,
+    db: &'a DbPool,
+    wallet: Address,
+    provider: DynProvider,
+    rpc_url: String,
+}
 
-    let pending = provider
-        .send_raw_transaction(&signed)
+impl LpSession<'_> {
+    /// Signs a validated transaction through the agent's vault and broadcasts it.
+    async fn sign_and_broadcast(&self, tx: &ValidatedTx) -> Result<B256> {
+        let signed = sign_transaction(
+            self.db,
+            SignTransactionParams {
+                agent_id: self.agent_id.to_string(),
+                chain_id: SEPOLIA_V3.chain_id,
+                rpc_url: self.rpc_url.clone(),
+                to: tx.to,
+                value: tx.value,
+                data: tx.data.clone(),
+                nonce: None,
+            },
+        )
         .await
-        .context("eth_sendRawTransaction failed")?;
+        .context("signing transaction failed")?;
 
-    Ok(*pending.tx_hash())
+        let pending = self
+            .provider
+            .send_raw_transaction(&signed)
+            .await
+            .context("eth_sendRawTransaction failed")?;
+
+        Ok(*pending.tx_hash())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1082,10 +1093,10 @@ pub(super) fn build_uniswap_lp_tools() -> Vec<Tool> {
 // ---------------------------------------------------------------------------
 
 impl UniswapMcpServer {
-    /// The authenticated agent and its database handle, or a clear error saying which is
-    /// missing. Split from `lp_context` so callers that need to sign can hold these borrows
-    /// across await points.
-    fn lp_agent(&self, tool: &str) -> Result<(&str, &DbPool)> {
+    /// Everything an LP tool needs before it can do anything: who is acting, where to sign, and
+    /// what to talk to. None of it is a tool argument — the wallet comes from the agent's vault
+    /// and the rpc_url from the `networks` table.
+    async fn lp_session(&self, tool: &str) -> Result<LpSession<'_>> {
         let agent_id = self
             .agent_id
             .as_deref()
@@ -1094,13 +1105,6 @@ impl UniswapMcpServer {
             .db
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("{tool} requires a database connection"))?;
-        Ok((agent_id, db))
-    }
-
-    /// Resolves the authenticated agent's wallet, a Sepolia RPC provider and the rpc_url behind
-    /// it. Every LP tool starts here; neither the wallet nor the rpc_url is ever a tool argument.
-    async fn lp_context(&self, tool: &str) -> Result<(Address, DynProvider, String)> {
-        let (agent_id, db) = self.lp_agent(tool)?;
 
         let wallet = resolve_agent_address(db, agent_id)
             .await
@@ -1124,22 +1128,28 @@ impl UniswapMcpServer {
             .await
             .context("rpc connect failed")?;
 
-        Ok((wallet, provider.erased(), rpc_url))
+        Ok(LpSession {
+            agent_id,
+            db,
+            wallet,
+            provider: provider.erased(),
+            rpc_url,
+        })
     }
 
     pub(super) async fn handle_get_v3_position(&self, args: &Map<String, Value>) -> Result<String> {
         require_sepolia(args)?;
         let nft_token_id = parse_nft_token_id(args)?;
 
-        let (wallet, provider, _rpc_url) = self.lp_context("get_v3_position").await?;
+        let s = self.lp_session("get_v3_position").await?;
 
-        let pos = read_v3_position(&provider, nft_token_id, wallet)
+        let pos = read_v3_position(&s.provider, nft_token_id, s.wallet)
             .await
             .context("stage=position read")?;
 
         Ok(json!({
             "chainId": SEPOLIA_V3.chain_id,
-            "walletAddress": wallet.to_checksum(None),
+            "walletAddress": s.wallet.to_checksum(None),
             "nftTokenId": nft_token_id.to_string(),
             "poolAddress": pos.pool.to_checksum(None),
             "token0": pos.token0.to_checksum(None),
@@ -1176,11 +1186,10 @@ impl UniswapMcpServer {
             "tickLower ({tick_lower}) must be strictly less than tickUpper ({tick_upper})"
         );
 
-        let (agent_id, db) = self.lp_agent("create_v3_position")?;
-        let (wallet, provider, rpc_url) = self.lp_context("create_v3_position").await?;
+        let s = self.lp_session("create_v3_position").await?;
 
         // The token pair comes from the pool, never from the caller — see read_v3_pool.
-        let pool_tokens = read_v3_pool(&provider, pool_address)
+        let pool_tokens = read_v3_pool(&s.provider, pool_address)
             .await
             .context("stage=position read")?;
 
@@ -1192,25 +1201,26 @@ impl UniswapMcpServer {
             pool_tokens.token1
         );
 
-        let create_body = |simulate: bool| {
-            build_lp_create_body(
-                wallet,
-                pool_address,
-                &pool_tokens,
-                independent_token,
-                &independent_amount,
-                tick_lower,
-                tick_upper,
-                slippage,
-                simulate,
-            )
+        let create_params = CreateParams {
+            wallet: s.wallet,
+            pool: pool_address,
+            pool_tokens: &pool_tokens,
+            independent_token,
+            independent_amount: &independent_amount,
+            tick_lower,
+            tick_upper,
+            slippage,
         };
 
         // Pass 1 — sizing only. Simulation is off: allowances may not exist yet, and a
         // simulation failure for that reason would say nothing about the position itself.
-        let sizing = lp_post(&self.http, "/lp/create", &create_body(false))
-            .await
-            .context("stage=API request")?;
+        let sizing = lp_post(
+            &self.http,
+            "/lp/create",
+            &build_lp_create_body(&create_params, false),
+        )
+        .await
+        .context("stage=API request")?;
         let want0 = parse_lp_token(&sizing, "token0", "/lp/create").context("stage=API request")?;
         let want1 = parse_lp_token(&sizing, "token1", "/lp/create").context("stage=API request")?;
 
@@ -1218,7 +1228,7 @@ impl UniswapMcpServer {
         let approval_resp = lp_post(
             &self.http,
             "/lp/check_approval",
-            &build_check_approval_body(wallet, &[want0.clone(), want1.clone()]),
+            &build_check_approval_body(s.wallet, &[want0.clone(), want1.clone()]),
         )
         .await
         .context("stage=API request")?;
@@ -1229,13 +1239,13 @@ impl UniswapMcpServer {
             let step = format!("approval {}/{}", i + 1, approvals.len());
 
             let validated = with_approvals(
-                validate_api_transaction(approval, wallet, SEPOLIA_V3.chain_id)
+                validate_api_transaction(approval, s.wallet, SEPOLIA_V3.chain_id)
                     .with_context(|| format!("stage=approval ({step})")),
                 &approval_hashes,
             )?;
 
             let hash = with_approvals(
-                sign_and_broadcast(db, agent_id, &rpc_url, &provider, &validated)
+                s.sign_and_broadcast(&validated)
                     .await
                     .with_context(|| format!("stage=broadcast ({step})")),
                 &approval_hashes,
@@ -1243,7 +1253,7 @@ impl UniswapMcpServer {
             approval_hashes.push(format!("{hash:#x}"));
 
             with_approvals(
-                wait_for_receipt(&provider, hash, &step)
+                wait_for_receipt(&s.provider, hash, &step)
                     .await
                     .with_context(|| format!("stage=receipt ({step})")),
                 &approval_hashes,
@@ -1254,9 +1264,13 @@ impl UniswapMcpServer {
         // took real block time, which staleifies the deadline the first response carried, and
         // because only now can the server-side simulation mean anything.
         let created = with_approvals(
-            lp_post(&self.http, "/lp/create", &create_body(true))
-                .await
-                .context("stage=API request"),
+            lp_post(
+                &self.http,
+                "/lp/create",
+                &build_lp_create_body(&create_params, true),
+            )
+            .await
+            .context("stage=API request"),
             &approval_hashes,
         )?;
 
@@ -1275,27 +1289,27 @@ impl UniswapMcpServer {
         )?;
 
         let validated = with_approvals(
-            validate_api_transaction(create_tx, wallet, SEPOLIA_V3.chain_id)
+            validate_api_transaction(create_tx, s.wallet, SEPOLIA_V3.chain_id)
                 .context("stage=simulation"),
             &approval_hashes,
         )?;
 
         with_approvals(
-            simulate_tx(&provider, wallet, &validated)
+            simulate_tx(&s.provider, s.wallet, &validated)
                 .await
                 .context("stage=simulation"),
             &approval_hashes,
         )?;
 
         let hash = with_approvals(
-            sign_and_broadcast(db, agent_id, &rpc_url, &provider, &validated)
+            s.sign_and_broadcast(&validated)
                 .await
                 .context("stage=broadcast"),
             &approval_hashes,
         )?;
 
         let receipt = with_approvals(
-            wait_for_receipt(&provider, hash, "position create")
+            wait_for_receipt(&s.provider, hash, "position create")
                 .await
                 .context("stage=receipt"),
             &approval_hashes,
@@ -1309,7 +1323,7 @@ impl UniswapMcpServer {
             .collect();
 
         let nft_token_id = with_approvals(
-            parse_minted_token_id(&logs, SEPOLIA_V3.position_manager, wallet)
+            parse_minted_token_id(&logs, SEPOLIA_V3.position_manager, s.wallet)
                 .context("stage=receipt"),
             &approval_hashes,
         )?;
@@ -1338,19 +1352,18 @@ impl UniswapMcpServer {
         let percentage = parse_liquidity_percentage(args)?;
         let slippage = parse_slippage_arg(args)?;
 
-        let (agent_id, db) = self.lp_agent("decrease_v3_position")?;
-        let (wallet, provider, rpc_url) = self.lp_context("decrease_v3_position").await?;
+        let s = self.lp_session("decrease_v3_position").await?;
 
         // Ownership check and the token pair both come from the NFT itself, so neither is
         // caller-supplied.
-        let position = read_v3_position(&provider, nft_token_id, wallet)
+        let position = read_v3_position(&s.provider, nft_token_id, s.wallet)
             .await
             .context("stage=position read")?;
 
         let resp = lp_post(
             &self.http,
             "/lp/decrease",
-            &build_lp_decrease_body(wallet, &position, nft_token_id, percentage, slippage),
+            &build_lp_decrease_body(s.wallet, &position, nft_token_id, percentage, slippage),
         )
         .await
         .context("stage=API request")?;
@@ -1361,9 +1374,7 @@ impl UniswapMcpServer {
             parse_lp_token(&resp, "token1", "/lp/decrease").context("stage=API request")?;
         let tx = require_field(&resp, "decrease", "/lp/decrease").context("stage=API request")?;
 
-        let hash = self
-            .execute_lp_transaction(db, agent_id, &rpc_url, &provider, wallet, tx, "decrease")
-            .await?;
+        let hash = s.execute(tx, "decrease").await?;
 
         Ok(json!({
             "hash": format!("{hash:#x}"),
@@ -1379,18 +1390,17 @@ impl UniswapMcpServer {
         require_sepolia(args)?;
         let nft_token_id = parse_nft_token_id(args)?;
 
-        let (agent_id, db) = self.lp_agent("claim_v3_fees")?;
-        let (wallet, provider, rpc_url) = self.lp_context("claim_v3_fees").await?;
+        let s = self.lp_session("claim_v3_fees").await?;
 
         // Read purely for the ownership check — /lp/claim_fees takes only the token id.
-        read_v3_position(&provider, nft_token_id, wallet)
+        read_v3_position(&s.provider, nft_token_id, s.wallet)
             .await
             .context("stage=position read")?;
 
         let resp = lp_post(
             &self.http,
             "/lp/claim_fees",
-            &build_lp_claim_fees_body(wallet, nft_token_id),
+            &build_lp_claim_fees_body(s.wallet, nft_token_id),
         )
         .await
         .context("stage=API request")?;
@@ -1401,9 +1411,7 @@ impl UniswapMcpServer {
             parse_lp_token(&resp, "token1", "/lp/claim_fees").context("stage=API request")?;
         let tx = require_field(&resp, "claim", "/lp/claim_fees").context("stage=API request")?;
 
-        let hash = self
-            .execute_lp_transaction(db, agent_id, &rpc_url, &provider, wallet, tx, "fee claim")
-            .await?;
+        let hash = s.execute(tx, "fee claim").await?;
 
         Ok(json!({
             "hash": format!("{hash:#x}"),
@@ -1413,34 +1421,27 @@ impl UniswapMcpServer {
         })
         .to_string())
     }
+}
 
+impl LpSession<'_> {
     /// validate → simulate → sign → broadcast → confirm, for the single-transaction LP flows.
     ///
     /// `create_v3_position` runs these steps inline instead, because it has to thread already
     /// completed approval hashes into every possible failure.
-    #[allow(clippy::too_many_arguments)]
-    async fn execute_lp_transaction(
-        &self,
-        db: &DbPool,
-        agent_id: &str,
-        rpc_url: &str,
-        provider: &impl Provider,
-        wallet: Address,
-        tx: &Value,
-        label: &str,
-    ) -> Result<B256> {
-        let validated = validate_api_transaction(tx, wallet, SEPOLIA_V3.chain_id)
+    async fn execute(&self, tx: &Value, label: &str) -> Result<B256> {
+        let validated = validate_api_transaction(tx, self.wallet, SEPOLIA_V3.chain_id)
             .context("stage=simulation")?;
 
-        simulate_tx(provider, wallet, &validated)
+        simulate_tx(&self.provider, self.wallet, &validated)
             .await
             .context("stage=simulation")?;
 
-        let hash = sign_and_broadcast(db, agent_id, rpc_url, provider, &validated)
+        let hash = self
+            .sign_and_broadcast(&validated)
             .await
             .context("stage=broadcast")?;
 
-        wait_for_receipt(provider, hash, label)
+        wait_for_receipt(&self.provider, hash, label)
             .await
             .context("stage=receipt")?;
 
@@ -1923,14 +1924,16 @@ mod tests {
     #[test]
     fn builds_the_documented_create_body() {
         let body = build_lp_create_body(
-            WALLET,
-            address!("287b0e934ed0439e2a7b1d5f0fc25ea2c24b64f7"),
-            &test_pool(),
-            address!("1f9840a85d5af5bf1d1762f925bdaddc4201f984"),
-            "198251669183062942",
-            -198950,
-            -198200,
-            Some(0.5),
+            &CreateParams {
+                wallet: WALLET,
+                pool: address!("287b0e934ed0439e2a7b1d5f0fc25ea2c24b64f7"),
+                pool_tokens: &test_pool(),
+                independent_token: address!("1f9840a85d5af5bf1d1762f925bdaddc4201f984"),
+                independent_amount: "198251669183062942",
+                tick_lower: -198950,
+                tick_upper: -198200,
+                slippage: Some(0.5),
+            },
             true,
         );
 
@@ -1957,14 +1960,16 @@ mod tests {
     #[test]
     fn omits_slippage_when_not_supplied_and_can_disable_simulation() {
         let body = build_lp_create_body(
-            WALLET,
-            Address::ZERO,
-            &test_pool(),
-            test_pool().token0,
-            "1",
-            -10,
-            10,
-            None,
+            &CreateParams {
+                wallet: WALLET,
+                pool: Address::ZERO,
+                pool_tokens: &test_pool(),
+                independent_token: test_pool().token0,
+                independent_amount: "1",
+                tick_lower: -10,
+                tick_upper: 10,
+                slippage: None,
+            },
             false,
         );
         assert!(body.get("slippageTolerance").is_none());
