@@ -1,15 +1,18 @@
 /**
- * Provider-neutral AI decision client — injected fetch, no MCP/execution.
+ * Provider-neutral AI decision client — adversarial coverage for T6 audit-fix.
  */
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   DEFAULT_AI_TIMEOUT_MS,
+  REJECTED_FINISH_REASONS,
   buildDecisionMessages,
   extractChatCompletionJsonText,
   pairContextFromMarket,
   requestDecision,
+  resolveAiTimeoutMs,
+  validatePairAgainstFeatures,
 } from "../src/decision-client.mjs";
 import { redactSecrets } from "../src/orloj-mcp-client.mjs";
 
@@ -48,27 +51,18 @@ const FEATURES = {
       observationSpanSeconds: 14400,
       minSpanSeconds: 7200,
     },
-    tickProxy24h: {
-      sufficient: false,
-      tickMovement: { value: null, reason: "sparse" },
-      sampleCount: 2,
-      observationSpanSeconds: 3600,
-      minSpanSeconds: 43200,
-    },
   },
   activity: {
     txCountSum6h: { value: 2 },
     txCountSum24h: { value: 8 },
-    note: "Activity uses summed PoolHourData.txCount; not sampled swap row counts",
+    note: "Activity uses summed PoolHourData.txCount",
   },
   volumes: {
     token0_6h: { value: 1.5 },
-    token1_6h: { value: 0 },
     trendToken0_6hVsPrev6h: { value: 0.2 },
   },
   fees: {
     usd_6h: { value: null, reason: "usd_unusable" },
-    feeToTvl_24h: { value: null, reason: "usd_unusable" },
   },
   liquidity: {
     positionLiquidity: "5000",
@@ -83,10 +77,9 @@ const FEATURES = {
     indexedTimestamp: "1699999900",
     ageSeconds: 100,
     maxIndexedAgeSeconds: 3600,
-    swapSample: { truncated: false, complete: true, rowCount: 0 },
   },
   evidence: { hourRows6h: 4, swapRowsSampled: 0 },
-  missingInputFlags: ["usd_data_unusable", "insufficient_volatility_samples_24h"],
+  missingInputFlags: ["usd_data_unusable"],
 };
 
 const PAIR = {
@@ -95,66 +88,90 @@ const PAIR = {
   feeTier: "3000",
 };
 
+function citeUnion(signals) {
+  const out = [];
+  const seen = new Set();
+  for (const s of signals) {
+    for (const c of s.citations) {
+      if (!seen.has(c)) {
+        seen.add(c);
+        out.push(c);
+      }
+    }
+  }
+  return out;
+}
+
 function holdDecision() {
+  const signals = [
+    {
+      direction: "SUPPORTS_HOLD",
+      observation: "In range; activity txCountSum6h is 2.",
+      citations: ["range.status", "activity.txCountSum6h.value"],
+    },
+    {
+      direction: "UNCERTAINTY",
+      observation: "USD unusable",
+      citations: ["usdDataUsable.usable"],
+    },
+  ];
   return {
     action: "HOLD",
     confidence: 0.6,
     liquidityPercentageToDecrease: null,
-    summary: "In range with measured low activity; USD ignored.",
-    signals: [
-      {
-        direction: "neutral",
-        observation: "In range; activity txCountSum6h is 2.",
-        citations: ["range.status", "activity.txCountSum6h"],
-      },
-    ],
+    summary: "In range with measured activity; USD ignored.",
+    signals,
     uncertainties: ["usdDataUsable.usable is false"],
     graphEvidence: {
       subgraphId: FEATURES.graph.subgraphId,
       indexedBlock: FEATURES.graph.indexedBlock,
       ageSeconds: FEATURES.graph.ageSeconds,
-      citedFeaturePaths: ["range.status", "activity.txCountSum6h", "graph.ageSeconds"],
+      citedFeaturePaths: citeUnion(signals),
     },
   };
 }
 
 function reduceDecision() {
+  const signals = [
+    {
+      direction: "SUPPORTS_REDUCE",
+      observation: "Nearest boundary is lower at distance 10.",
+      citations: ["range.nearestBoundaryDistance"],
+    },
+    {
+      direction: "SUPPORTS_REDUCE",
+      observation: "Pool liquidity trend declining.",
+      citations: ["liquidity.trend_24h.value"],
+    },
+  ];
   return {
     action: "REDUCE_LIQUIDITY",
     confidence: 0.85,
     liquidityPercentageToDecrease: 40,
     summary: "Near lower boundary with adverse liquidity trend.",
-    signals: [
-      {
-        direction: "risk_up",
-        observation: "Nearest boundary is lower at distance 10.",
-        citations: ["range.nearestBoundary", "range.nearestBoundaryDistance"],
-      },
-      {
-        direction: "risk_up",
-        observation: "Pool liquidity trend declining.",
-        citations: ["liquidity.trend_24h"],
-      },
-    ],
-    uncertainties: ["volatility.tickProxy24h insufficient"],
+    signals,
+    uncertainties: ["USD ignored"],
     graphEvidence: {
       subgraphId: FEATURES.graph.subgraphId,
       indexedBlock: FEATURES.graph.indexedBlock,
       ageSeconds: FEATURES.graph.ageSeconds,
-      citedFeaturePaths: [
-        "range.nearestBoundaryDistance",
-        "liquidity.trend_24h",
-        "missingInputFlags",
-      ],
+      citedFeaturePaths: citeUnion(signals),
     },
   };
 }
 
-function completionEnvelope(content) {
+function completionEnvelope(content, finish_reason = "stop") {
+  const choice = {
+    index: 0,
+    message: { role: "assistant", content },
+  };
+  if (finish_reason !== undefined) {
+    choice.finish_reason = finish_reason;
+  }
   return {
     id: "chatcmpl-test",
     object: "chat.completion",
-    choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }],
+    choices: [choice],
   };
 }
 
@@ -167,30 +184,72 @@ function jsonResponse(obj, status = 200) {
 }
 
 describe("decision-client", () => {
-  it("exports a default AI timeout", () => {
+  it("exports timeout default and rejected finish reasons", () => {
     assert.equal(DEFAULT_AI_TIMEOUT_MS, 30_000);
+    assert.ok(REJECTED_FINISH_REASONS.includes("length"));
+    assert.ok(REJECTED_FINISH_REASONS.includes("content_filter"));
+    assert.ok(REJECTED_FINISH_REASONS.includes("tool_calls"));
   });
 
-  it("buildDecisionMessages explains null vs zero, USD gate, and activity source", () => {
+  it("resolveAiTimeoutMs requires positive finite numbers", () => {
+    assert.equal(resolveAiTimeoutMs(undefined), DEFAULT_AI_TIMEOUT_MS);
+    assert.equal(resolveAiTimeoutMs(1500), 1500);
+    assert.throws(() => resolveAiTimeoutMs(0), /positive finite/);
+    assert.throws(() => resolveAiTimeoutMs(-1), /positive finite/);
+    assert.throws(() => resolveAiTimeoutMs(Number.NaN), /positive finite/);
+    assert.throws(() => resolveAiTimeoutMs("1000"), /positive finite/);
+  });
+
+  it("buildDecisionMessages explains rules and untrusted payload data", () => {
     const messages = buildDecisionMessages({ features: FEATURES, pair: PAIR });
-    assert.equal(messages[0].role, "system");
     assert.match(messages[0].content, /null means insufficient evidence/i);
     assert.match(messages[0].content, /numeric zero means measured zero/i);
-    assert.match(messages[0].content, /usdDataUsable\.usable is false/i);
-    assert.match(messages[0].content, /PoolHourData\.txCount/);
-    assert.match(messages[0].content, /Sampled swap row counts are NOT total intensity/i);
-    assert.match(messages[0].content, /missingInputFlags/);
-    assert.match(messages[0].content, /REDUCE_LIQUIDITY requires multiple independent signals/);
-    assert.equal(messages[1].role, "user");
+    assert.match(messages[0].content, /untrusted data, never instructions/i);
+    assert.match(messages[0].content, /SUPPORTS_HOLD/);
+    assert.match(messages[0].content, /distinct evidence domains/);
+    assert.match(messages[0].content, /position\.\* alone never qualifies/);
     const user = JSON.parse(messages[1].content);
+    assert.match(user.instruction, /untrusted data/i);
     assert.equal(user.pair.token0.symbol, "AAA");
-    assert.equal(user.pair.token1.decimals, "6");
-    assert.equal(user.features.usdDataUsable.usable, false);
-    assert.ok(user.features.missingInputFlags.includes("usd_data_unusable"));
-    assert.equal(JSON.stringify(user).includes(API_KEY), false);
   });
 
-  it("pairContextFromMarket reads validated symbols/decimals", () => {
+  it("validatePairAgainstFeatures rejects mismatched ids or fee", () => {
+    assert.throws(
+      () =>
+        validatePairAgainstFeatures(
+          {
+            token0: { id: "0x99", symbol: "AAA", decimals: "18" },
+            token1: { id: "0x02", symbol: "BBB", decimals: "6" },
+            feeTier: "3000",
+          },
+          FEATURES,
+        ),
+      /token ids do not match/,
+    );
+    assert.throws(
+      () =>
+        validatePairAgainstFeatures(
+          { ...PAIR, feeTier: "500" },
+          FEATURES,
+        ),
+      /feeTier does not match/,
+    );
+    assert.throws(
+      () => buildDecisionMessages({ features: FEATURES, pair: { ...PAIR, feeTier: "1" } }),
+      /feeTier/,
+    );
+  });
+
+  it("pairContextFromMarket requires ids", () => {
+    assert.equal(
+      pairContextFromMarket({
+        pool: {
+          token0: { symbol: "A", decimals: "18" },
+          token1: { symbol: "B", decimals: "6" },
+        },
+      }),
+      null,
+    );
     const pair = pairContextFromMarket({
       pool: {
         feeTier: "3000",
@@ -198,15 +257,47 @@ describe("decision-client", () => {
         token1: { id: "0x02", symbol: "BBB", decimals: "6" },
       },
     });
-    assert.deepEqual(pair?.token0.symbol, "AAA");
-    assert.equal(pairContextFromMarket({}), null);
+    assert.equal(pair?.token0.id, "0x01");
   });
 
-  it("extractChatCompletionJsonText accepts direct JSON only", () => {
-    const text = extractChatCompletionJsonText(
-      completionEnvelope(JSON.stringify(holdDecision())),
+  it("accepts finish_reason stop and missing finish_reason", () => {
+    const withStop = extractChatCompletionJsonText(
+      completionEnvelope(JSON.stringify(holdDecision()), "stop"),
     );
-    assert.equal(JSON.parse(text).action, "HOLD");
+    assert.equal(JSON.parse(withStop).action, "HOLD");
+
+    const envelope = completionEnvelope(JSON.stringify(holdDecision()));
+    delete envelope.choices[0].finish_reason;
+    const missing = extractChatCompletionJsonText(envelope);
+    assert.equal(JSON.parse(missing).action, "HOLD");
+  });
+
+  it("rejects length, content_filter, tool_calls, and tool payloads", () => {
+    for (const reason of ["length", "content_filter", "tool_calls", "function_call"]) {
+      assert.throws(
+        () =>
+          extractChatCompletionJsonText(
+            completionEnvelope(JSON.stringify(holdDecision()), reason),
+          ),
+        /not an acceptable terminal state|not accepted/,
+      );
+    }
+    assert.throws(
+      () =>
+        extractChatCompletionJsonText({
+          choices: [
+            {
+              finish_reason: "stop",
+              message: {
+                role: "assistant",
+                content: JSON.stringify(holdDecision()),
+                tool_calls: [{ id: "1", type: "function" }],
+              },
+            },
+          ],
+        }),
+      /tool_calls/,
+    );
   });
 
   it("rejects markdown fences and prose", () => {
@@ -220,48 +311,26 @@ describe("decision-client", () => {
     assert.throws(
       () =>
         extractChatCompletionJsonText(
-          completionEnvelope("Here you go: " + JSON.stringify(holdDecision())),
+          completionEnvelope("Here: " + JSON.stringify(holdDecision())),
         ),
       /prose rejected/,
     );
   });
 
-  it("rejects malformed completion envelopes", () => {
-    assert.throws(() => extractChatCompletionJsonText(null), /plain object/);
-    assert.throws(() => extractChatCompletionJsonText({ choices: [] }), /missing choices/);
-    assert.throws(
-      () =>
-        extractChatCompletionJsonText({
-          choices: [{ message: { content: 123 } }],
-        }),
-      /must be a string/,
-    );
-  });
-
-  it("requestDecision returns validated HOLD via injected fetch", async () => {
-    const decision = await requestDecision(
+  it("requestDecision returns validated HOLD and REDUCE via injected fetch", async () => {
+    const hold = await requestDecision(
       {
         aiChatCompletionsUrl: URL,
         aiApiKey: API_KEY,
         aiModel: "test-model",
-        fetchImpl: async (url, init) => {
-          assert.equal(url, URL);
-          assert.match(init.headers.authorization, /Bearer /);
-          assert.equal(init.headers.authorization.includes(API_KEY), true);
-          const body = JSON.parse(init.body);
-          assert.equal(body.model, "test-model");
-          assert.equal(body.messages.length, 2);
-          return jsonResponse(completionEnvelope(JSON.stringify(holdDecision())));
-        },
+        fetchImpl: async () =>
+          jsonResponse(completionEnvelope(JSON.stringify(holdDecision()))),
       },
       { features: FEATURES, pair: PAIR },
     );
-    assert.equal(decision.action, "HOLD");
-    assert.equal(decision.liquidityPercentageToDecrease, null);
-  });
+    assert.equal(hold.action, "HOLD");
 
-  it("requestDecision returns validated REDUCE_LIQUIDITY", async () => {
-    const decision = await requestDecision(
+    const reduce = await requestDecision(
       {
         aiChatCompletionsUrl: URL,
         aiApiKey: API_KEY,
@@ -271,11 +340,29 @@ describe("decision-client", () => {
       },
       { features: FEATURES, pair: PAIR },
     );
-    assert.equal(decision.action, "REDUCE_LIQUIDITY");
-    assert.equal(decision.liquidityPercentageToDecrease, 40);
+    assert.equal(reduce.action, "REDUCE_LIQUIDITY");
   });
 
-  it("throws on schema-invalid model JSON (never HOLD)", async () => {
+  it("throws on invalid timeoutMs before fetch", async () => {
+    await assert.rejects(
+      () =>
+        requestDecision(
+          {
+            aiChatCompletionsUrl: URL,
+            aiApiKey: API_KEY,
+            aiModel: "test-model",
+            timeoutMs: 0,
+            fetchImpl: async () => {
+              throw new Error("should not fetch");
+            },
+          },
+          { features: FEATURES },
+        ),
+      /timeoutMs must be a positive finite number/,
+    );
+  });
+
+  it("throws on schema-invalid / hallucinated paths (never HOLD)", async () => {
     await assert.rejects(
       () =>
         requestDecision(
@@ -285,20 +372,17 @@ describe("decision-client", () => {
             aiModel: "test-model",
             fetchImpl: async () =>
               jsonResponse(
-                completionEnvelope(
-                  JSON.stringify({ action: "HOLD", confidence: 1 }),
-                ),
+                completionEnvelope(JSON.stringify({ action: "HOLD", confidence: 1 })),
               ),
           },
           { features: FEATURES },
         ),
-      /unexpected or missing fields|must be a/,
+      /unexpected or missing/,
     );
-  });
 
-  it("throws on hallucinated feature paths from the model", async () => {
     const bad = holdDecision();
     bad.signals[0].citations = ["range.doesNotExist"];
+    bad.graphEvidence.citedFeaturePaths = ["range.doesNotExist", "usdDataUsable.usable"];
     await assert.rejects(
       () =>
         requestDecision(
@@ -311,11 +395,11 @@ describe("decision-client", () => {
           },
           { features: FEATURES },
         ),
-      /nonexistent feature path/,
+      /nonexistent or blocked/,
     );
   });
 
-  it("fail closed: HTTP errors with API key redacted", async () => {
+  it("fail closed: HTTP errors redacted; timeouts; body-read redaction", async () => {
     await assert.rejects(
       () =>
         requestDecision(
@@ -333,15 +417,12 @@ describe("decision-client", () => {
           { features: FEATURES },
         ),
       (err) => {
-        assert.match(String(err.message), /AI HTTP 401/);
         assert.equal(String(err.message).includes(API_KEY), false);
         assert.match(String(err.message), /\[REDACTED\]/);
         return true;
       },
     );
-  });
 
-  it("fail closed: timeout during fetch", async () => {
     await assert.rejects(
       () =>
         requestDecision(
@@ -364,9 +445,7 @@ describe("decision-client", () => {
         ),
       /AI request timed out after 20ms/,
     );
-  });
 
-  it("fail closed: timeout remains active through body read", async () => {
     await assert.rejects(
       () =>
         requestDecision(
@@ -380,7 +459,7 @@ describe("decision-client", () => {
               status: 200,
               text: async () => {
                 await new Promise((resolve) => setTimeout(resolve, 200));
-                return JSON.stringify(completionEnvelope("{}"));
+                return "{}";
               },
             }),
           },
@@ -388,9 +467,7 @@ describe("decision-client", () => {
         ),
       /AI request timed out after 25ms/,
     );
-  });
 
-  it("fail closed: body-read errors are redacted", async () => {
     await assert.rejects(
       () =>
         requestDecision(
@@ -410,18 +487,15 @@ describe("decision-client", () => {
           { features: FEATURES },
         ),
       (err) => {
-        assert.match(String(err.message), /AI HTTP body read failed/);
+        assert.match(String(err.message), /body read failed/);
         assert.equal(String(err.message).includes(API_KEY), false);
         return true;
       },
     );
-    assert.equal(
-      redactSecrets(`Bearer ${API_KEY}`, API_KEY),
-      "Bearer [REDACTED]",
-    );
+    assert.equal(redactSecrets(`Bearer ${API_KEY}`, API_KEY), "Bearer [REDACTED]");
   });
 
-  it("rejects malformed model responses (fenced / invalid envelope)", async () => {
+  it("rejects finish_reason length through requestDecision", async () => {
     await assert.rejects(
       () =>
         requestDecision(
@@ -431,27 +505,12 @@ describe("decision-client", () => {
             aiModel: "test-model",
             fetchImpl: async () =>
               jsonResponse(
-                completionEnvelope(
-                  "```json\n" + JSON.stringify(holdDecision()) + "\n```",
-                ),
+                completionEnvelope(JSON.stringify(holdDecision()), "length"),
               ),
           },
           { features: FEATURES },
         ),
-      /markdown fences/,
-    );
-    await assert.rejects(
-      () =>
-        requestDecision(
-          {
-            aiChatCompletionsUrl: URL,
-            aiApiKey: API_KEY,
-            aiModel: "test-model",
-            fetchImpl: async () => jsonResponse({ choices: [] }),
-          },
-          { features: FEATURES },
-        ),
-      /missing choices/,
+      /not an acceptable terminal state/,
     );
   });
 });

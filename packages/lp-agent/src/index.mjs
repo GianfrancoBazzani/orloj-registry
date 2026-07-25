@@ -23,16 +23,26 @@ export {
 } from "./graph-client.mjs";
 export {
   PHASE1_ACTIONS,
+  SIGNAL_DIRECTIONS,
+  MIN_REDUCE_SUPPORT_SIGNALS,
   MIN_REDUCE_SIGNALS,
+  GRAPH_EVIDENCE_DOMAINS,
   featurePathExists,
+  resolveFeaturePath,
+  evidenceDomainForPath,
+  isUsdDerivedPath,
   validateDecision,
 } from "./decision-schema.mjs";
 export {
   DEFAULT_AI_TIMEOUT_MS,
+  REJECTED_FINISH_REASONS,
   buildDecisionMessages,
   extractChatCompletionJsonText,
   pairContextFromMarket,
   requestDecision,
+  resolveAiTimeoutMs,
+  validatePairAgainstFeatures,
+  assertAcceptableFinishReason,
 } from "./decision-client.mjs";
 export { planAction } from "./action-planner.mjs";
 export {

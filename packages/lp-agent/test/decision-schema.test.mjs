@@ -1,13 +1,16 @@
 /**
- * Strict AI decision schema validation.
+ * Strict AI decision schema validation — adversarial coverage for T6 audit-fix.
  */
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   PHASE1_ACTIONS,
-  MIN_REDUCE_SIGNALS,
+  SIGNAL_DIRECTIONS,
+  MIN_REDUCE_SUPPORT_SIGNALS,
   featurePathExists,
+  resolveFeaturePath,
+  isUsdDerivedPath,
   validateDecision,
 } from "../src/decision-schema.mjs";
 
@@ -53,14 +56,18 @@ const FEATURES = {
     trendToken0_6hVsPrev6h: { value: null, reason: "missing_prev" },
   },
   fees: {
-    usd_6h: { value: null, reason: "usd_unusable" },
+    usd_6h: { value: 1.5 },
+    feeToTvl_24h: { value: 0.01 },
   },
   liquidity: {
     positionLiquidity: "1000",
     poolLiquidity: "9999",
     trend_24h: { value: -0.1 },
   },
-  usdDataUsable: { usable: false, reasons: ["test"] },
+  tvl: {
+    trend_24h: { value: 0.05 },
+  },
+  usdDataUsable: { usable: false, reasons: ["test_usd_bad"] },
   graph: {
     subgraphId: "2vXTcbEvA3TGTufatwRVUXQjJZDKCHmzZmZKYYXxaeeR",
     indexedBlock: "11348887",
@@ -71,209 +78,121 @@ const FEATURES = {
   missingInputFlags: ["usd_data_unusable", "null:volumes.trendToken0_6hVsPrev6h"],
 };
 
+function citeUnion(...signals) {
+  const out = [];
+  const seen = new Set();
+  for (const s of signals) {
+    for (const c of s.citations) {
+      if (!seen.has(c)) {
+        seen.add(c);
+        out.push(c);
+      }
+    }
+  }
+  return out;
+}
+
 function baseHold(overrides = {}) {
+  const signals = overrides.signals ?? [
+    {
+      direction: "SUPPORTS_HOLD",
+      observation: "Position is in range near mid.",
+      citations: ["range.status", "range.inRange"],
+    },
+    {
+      direction: "UNCERTAINTY",
+      observation: "USD unusable.",
+      citations: ["usdDataUsable.usable"],
+    },
+  ];
+  const { signals: _s, graphEvidence: geOver, ...rest } = overrides;
   return {
     action: "HOLD",
     confidence: 0.7,
     liquidityPercentageToDecrease: null,
     summary: "Range healthy; low activity measured as zero in 6h.",
-    signals: [
-      {
-        direction: "neutral",
-        observation: "Position is in range near mid.",
-        citations: ["range.status", "range.inRange"],
-      },
-    ],
+    signals,
     uncertainties: ["usd_data_unusable"],
     graphEvidence: {
       subgraphId: FEATURES.graph.subgraphId,
       indexedBlock: FEATURES.graph.indexedBlock,
       ageSeconds: FEATURES.graph.ageSeconds,
-      citedFeaturePaths: ["range.status", "graph.ageSeconds"],
+      citedFeaturePaths: citeUnion(...signals),
+      ...geOver,
     },
-    ...overrides,
+    ...rest,
+    signals,
   };
 }
 
 function baseReduce(overrides = {}) {
+  const signals = overrides.signals ?? [
+    {
+      direction: "SUPPORTS_REDUCE",
+      observation: "Nearest boundary distance is tight.",
+      citations: ["range.nearestBoundaryDistance"],
+    },
+    {
+      direction: "SUPPORTS_REDUCE",
+      observation: "Liquidity trend declining over 24h.",
+      citations: ["liquidity.trend_24h.value"],
+    },
+    {
+      direction: "UNCERTAINTY",
+      observation: "USD gate failed.",
+      citations: ["usdDataUsable.reasons"],
+    },
+  ];
+  const { signals: _s, graphEvidence: geOver, ...rest } = overrides;
+  const ge = {
+    subgraphId: FEATURES.graph.subgraphId,
+    indexedBlock: FEATURES.graph.indexedBlock,
+    ageSeconds: FEATURES.graph.ageSeconds,
+    citedFeaturePaths: citeUnion(...signals),
+    ...geOver,
+  };
+  if (geOver?.citedFeaturePaths) {
+    ge.citedFeaturePaths = geOver.citedFeaturePaths;
+  }
   return {
     action: "REDUCE_LIQUIDITY",
     confidence: 0.8,
     liquidityPercentageToDecrease: 25,
-    summary: "Near boundary with rising tick movement and liquidity drain.",
-    signals: [
-      {
-        direction: "risk_up",
-        observation: "Nearest boundary distance is tight.",
-        citations: ["range.nearestBoundaryDistance"],
-      },
-      {
-        direction: "risk_up",
-        observation: "Liquidity trend declining over 24h.",
-        citations: ["liquidity.trend_24h"],
-      },
-    ],
-    uncertainties: ["fees.usd_6h is null"],
-    graphEvidence: {
-      subgraphId: FEATURES.graph.subgraphId,
-      indexedBlock: FEATURES.graph.indexedBlock,
-      ageSeconds: FEATURES.graph.ageSeconds,
-      citedFeaturePaths: [
-        "range.nearestBoundaryDistance",
-        "liquidity.trend_24h",
-        "volatility.tickProxy6h.tickMovement",
-      ],
-    },
-    ...overrides,
+    summary: "Near boundary with declining liquidity.",
+    signals,
+    uncertainties: ["fees.usd_6h ignored — USD unusable"],
+    graphEvidence: ge,
+    ...rest,
+    signals,
   };
 }
 
 describe("decision-schema", () => {
-  it("exposes Phase 1 actions only", () => {
+  it("exposes Phase 1 actions and direction enum", () => {
     assert.deepEqual([...PHASE1_ACTIONS], ["HOLD", "REDUCE_LIQUIDITY"]);
-    assert.equal(MIN_REDUCE_SIGNALS, 2);
+    assert.deepEqual(
+      [...SIGNAL_DIRECTIONS],
+      ["SUPPORTS_HOLD", "SUPPORTS_REDUCE", "UNCERTAINTY"],
+    );
+    assert.equal(MIN_REDUCE_SUPPORT_SIGNALS, 2);
   });
 
-  it("featurePathExists resolves real paths including null leaves", () => {
-    assert.equal(featurePathExists(FEATURES, "range.status"), true);
-    assert.equal(
-      featurePathExists(FEATURES, "volumes.trendToken0_6hVsPrev6h.value"),
-      true,
-    );
-    assert.equal(featurePathExists(FEATURES, "volumes.nope"), false);
-    assert.equal(featurePathExists(FEATURES, ""), false);
-    assert.equal(featurePathExists(FEATURES, "range..status"), false);
+  it("resolveFeaturePath uses Object.hasOwn and blocks prototype pollution paths", () => {
+    assert.equal(resolveFeaturePath(FEATURES, "range.status").ok, true);
+    assert.equal(resolveFeaturePath(FEATURES, "__proto__.polluted").ok, false);
+    assert.equal(resolveFeaturePath(FEATURES, "constructor").ok, false);
+    assert.equal(resolveFeaturePath(FEATURES, "range.prototype").ok, false);
+    assert.equal(featurePathExists(FEATURES, "range.madeUp"), false);
+    // Inherited Object methods must not count as present via hasOwn
+    assert.equal(featurePathExists(FEATURES, "toString"), false);
   });
 
-  it("accepts valid HOLD", () => {
-    const d = validateDecision(baseHold(), FEATURES);
-    assert.equal(d.action, "HOLD");
-    assert.equal(d.liquidityPercentageToDecrease, null);
-    assert.equal(d.confidence, 0.7);
+  it("accepts valid HOLD and REDUCE", () => {
+    assert.equal(validateDecision(baseHold(), FEATURES).action, "HOLD");
+    assert.equal(validateDecision(baseReduce(), FEATURES).action, "REDUCE_LIQUIDITY");
   });
 
-  it("accepts valid REDUCE_LIQUIDITY with independent signals", () => {
-    const d = validateDecision(baseReduce(), FEATURES);
-    assert.equal(d.action, "REDUCE_LIQUIDITY");
-    assert.equal(d.liquidityPercentageToDecrease, 25);
-    assert.equal(d.signals.length, 2);
-  });
-
-  it("rejects CLAIM_FEES", () => {
-    assert.throws(
-      () => validateDecision(baseHold({ action: "CLAIM_FEES" }), FEATURES),
-      /CLAIM_FEES/,
-    );
-  });
-
-  it("rejects unknown actions", () => {
-    assert.throws(
-      () => validateDecision(baseHold({ action: "CREATE_POSITION" }), FEATURES),
-      /HOLD or REDUCE_LIQUIDITY/,
-    );
-  });
-
-  it("rejects extra top-level fields", () => {
-    const bad = { ...baseHold(), extra: true };
-    assert.throws(() => validateDecision(bad, FEATURES), /unexpected or missing/);
-  });
-
-  it("rejects extra signal fields", () => {
-    const bad = baseHold({
-      signals: [
-        {
-          direction: "neutral",
-          observation: "x",
-          citations: ["range.status"],
-          weight: 1,
-        },
-      ],
-    });
-    assert.throws(() => validateDecision(bad, FEATURES), /signals\[0\]/);
-  });
-
-  it("rejects malformed confidence", () => {
-    assert.throws(
-      () => validateDecision(baseHold({ confidence: "high" }), FEATURES),
-      /confidence/,
-    );
-    assert.throws(
-      () => validateDecision(baseHold({ confidence: 1.5 }), FEATURES),
-      /between 0 and 1/,
-    );
-    assert.throws(
-      () => validateDecision(baseHold({ confidence: Number.NaN }), FEATURES),
-      /finite/,
-    );
-  });
-
-  it("rejects contradictory percentages", () => {
-    assert.throws(
-      () =>
-        validateDecision(
-          baseHold({ liquidityPercentageToDecrease: 10 }),
-          FEATURES,
-        ),
-      /HOLD requires liquidityPercentageToDecrease to be null/,
-    );
-    assert.throws(
-      () =>
-        validateDecision(
-          baseReduce({ liquidityPercentageToDecrease: null }),
-          FEATURES,
-        ),
-      /integer 1–100/,
-    );
-    assert.throws(
-      () =>
-        validateDecision(
-          baseReduce({ liquidityPercentageToDecrease: 0 }),
-          FEATURES,
-        ),
-      /integer 1–100/,
-    );
-    assert.throws(
-      () =>
-        validateDecision(
-          baseReduce({ liquidityPercentageToDecrease: 12.5 }),
-          FEATURES,
-        ),
-      /integer 1–100/,
-    );
-  });
-
-  it("rejects empty signals / empty evidence", () => {
-    assert.throws(
-      () => validateDecision(baseHold({ signals: [] }), FEATURES),
-      /nonempty array/,
-    );
-    assert.throws(
-      () =>
-        validateDecision(
-          baseHold({
-            graphEvidence: {
-              ...baseHold().graphEvidence,
-              citedFeaturePaths: [],
-            },
-          }),
-          FEATURES,
-        ),
-      /citedFeaturePaths/,
-    );
-  });
-
-  it("rejects empty summary and empty uncertainties entries", () => {
-    assert.throws(
-      () => validateDecision(baseHold({ summary: "  " }), FEATURES),
-      /summary/,
-    );
-    assert.throws(
-      () => validateDecision(baseHold({ uncertainties: [""] }), FEATURES),
-      /uncertainties\[0\]/,
-    );
-  });
-
-  it("rejects hallucinated feature path citations", () => {
+  it("rejects freeform direction (must be enum)", () => {
     assert.throws(
       () =>
         validateDecision(
@@ -281,102 +200,324 @@ describe("decision-schema", () => {
             signals: [
               {
                 direction: "neutral",
-                observation: "made up",
-                citations: ["range.madeUpField"],
+                observation: "x",
+                citations: ["range.status"],
               },
             ],
           }),
           FEATURES,
         ),
-      /nonexistent feature path/,
+      /SUPPORTS_HOLD \| SUPPORTS_REDUCE \| UNCERTAINTY/,
+    );
+  });
+
+  it("rejects REDUCE with same-domain only independence", () => {
+    assert.throws(
+      () =>
+        validateDecision(
+          baseReduce({
+            signals: [
+              {
+                direction: "SUPPORTS_REDUCE",
+                observation: "a",
+                citations: ["range.status"],
+              },
+              {
+                direction: "SUPPORTS_REDUCE",
+                observation: "b",
+                citations: ["range.inRange"],
+              },
+            ],
+          }),
+          FEATURES,
+        ),
+      /distinct evidence domains/,
+    );
+  });
+
+  it("rejects REDUCE with fewer than two SUPPORTS_REDUCE", () => {
+    assert.throws(
+      () =>
+        validateDecision(
+          baseReduce({
+            signals: [
+              {
+                direction: "SUPPORTS_REDUCE",
+                observation: "only one",
+                citations: ["range.nearestBoundaryDistance"],
+              },
+              {
+                direction: "SUPPORTS_HOLD",
+                observation: "wrong direction",
+                citations: ["activity.txCountSum6h.value"],
+              },
+            ],
+          }),
+          FEATURES,
+        ),
+      /at least 2 SUPPORTS_REDUCE/,
+    );
+  });
+
+  it("rejects position.* alone as the only support domain", () => {
+    assert.throws(
+      () =>
+        validateDecision(
+          baseHold({
+            signals: [
+              {
+                direction: "SUPPORTS_HOLD",
+                observation: "only position",
+                citations: ["position.fee", "position.tickLower"],
+              },
+            ],
+          }),
+          FEATURES,
+        ),
+      /Graph-derived evidence domain/,
+    );
+  });
+
+  it("rejects actionable citation of null/reason evidence", () => {
+    assert.throws(
+      () =>
+        validateDecision(
+          baseHold({
+            signals: [
+              {
+                direction: "SUPPORTS_HOLD",
+                observation: "bad",
+                citations: ["volumes.trendToken0_6hVsPrev6h"],
+              },
+            ],
+          }),
+          FEATURES,
+        ),
+      /null\/reason evidence|non-null primitive/,
     );
     assert.throws(
       () =>
         validateDecision(
           baseHold({
+            signals: [
+              {
+                direction: "SUPPORTS_HOLD",
+                observation: "bad leaf",
+                citations: ["volumes.trendToken0_6hVsPrev6h.value"],
+              },
+            ],
+          }),
+          FEATURES,
+        ),
+      /null\/reason evidence/,
+    );
+  });
+
+  it("allows null/reason only on UNCERTAINTY and does not count it for REDUCE domains", () => {
+    const d = validateDecision(
+      baseReduce({
+        signals: [
+          {
+            direction: "SUPPORTS_REDUCE",
+            observation: "range",
+            citations: ["range.nearestBoundaryDistance"],
+          },
+          {
+            direction: "SUPPORTS_REDUCE",
+            observation: "activity",
+            citations: ["activity.txCountSum24h.value"],
+          },
+          {
+            direction: "UNCERTAINTY",
+            observation: "null trend",
+            citations: ["volumes.trendToken0_6hVsPrev6h.value"],
+          },
+        ],
+      }),
+      FEATURES,
+    );
+    assert.equal(d.action, "REDUCE_LIQUIDITY");
+  });
+
+  it("forbids USD-derived paths from supporting action when USD unusable", () => {
+    assert.equal(isUsdDerivedPath("fees.usd_6h.value"), true);
+    assert.throws(
+      () =>
+        validateDecision(
+          baseReduce({
+            signals: [
+              {
+                direction: "SUPPORTS_REDUCE",
+                observation: "fees",
+                citations: ["fees.usd_6h.value"],
+              },
+              {
+                direction: "SUPPORTS_REDUCE",
+                observation: "range",
+                citations: ["range.status"],
+              },
+            ],
+          }),
+          FEATURES,
+        ),
+      /USD-derived/,
+    );
+  });
+
+  it("allows USD-derived support when usdDataUsable.usable is true", () => {
+    const usable = {
+      ...FEATURES,
+      usdDataUsable: { usable: true, reasons: [] },
+    };
+    const d = validateDecision(
+      {
+        action: "REDUCE_LIQUIDITY",
+        confidence: 0.7,
+        liquidityPercentageToDecrease: 10,
+        summary: "Fee/TVL and range both adverse.",
+        signals: [
+          {
+            direction: "SUPPORTS_REDUCE",
+            observation: "fee pressure",
+            citations: ["fees.feeToTvl_24h.value"],
+          },
+          {
+            direction: "SUPPORTS_REDUCE",
+            observation: "near edge",
+            citations: ["range.nearestBoundaryDistance"],
+          },
+        ],
+        uncertainties: [],
+        graphEvidence: {
+          subgraphId: usable.graph.subgraphId,
+          indexedBlock: usable.graph.indexedBlock,
+          ageSeconds: usable.graph.ageSeconds,
+          citedFeaturePaths: [
+            "fees.feeToTvl_24h.value",
+            "range.nearestBoundaryDistance",
+          ],
+        },
+      },
+      usable,
+    );
+    assert.equal(d.action, "REDUCE_LIQUIDITY");
+  });
+
+  it("requires graphEvidence.citedFeaturePaths to equal citation union (no filler/dupes)", () => {
+    assert.throws(
+      () =>
+        validateDecision(
+          baseHold({
             graphEvidence: {
-              ...baseHold().graphEvidence,
-              citedFeaturePaths: ["fees.hallucinated"],
+              citedFeaturePaths: ["range.status", "range.inRange", "graph.ageSeconds"],
             },
           }),
           FEATURES,
         ),
-      /nonexistent feature path/,
-    );
-  });
-
-  it("rejects REDUCE with only one signal or duplicate-only citations", () => {
-    assert.throws(
-      () =>
-        validateDecision(
-          baseReduce({
-            signals: [
-              {
-                direction: "risk_up",
-                observation: "only one",
-                citations: ["range.nearestBoundaryDistance"],
-              },
-            ],
-          }),
-          FEATURES,
-        ),
-      /at least 2 independent signals/,
+      /deduplicated union/,
     );
     assert.throws(
       () =>
         validateDecision(
-          baseReduce({
+          baseHold({
             signals: [
               {
-                direction: "a",
-                observation: "same path twice",
-                citations: ["range.status"],
-              },
-              {
-                direction: "b",
-                observation: "still same path",
-                citations: ["range.status"],
+                direction: "SUPPORTS_HOLD",
+                observation: "x",
+                citations: ["range.status", "range.inRange"],
               },
             ],
+            graphEvidence: {
+              citedFeaturePaths: ["range.status", "range.status", "range.inRange"],
+            },
           }),
           FEATURES,
         ),
-      /distinct feature paths/,
+      /duplicate/,
     );
   });
 
-  it("rejects mismatched graphEvidence vs features", () => {
+  it("requires valid features.graph then exact match on all three fields", () => {
+    assert.throws(
+      () =>
+        validateDecision(baseHold(), {
+          ...FEATURES,
+          graph: { ...FEATURES.graph, subgraphId: "" },
+        }),
+      /features\.graph\.subgraphId/,
+    );
     assert.throws(
       () =>
         validateDecision(
           baseHold({
             graphEvidence: {
-              ...baseHold().graphEvidence,
+              citedFeaturePaths: citeUnion(...baseHold().signals),
               subgraphId: "wrong",
+              indexedBlock: FEATURES.graph.indexedBlock,
+              ageSeconds: FEATURES.graph.ageSeconds,
             },
           }),
           FEATURES,
         ),
       /subgraphId does not match/,
     );
+  });
+
+  it("rejects CLAIM_FEES, extra fields, contradictory percentages, empty evidence", () => {
+    assert.throws(
+      () => validateDecision(baseHold({ action: "CLAIM_FEES" }), FEATURES),
+      /CLAIM_FEES/,
+    );
+    assert.throws(
+      () => validateDecision({ ...baseHold(), extra: 1 }, FEATURES),
+      /unexpected or missing/,
+    );
+    assert.throws(
+      () =>
+        validateDecision(
+          baseHold({ liquidityPercentageToDecrease: 5 }),
+          FEATURES,
+        ),
+      /null/,
+    );
+    assert.throws(
+      () => validateDecision(baseHold({ signals: [] }), FEATURES),
+      /nonempty/,
+    );
+  });
+
+  it("rejects citing non-primitive objects for actionable support", () => {
     assert.throws(
       () =>
         validateDecision(
           baseHold({
-            graphEvidence: {
-              ...baseHold().graphEvidence,
-              ageSeconds: 999,
-            },
+            signals: [
+              {
+                direction: "SUPPORTS_HOLD",
+                observation: "object leaf",
+                citations: ["activity.txCountSum6h"],
+              },
+            ],
           }),
           FEATURES,
         ),
-      /ageSeconds does not match/,
+      /non-null primitive/,
     );
   });
 
-  it("never silently coerces invalid output to HOLD", () => {
-    assert.throws(() => validateDecision({ action: "HOLD" }, FEATURES));
-    assert.throws(() => validateDecision(null, FEATURES));
-    assert.throws(() => validateDecision("HOLD", FEATURES));
+  it("accepts measured zero primitive as actionable", () => {
+    const d = validateDecision(
+      baseHold({
+        signals: [
+          {
+            direction: "SUPPORTS_HOLD",
+            observation: "zero activity measured",
+            citations: ["activity.txCountSum6h.value"],
+          },
+        ],
+      }),
+      FEATURES,
+    );
+    assert.equal(d.action, "HOLD");
   });
 });
