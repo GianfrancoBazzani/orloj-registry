@@ -1,9 +1,10 @@
 # substreams-sentiment
 
 Source data for the **Onchain Market Sentiment Agent**. Decodes Uniswap V3 `Swap`
-events from the WETH/USDC 0.05% mainnet pool, labels each swap BUY or SELL, and sinks
-one row per swap into Postgres — where the `feeling` MCP
-([`../registry/src/mcps/feeling/`](../registry/src/mcps/feeling/)) reads it.
+events from the WETH/USDC 0.05% mainnet pool and labels each swap BUY or SELL. The
+`feeling` MCP ([`../registry/src/mcps/feeling/`](../registry/src/mcps/feeling/)) runs
+this module over a bounded recent range on every call and aggregates in-process — see
+*Two ways to consume it* below for that path versus the optional Postgres sink.
 
 **This is a standalone Cargo crate** compiled to `wasm32-unknown-unknown`. It is *not*
 part of the registry's build: the empty `[workspace]` in `Cargo.toml` stops `cargo`
