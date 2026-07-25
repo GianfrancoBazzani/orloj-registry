@@ -89,14 +89,16 @@ It wraps **two different Uniswap services**, which is the main thing to keep str
 - **Trading API** (`UNISWAP_API_URL`, default `trade-api.gateway.uniswap.org/v1`) — `quote`,
   `swap`. Works on any chain in the `networks` table. `trading.rs` + `permit2.rs`.
 - **Liquidity API** (`UNISWAP_LP_API_URL`, default `liquidity.api.uniswap.org`) —
-  `get_v3_position`, `create_v3_position`, `decrease_v3_position`, `claim_v3_fees`. **Sepolia
-  (11155111) only, Uniswap V3 only.** `lp.rs`.
+  `get_v3_position`, `get_v3_pool_state`, `list_v3_positions`, `create_v3_position`,
+  `decrease_v3_position`, `claim_v3_fees`. **Sepolia (11155111) only, Uniswap V3 only.** `lp.rs`.
+  The three read tools touch no API at all — they are plain `eth_call`.
 
 Both use the same `UNISWAP_API_KEY`.
 
-Sepolia V3 addresses live in one `SEPOLIA_V3` const in `lp.rs`, verified on-chain. Note
-`0x3B5E3c5E595D85fbFBC2a42ECC091e183E76697C` is **not** the position manager (it's a library);
-the real one is `0x1238536071E1c677A632429e3655c799b22cDA52`. A test pins both.
+Sepolia V3 addresses live in one `SEPOLIA_V3` const in `lp.rs` (factory, position manager, WETH),
+verified on-chain. Note `0x3B5E3c5E595D85fbFBC2a42ECC091e183E76697C` is **not** the position
+manager (it's a library); the real one is `0x1238536071E1c677A632429e3655c799b22cDA52`. A test
+pins them.
 
 Conventions worth preserving when editing `lp.rs`:
 
@@ -105,12 +107,29 @@ Conventions worth preserving when editing `lp.rs`:
 - **Token pairs are never caller-supplied.** `create_v3_position` derives them from the pool
   (`read_v3_pool`, which round-trips the pool through the factory); the others derive them from
   the position NFT. Every LP tool checks `ownerOf` first.
-- **`/lp/create` is called twice** — `simulateTransaction: false` to size the position (allowances
-  may not exist yet), then again with `true` after approvals confirm, for a fresh deadline.
+- **`/lp/create` is first called with `simulateTransaction: false`** to size the position
+  (allowances may not exist yet), then with `true` after funding/approvals and again whenever
+  reconciliation needs a fresh quote. Automatic pool discovery may also try another fee tier, but
+  only after a structured pool-specific unavailable/unindexed response; global failures abort.
 - **`validate_api_transaction` before signing**, then `eth_call` simulation. Calldata is passed
   through byte-for-byte, never rewritten.
-- Errors are contexted `stage=<position read|API request|approval|simulation|broadcast|receipt>`;
-  `with_approvals` appends already-broadcast approval hashes to later failures.
+- Errors are contexted
+  `stage=<pool read|position read|balance read|API request|wrap|approval|simulation|broadcast|receipt>`;
+  `with_completed_txs` appends every already-broadcast wrap and approval hash to later failures.
+- **`create_v3_position`'s public interface has no ticks and no wei.** Human decimals in, exact
+  `U256` everywhere after. `parse_human_decimal_amount` rejects rather than coerces — truncating
+  a too-precise amount would silently deposit the wrong number. The *only* float in the module is
+  `derive_tick_range`'s `ln`, which produces a tick that is immediately snapped to the spacing
+  grid; keep it that way.
+- **Planning is separated from signing on purpose.** `plan_create_v3_position` holds no vault, no
+  signer and no `DbPool`, so it cannot reach `sign_and_broadcast`. That is what makes a read-only
+  dry run trustworthy — the capability is absent, not merely unused. Do not thread an `LpSession`
+  into it.
+- **The reconciliation loop is not optional cleverness.** A quote can need more WETH or allowance
+  after its own approvals confirm; the loop re-checks and re-funds, bounded to
+  `MAX_RECONCILIATION_ATTEMPTS` rounds that move funds, then still inspects the quote produced by
+  the final allowed round. Balances are re-read from chain immediately before signing rather than
+  trusted from local bookkeeping.
 
 ## Auth flow
 

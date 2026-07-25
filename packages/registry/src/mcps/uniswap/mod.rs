@@ -15,7 +15,8 @@
 //   permit2  – Permit2 EIP-712 digest computation and vault-backed digest signing
 //   trading  – Uniswap Trading API: `quote`, `swap`, `supported_networks`
 //   lp       – Uniswap Liquidity API + on-chain V3 reads: `get_v3_position`,
-//              `create_v3_position`, `decrease_v3_position`, `claim_v3_fees`
+//              `get_v3_pool_state`, `list_v3_positions`, `create_v3_position`,
+//              `decrease_v3_position`, `claim_v3_fees`
 //
 // Env vars:
 //   UNISWAP_API_KEY     – Uniswap API key, shared by both APIs (required)
@@ -63,21 +64,40 @@ a quote, transparently handles both Permit2 layers if needed, then signs and bro
 LIQUIDITY uses the separate Uniswap Liquidity API and is ETHEREUM SEPOLIA ONLY (chainId \
 11155111); any other chainId is rejected. Uniswap V3 only — not V2, not V4. Contracts used: \
 UniswapV3Factory 0x0227628f3F023bb0B980b67D528571c95c6DaC1c and NonfungiblePositionManager \
-0x1238536071E1c677A632429e3655c799b22cDA52. Every liquidity tool refuses to act on a position \
-NFT the agent's wallet does not own. \
-get_v3_position(chainId, nftTokenId) reads a position — pool, token pair, fee tier, tick range, \
-liquidity, and tokensOwed0/tokensOwed1. Read-only, on-chain only, no side effects. Do not treat \
-tokensOwed0/1 as the position's current claimable fees: they are a cached balance written the \
-last time the position was touched on-chain (mint, increase, decrease or collect) and exclude \
-everything accrued since, so they are frequently stale and often zero while real fees are owed. \
-Live claimable fees would require reading pool and tick fee-growth accumulators, which no tool \
-here does. \
-create_v3_position(chainId, poolAddress, independentTokenAddress, independentTokenAmount, \
-tickLower, tickUpper, slippageTolerance?) opens a position in an EXISTING pool; it cannot create \
-a pool. Give one side of the pair and Uniswap derives the other. The pool's token0/token1 are \
-read from the pool itself and verified against the factory, so you do not pass them. It runs any \
-required token approvals first, waits for each to confirm, then mints, and returns the \
-transaction hash plus the new position NFT's token id. \
+0x1238536071E1c677A632429e3655c799b22cDA52, and WETH \
+0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14 for the \"ETH\" side. Every liquidity tool refuses to \
+act on a position NFT the agent's wallet does not own. \
+get_v3_position(chainId, nftTokenId) reads one position — pool, token pair, fee tier, tick \
+range, liquidity, and tokensOwed0/tokensOwed1. list_v3_positions(chainId) lists every position \
+the agent's wallet holds (up to 50; `truncated` says if there are more). Do not treat \
+tokensOwed0/1 as claimable fees: they are a cached balance written the last time the position was \
+touched on-chain (mint, increase, decrease or collect) and exclude everything accrued since, so \
+they are frequently stale and often zero while real fees are owed. Live claimable fees would \
+require reading pool and tick fee-growth accumulators, which no tool here does. \
+get_v3_pool_state(chainId, poolAddress) reads a pool's live token pair, fee tier, current tick, \
+sqrt price, tick spacing and active liquidity, verified against the V3 factory. All three are \
+read-only, on-chain only, with no side effects. \
+create_v3_position(chainId, tokenA, tokenB, maxTokenAAmount, maxTokenBAmount, rangeWidthBps?, \
+poolAddress?, slippageTolerance?) opens a position in an EXISTING pool; it cannot create a pool. \
+tokenA/tokenB are ERC-20 addresses, or the exact string \"ETH\" for native ether (at most one), \
+which is wrapped to WETH automatically and only by the shortfall the wallet does not already \
+hold. AMOUNTS ARE HUMAN-READABLE DECIMAL STRINGS IN WHOLE TOKENS — \"0.01\" means 0.01 ETH and \
+\"20\" means 20 USDC; they are NOT wei, and each token's on-chain decimals are read and applied for \
+you. Quote them as strings, not JSON numbers. Both maximums are ceilings rather than targets: \
+the position is sized to the largest that fits inside both, capped further by what the wallet \
+actually holds, so it may spend less than allowed but never more. rangeWidthBps is the price \
+movement allowed on EACH side of the current price (default 1000 = about -10%/+10%); the exact \
+ticks are derived from the pool's live price and snapped outward so the range always brackets \
+it. DO NOT try to compute ticks — the tool does not accept them, and get_v3_pool_state is for \
+inspection, not a prerequisite. poolAddress is optional: omit it and the standard fee tiers \
+(100, 500, 3000, 10000) are ranked by active liquidity, using the deepest pool the Liquidity API \
+can size and preferring the lower fee tier on an exact tie. Only a pool-specific unavailable or \
+unindexed response is skipped; auth, rate-limit, transport and generic service failures abort. \
+Passing poolAddress selects exactly that pool with no fallback, and also reaches nonstandard fee \
+tiers. The tool wraps ETH \
+if needed, runs approvals, re-prices if the quote moved while they confirmed, then simulates, \
+signs and broadcasts the mint, returning the transaction hash and the new position NFT's token \
+id along with the pool, ticks and amounts actually used. \
 decrease_v3_position(chainId, nftTokenId, liquidityPercentageToDecrease, slippageTolerance?) \
 withdraws liquidity; pass 100 to close the position out. On Uniswap V3 this ALSO collects the \
 position's accrued fees: the transaction is a multicall of decreaseLiquidity then an uncapped \
@@ -92,9 +112,11 @@ harvest from a position you intend to keep open. \
 Decrease and claim withdraw any ETH side as WETH. \
 \
 The agent's Sepolia vault must be funded with gas and with the tokens being deposited before any \
-liquidity write will succeed. On failure, the error names the stage that failed (position read, \
-API request, approval, simulation, broadcast or receipt); if approvals were already broadcast \
-before the failure, their transaction hashes are listed in the error.";
+liquidity write will succeed; native ETH is enough for the \"ETH\" side, since wrapping is \
+automatic. On failure, the error names the stage that failed (pool read, position read, balance \
+read, API request, wrap, approval, simulation, broadcast or receipt); if any wrap or approval was \
+already broadcast before the failure, their transaction hashes are listed in the error, because \
+those moved real funds and a retry does not start from scratch.";
 
 // ---------------------------------------------------------------------------
 // Config & server struct
@@ -147,6 +169,8 @@ impl UniswapMcpServer {
             "swap" => self.handle_swap(args).await,
             "supported_networks" => self.handle_supported_networks().await,
             "get_v3_position" => self.handle_get_v3_position(args).await,
+            "get_v3_pool_state" => self.handle_get_v3_pool_state(args).await,
+            "list_v3_positions" => self.handle_list_v3_positions(args).await,
             "create_v3_position" => self.handle_create_v3_position(args).await,
             "decrease_v3_position" => self.handle_decrease_v3_position(args).await,
             "claim_v3_fees" => self.handle_claim_v3_fees(args).await,
@@ -301,6 +325,8 @@ mod tests {
             "swap",
             "supported_networks",
             "get_v3_position",
+            "get_v3_pool_state",
+            "list_v3_positions",
             "create_v3_position",
             "decrease_v3_position",
             "claim_v3_fees",
@@ -310,7 +336,7 @@ mod tests {
                 "tools/list should contain {expected}, got {names:?}"
             );
         }
-        assert_eq!(names.len(), 7, "no unexpected tools: {names:?}");
+        assert_eq!(names.len(), 9, "no unexpected tools: {names:?}");
     }
 
     #[tokio::test]
@@ -389,6 +415,38 @@ mod tests {
             !instructions.contains("does not claim fees"),
             "the incorrect 'decrease does not claim fees' claim must not come back"
         );
+    }
+
+    #[tokio::test]
+    async fn initialize_describes_the_ergonomic_create_interface() {
+        let result = offline_server()
+            .dispatch(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize"}))
+            .await;
+        let instructions = result["result"]["instructions"].as_str().unwrap();
+
+        // The whole point of the rewrite: an agent must not be told to work out ticks.
+        assert!(
+            instructions.contains("DO NOT try to compute ticks"),
+            "instructions must steer away from raw ticks"
+        );
+        assert!(
+            !instructions.contains("slot0()"),
+            "the old 'go eth_call slot0() yourself' guidance must not come back"
+        );
+        assert!(
+            !instructions.contains("independentToken"),
+            "the removed argument must not be described"
+        );
+
+        // Amount units are the other easy way to get this catastrophically wrong.
+        assert!(
+            instructions.contains("NOT wei"),
+            "instructions must say amounts are whole tokens, not wei"
+        );
+
+        for tool in ["get_v3_pool_state", "list_v3_positions", "rangeWidthBps"] {
+            assert!(instructions.contains(tool), "{tool} should be documented");
+        }
     }
 
     #[tokio::test]

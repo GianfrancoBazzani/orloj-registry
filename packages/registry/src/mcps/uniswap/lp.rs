@@ -12,7 +12,7 @@
 // rejected up front rather than silently sent to an API that would price it against the wrong
 // deployment.
 
-use std::sync::OnceLock;
+use std::{fmt, sync::OnceLock};
 
 use alloy::{
     dyn_abi::{DynSolValue, FunctionExt, JsonAbiExt},
@@ -42,18 +42,24 @@ use crate::{
 // Note for anyone cross-checking against older notes: 0x3B5E3c5E595D85fbFBC2a42ECC091e183E76697C
 // is sometimes quoted as the Sepolia position manager. It is not — on-chain it is a Solidity
 // library (its bytecode is the PUSH20-self-address preamble) and ownerOf/positions revert on it.
+//
+// WETH verified the same way: symbol() == "WETH", decimals() == 18. It is the canonical wrapper
+// every Sepolia V3 pool pairs against — a V3 pool has no native-ETH side, so "ETH" in a tool
+// argument always means this contract by the time it reaches a pool or the Liquidity API.
 // ---------------------------------------------------------------------------
 
 pub struct SepoliaV3Deployment {
     pub chain_id: u64,
     pub factory: Address,
     pub position_manager: Address,
+    pub weth: Address,
 }
 
 pub const SEPOLIA_V3: SepoliaV3Deployment = SepoliaV3Deployment {
     chain_id: 11155111,
     factory: address!("0227628f3F023bb0B980b67D528571c95c6DaC1c"),
     position_manager: address!("1238536071E1c677A632429e3655c799b22cDA52"),
+    weth: address!("fFf9976782d46CC05630D1f6eBAb18b2324d6B14"),
 };
 
 // ---------------------------------------------------------------------------
@@ -68,6 +74,12 @@ const POSITION_MANAGER_ABI: &str = r#"[
   {"name":"ownerOf","type":"function","stateMutability":"view",
    "inputs":[{"name":"tokenId","type":"uint256"}],
    "outputs":[{"name":"owner","type":"address"}]},
+  {"name":"balanceOf","type":"function","stateMutability":"view",
+   "inputs":[{"name":"owner","type":"address"}],
+   "outputs":[{"name":"balance","type":"uint256"}]},
+  {"name":"tokenOfOwnerByIndex","type":"function","stateMutability":"view",
+   "inputs":[{"name":"owner","type":"address"},{"name":"index","type":"uint256"}],
+   "outputs":[{"name":"tokenId","type":"uint256"}]},
   {"name":"positions","type":"function","stateMutability":"view",
    "inputs":[{"name":"tokenId","type":"uint256"}],
    "outputs":[
@@ -98,7 +110,40 @@ const POOL_ABI: &str = r#"[
   {"name":"token1","type":"function","stateMutability":"view","inputs":[],
    "outputs":[{"name":"","type":"address"}]},
   {"name":"fee","type":"function","stateMutability":"view","inputs":[],
-   "outputs":[{"name":"","type":"uint24"}]}
+   "outputs":[{"name":"","type":"uint24"}]},
+  {"name":"tickSpacing","type":"function","stateMutability":"view","inputs":[],
+   "outputs":[{"name":"","type":"int24"}]},
+  {"name":"liquidity","type":"function","stateMutability":"view","inputs":[],
+   "outputs":[{"name":"","type":"uint128"}]},
+  {"name":"slot0","type":"function","stateMutability":"view","inputs":[],
+   "outputs":[
+     {"name":"sqrtPriceX96","type":"uint160"},
+     {"name":"tick","type":"int24"},
+     {"name":"observationIndex","type":"uint16"},
+     {"name":"observationCardinality","type":"uint16"},
+     {"name":"observationCardinalityNext","type":"uint16"},
+     {"name":"feeProtocol","type":"uint8"},
+     {"name":"unlocked","type":"bool"}]}
+]"#;
+
+/// The parts of ERC-20 this module needs: `decimals()` to convert human amounts exactly, and
+/// `balanceOf` to size a position against what the wallet actually holds. WETH is an ERC-20, so
+/// this covers the wrapped side too — only `deposit()` needs a fragment of its own.
+const ERC20_ABI: &str = r#"[
+  {"name":"decimals","type":"function","stateMutability":"view","inputs":[],
+   "outputs":[{"name":"","type":"uint8"}]},
+  {"name":"balanceOf","type":"function","stateMutability":"view",
+   "inputs":[{"name":"account","type":"address"}],
+   "outputs":[{"name":"","type":"uint256"}]},
+  {"name":"approve","type":"function","stateMutability":"nonpayable",
+   "inputs":[{"name":"spender","type":"address"},{"name":"amount","type":"uint256"}],
+   "outputs":[{"name":"","type":"bool"}]}
+]"#;
+
+/// `deposit()` is WETH's own extension, not part of ERC-20 — wrapping native ETH is the one
+/// thing the standard fragment cannot express.
+const WETH_ABI: &str = r#"[
+  {"name":"deposit","type":"function","stateMutability":"payable","inputs":[],"outputs":[]}
 ]"#;
 
 fn parse_abi(src: &str, what: &str) -> JsonAbi {
@@ -118,6 +163,16 @@ fn factory_abi() -> &'static JsonAbi {
 fn pool_abi() -> &'static JsonAbi {
     static ABI: OnceLock<JsonAbi> = OnceLock::new();
     ABI.get_or_init(|| parse_abi(POOL_ABI, "UniswapV3Pool"))
+}
+
+fn erc20_abi() -> &'static JsonAbi {
+    static ABI: OnceLock<JsonAbi> = OnceLock::new();
+    ABI.get_or_init(|| parse_abi(ERC20_ABI, "ERC20"))
+}
+
+fn weth_abi() -> &'static JsonAbi {
+    static ABI: OnceLock<JsonAbi> = OnceLock::new();
+    ABI.get_or_init(|| parse_abi(WETH_ABI, "WETH9"))
 }
 
 fn abi_function<'a>(abi: &'a JsonAbi, name: &str) -> Result<&'a Function> {
@@ -299,22 +354,32 @@ async fn get_pool(
     as_address(out(&outs, 0, "getPool.pool")?, "getPool.pool")
 }
 
-/// A V3 pool's token pair, read from the pool itself and verified against the factory.
-pub struct V3Pool {
+/// Everything about a pool that position sizing and range derivation need, read from the pool
+/// itself and verified against the factory.
+pub struct V3PoolState {
     pub token0: Address,
     pub token1: Address,
+    pub fee: u32,
+    pub tick_spacing: i32,
+    pub current_tick: i32,
+    pub sqrt_price_x96: U256,
+    pub liquidity: U256,
 }
 
-/// Reads a pool's own token pair and fee tier, then proves the address really is a V3 pool from
-/// the canonical Sepolia factory by round-tripping it through `getPool`.
+/// Reads a pool's pair, fee tier, current price/tick, tick spacing and active liquidity, then
+/// proves the address really is a V3 pool from the canonical Sepolia factory by round-tripping it
+/// through `getPool`.
 ///
-/// This is what lets `create_v3_position` drop `token0Address`/`token1Address` from its tool
-/// arguments: the caller supplies only a pool, and the token pair it will be asked to approve
-/// spending on is derived from that pool rather than asserted alongside it. Taking both from the
-/// caller would let a model pair a real pool with unrelated token addresses and get approvals
-/// issued for the wrong assets. An arbitrary contract that merely answers token0()/token1()/fee()
-/// fails the factory round-trip.
-async fn read_v3_pool(provider: &impl Provider, pool: Address) -> Result<V3Pool> {
+/// The factory round-trip is what lets `create_v3_position` take a pool (or none at all) instead
+/// of caller-supplied token addresses: the pair it will approve spending on is derived from a
+/// pool the factory vouches for, rather than asserted alongside it. Taking both from the caller
+/// would let a model pair a real pool with unrelated token addresses and get approvals issued for
+/// the wrong assets. An arbitrary contract that merely answers token0()/token1()/fee() fails the
+/// round-trip.
+///
+/// `current_tick`/`tick_spacing` are read here rather than left to the caller because deriving a
+/// price range needs both, and an agent has no good way to obtain them otherwise.
+async fn read_v3_pool_state(provider: &impl Provider, pool: Address) -> Result<V3PoolState> {
     let abi = pool_abi();
 
     let t0 = call_view(provider, pool, abi_function(abi, "token0")?, &[])
@@ -322,6 +387,9 @@ async fn read_v3_pool(provider: &impl Provider, pool: Address) -> Result<V3Pool>
         .with_context(|| format!("{pool:#x} does not answer token0() — not a Uniswap V3 pool"))?;
     let t1 = call_view(provider, pool, abi_function(abi, "token1")?, &[]).await?;
     let f = call_view(provider, pool, abi_function(abi, "fee")?, &[]).await?;
+    let spacing = call_view(provider, pool, abi_function(abi, "tickSpacing")?, &[]).await?;
+    let liq = call_view(provider, pool, abi_function(abi, "liquidity")?, &[]).await?;
+    let slot0 = call_view(provider, pool, abi_function(abi, "slot0")?, &[]).await?;
 
     let token0 = as_address(out(&t0, 0, "pool.token0")?, "pool.token0")?;
     let token1 = as_address(out(&t1, 0, "pool.token1")?, "pool.token1")?;
@@ -334,7 +402,22 @@ async fn read_v3_pool(provider: &impl Provider, pool: Address) -> Result<V3Pool>
          {token0:#x}/{token1:#x} at fee tier {fee} to {canonical:#x}"
     );
 
-    Ok(V3Pool { token0, token1 })
+    let tick_spacing = as_i32(out(&spacing, 0, "pool.tickSpacing")?, "pool.tickSpacing")?;
+    anyhow::ensure!(
+        tick_spacing > 0,
+        "{pool:#x} reports a non-positive tickSpacing ({tick_spacing}) — refusing to derive a \
+         range against it"
+    );
+
+    Ok(V3PoolState {
+        token0,
+        token1,
+        fee,
+        tick_spacing,
+        current_tick: as_i32(out(&slot0, 1, "slot0.tick")?, "slot0.tick")?,
+        sqrt_price_x96: as_u256(out(&slot0, 0, "slot0.sqrtPriceX96")?, "slot0.sqrtPriceX96")?,
+        liquidity: as_u256(out(&liq, 0, "pool.liquidity")?, "pool.liquidity")?,
+    })
 }
 
 /// ERC-721 `Transfer(address indexed from, address indexed to, uint256 indexed tokenId)`.
@@ -403,6 +486,28 @@ fn excerpt(body: &str) -> String {
     format!("{head}… (truncated)")
 }
 
+/// A non-success response from the Liquidity API, kept structured so automatic pool discovery
+/// can distinguish a pool-specific indexing gap from authentication, throttling, transport, or
+/// service-wide failures. Its display text is already bounded and contains no request headers.
+#[derive(Debug)]
+struct LpHttpError {
+    path: String,
+    status: reqwest::StatusCode,
+    body_excerpt: String,
+}
+
+impl fmt::Display for LpHttpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "uniswap {} returned {}: {}",
+            self.path, self.status, self.body_excerpt
+        )
+    }
+}
+
+impl std::error::Error for LpHttpError {}
+
 async fn lp_post(http: &reqwest::Client, path: &str, body: &Value) -> Result<Value> {
     let api_key = std::env::var("UNISWAP_API_KEY").context("UNISWAP_API_KEY not set")?;
 
@@ -421,36 +526,75 @@ async fn lp_post(http: &reqwest::Client, path: &str, body: &Value) -> Result<Val
         .await
         .with_context(|| format!("reading uniswap {path} response body failed"))?;
 
-    anyhow::ensure!(
-        status.is_success(),
-        "uniswap {path} returned {status}: {}",
-        excerpt(&text)
-    );
+    if !status.is_success() {
+        return Err(LpHttpError {
+            path: path.to_string(),
+            status,
+            body_excerpt: excerpt(&text),
+        }
+        .into());
+    }
 
     serde_json::from_str(&text)
         .with_context(|| format!("uniswap {path} response is not JSON: {}", excerpt(&text)))
 }
 
-/// POST /lp/create body for a position in an *existing* pool.
+/// Returns a safe explanation only for errors known to be local to one candidate pool.
 ///
-/// `simulate` is false for the pre-approval call that only exists to learn the dependent token
-/// amount — the wallet may not hold the allowances yet, so server-side simulation would fail for
-/// a reason that says nothing about whether the position is valid. It is true for the refetch
-/// after approvals confirm, when a simulation failure is real signal.
+/// A generic 5xx is deliberately not enough: retrying other pools during a service outage would
+/// hide the real failure and multiply API traffic. Likewise 401/403/429 and transport errors
+/// always abort immediately. The first signature is the exact live Sepolia failure observed for
+/// a valid on-chain pool that the Liquidity API had not indexed.
+fn pool_local_api_failure(error: &anyhow::Error) -> Option<String> {
+    let http_error = error
+        .chain()
+        .find_map(|source| source.downcast_ref::<LpHttpError>())?;
+    let message = http_error.body_excerpt.to_ascii_lowercase();
+    let pool_specific = [
+        "slot 0 info not available",
+        "slot0 info not available",
+        "pool not found",
+        "pool is not indexed",
+        "pool not indexed",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle));
+
+    if pool_specific
+        && (http_error.status.is_client_error() || http_error.status.is_server_error())
+        && !matches!(
+            http_error.status,
+            reqwest::StatusCode::UNAUTHORIZED
+                | reqwest::StatusCode::FORBIDDEN
+                | reqwest::StatusCode::TOO_MANY_REQUESTS
+        )
+    {
+        Some(http_error.to_string())
+    } else {
+        None
+    }
+}
+
 /// Everything /lp/create needs about the position being opened. Grouped, following the
-/// `QuoteParams` / `SignTransactionParams` convention elsewhere in the crate, so the two passes
+/// `QuoteParams` / `SignTransactionParams` convention elsewhere in the crate, so repeated passes
 /// over the same position differ only in `simulate`.
 struct CreateParams<'a> {
     wallet: Address,
     pool: Address,
-    pool_tokens: &'a V3Pool,
+    pool_tokens: &'a V3PoolState,
     independent_token: Address,
-    independent_amount: &'a str,
+    independent_amount: U256,
     tick_lower: i32,
     tick_upper: i32,
     slippage: Option<f64>,
 }
 
+/// POST /lp/create body for a position in an *existing* pool.
+///
+/// `simulate` is false only for the pre-approval sizing calls that exist to learn the dependent
+/// token amount — the wallet may not hold the allowances yet, so server-side simulation would
+/// fail for a reason that says nothing about whether the position is valid. It is true for every
+/// fetch of a transaction we might actually sign, when a simulation failure is real signal.
 fn build_lp_create_body(p: &CreateParams<'_>, simulate: bool) -> Value {
     let mut body = json!({
         "walletAddress": p.wallet.to_checksum(None),
@@ -463,7 +607,7 @@ fn build_lp_create_body(p: &CreateParams<'_>, simulate: bool) -> Value {
         },
         "independentToken": {
             "tokenAddress": p.independent_token.to_checksum(None),
-            "amount": p.independent_amount,
+            "amount": p.independent_amount.to_string(),
         },
         "tickBounds": {
             "tickLower": p.tick_lower,
@@ -537,9 +681,14 @@ fn build_lp_claim_fees_body(wallet: Address, nft_token_id: U256) -> Value {
 
 /// Pulls the approval transactions out of a /lp/check_approval response.
 ///
-/// Documented shape: `{ transactions: [{ transaction, cancelApproval, action, gasFee }] }`.
+/// Documented shape, confirmed against a live Sepolia response:
+/// `{ requestId, transactions: [{ transaction, cancelApproval, action }], kycRequiredWarnings }`.
 /// An empty array is the normal "already approved" case. Anything else is an error naming the
 /// field, not a fallback — guessing at an undocumented shape risks signing the wrong calldata.
+///
+/// `action` is checked here rather than ignored: a response describing some other operation is
+/// not one we asked for, and executing it would approve spending for a flow the caller did not
+/// request.
 fn parse_approval_transactions(resp: &Value) -> Result<Vec<Value>> {
     let transactions = resp
         .get("transactions")
@@ -561,6 +710,21 @@ fn parse_approval_transactions(resp: &Value) -> Result<Vec<Value>> {
         .iter()
         .enumerate()
         .map(|(i, entry)| {
+            let action = entry
+                .get("action")
+                .and_then(|a| a.as_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "uniswap /lp/check_approval transactions[{i}] has no 'action': {}",
+                        excerpt(&entry.to_string())
+                    )
+                })?;
+            anyhow::ensure!(
+                action == "CREATE",
+                "uniswap /lp/check_approval transactions[{i}] describes a '{action}' approval, \
+                 but this flow only requested CREATE — refusing to execute it"
+            );
+
             entry
                 .get("transaction")
                 .filter(|t| !t.is_null())
@@ -751,6 +915,67 @@ fn validate_api_transaction(
     Ok(ValidatedTx { to, data, value })
 }
 
+/// The only spender any approval from this flow may name.
+///
+/// Every /lp/create transaction is pinned to the position manager, so it is also the only
+/// contract that ever needs to move the agent's tokens. An approval naming anything else — a
+/// router, a permit contract, an attacker — would hand spending rights to a party this flow
+/// never transacts with, and is refused.
+const ALLOWED_APPROVAL_SPENDER: Address = SEPOLIA_V3.position_manager;
+
+/// Structural checks on an approval returned by /lp/check_approval.
+///
+/// Approvals cannot be destination-pinned to a single address the way create/decrease/claim can
+/// — an approval necessarily targets the ERC-20 being approved. That does not mean they should
+/// go unchecked: this confirms the destination is one of the two tokens this position actually
+/// uses, that the call is ERC-20 `approve` and nothing else, that the spender is the position
+/// manager, and that no ether rides along.
+///
+/// Verified against a live Sepolia response: `to` is the token, `data` is
+/// `approve(0x1238…DA52, uint256::MAX)`, `value` is `"0x00"`.
+fn validate_approval_transaction(
+    tx: &Value,
+    expected_from: Address,
+    expected_chain_id: u64,
+    pool_tokens: (Address, Address),
+) -> Result<ValidatedTx> {
+    // Destination is checked below against the pair, so no single-address pin here.
+    let validated = validate_api_transaction(tx, expected_from, expected_chain_id, None)?;
+
+    anyhow::ensure!(
+        validated.to == pool_tokens.0 || validated.to == pool_tokens.1,
+        "approval targets {:#x}, which is neither token of this position ({:#x}/{:#x}) — \
+         refusing to approve a token the position does not use",
+        validated.to,
+        pool_tokens.0,
+        pool_tokens.1
+    );
+
+    anyhow::ensure!(
+        validated.value.is_zero(),
+        "approval carries {} wei of ether — an ERC-20 approval must not transfer value",
+        validated.value
+    );
+
+    let approve = abi_function(erc20_abi(), "approve")?;
+    let selector = approve.selector();
+    anyhow::ensure!(
+        validated.data.len() == 4 + 32 + 32 && validated.data.starts_with(selector.as_slice()),
+        "approval calldata is not a bare ERC-20 approve(address,uint256) call — refusing to \
+         sign an approval whose operation cannot be identified"
+    );
+
+    // The spender is the first argument: a left-padded address in the word after the selector.
+    let spender = Address::from_slice(&validated.data[16..36]);
+    anyhow::ensure!(
+        spender == ALLOWED_APPROVAL_SPENDER,
+        "approval would let {spender:#x} spend the agent's tokens, but the only permitted \
+         spender is the Uniswap position manager at {ALLOWED_APPROVAL_SPENDER:#x}"
+    );
+
+    Ok(validated)
+}
+
 /// Dry-runs a validated transaction with eth_call before it is signed, so a revert costs
 /// nothing. `from` is set so the simulation sees the agent's own balances and allowances.
 async fn simulate_tx(provider: &impl Provider, from: Address, tx: &ValidatedTx) -> Result<()> {
@@ -806,6 +1031,320 @@ impl LpSession<'_> {
 }
 
 // ---------------------------------------------------------------------------
+// ERC-20 reads
+// ---------------------------------------------------------------------------
+
+async fn erc20_decimals(provider: &impl Provider, token: Address) -> Result<u8> {
+    let outs = call_view(provider, token, abi_function(erc20_abi(), "decimals")?, &[])
+        .await
+        .with_context(|| format!("{token:#x} does not answer decimals() — not an ERC-20 token"))?;
+
+    let raw = as_u256(out(&outs, 0, "decimals")?, "decimals")?;
+    u8::try_from(raw).with_context(|| format!("{token:#x} reports an absurd decimals() value"))
+}
+
+async fn erc20_balance_of(
+    provider: &impl Provider,
+    token: Address,
+    owner: Address,
+) -> Result<U256> {
+    let outs = call_view(
+        provider,
+        token,
+        abi_function(erc20_abi(), "balanceOf")?,
+        &[DynSolValue::Address(owner)],
+    )
+    .await?;
+
+    as_u256(out(&outs, 0, "balanceOf")?, "balanceOf")
+}
+
+// ---------------------------------------------------------------------------
+// Human-readable token amounts
+//
+// The public tools take amounts the way a person writes them ("0.01" ETH, "20" USDC) and convert
+// to base units here, using the token's own on-chain decimals(). Everything downstream — sizing,
+// approvals, calldata — stays in exact U256 base units. No float ever touches an amount: a
+// binary float cannot represent most decimal fractions, and being off by one wei in an approval
+// or a deposit is a real, if small, loss.
+// ---------------------------------------------------------------------------
+
+/// `10^exp` as a `U256`. Written out rather than reached for via a library `pow` so the overflow
+/// case is explicit — an absurd `decimals()` from a hostile token must not wrap.
+fn pow10(exp: u8) -> Result<U256> {
+    let mut acc = U256::from(1u64);
+    for _ in 0..exp {
+        acc = acc
+            .checked_mul(U256::from(10u64))
+            .ok_or_else(|| anyhow::anyhow!("token decimals {exp} is too large to represent"))?;
+    }
+    Ok(acc)
+}
+
+/// Parses a human-written decimal amount into base units, exactly.
+///
+/// Accepts only `123` or `123.456` — no sign, no exponent, no whitespace, no thousands
+/// separators, no bare/trailing dot. Those are rejected rather than coerced because every one of
+/// them is ambiguous about intent, and this value ends up as a spending approval.
+///
+/// More fractional digits than the token has is an error, not a silent truncation: `"1.5"` of a
+/// 0-decimal token is not `1`, it is a request the caller should restate.
+fn parse_human_decimal_amount(raw: &str, decimals: u8) -> Result<U256> {
+    anyhow::ensure!(
+        !raw.is_empty(),
+        "amount is empty — expected a decimal number like \"0.01\" or \"20\""
+    );
+
+    let (int_part, frac_part) = match raw.split_once('.') {
+        Some((i, f)) => (i, f),
+        None => (raw, ""),
+    };
+
+    anyhow::ensure!(
+        !int_part.is_empty()
+            && int_part.bytes().all(|b| b.is_ascii_digit())
+            && frac_part.bytes().all(|b| b.is_ascii_digit())
+            && !raw.ends_with('.'),
+        "amount {raw:?} is not a plain decimal number — write it like \"0.01\" or \"20\" \
+         (no sign, no exponent, no spaces, no thousands separators)"
+    );
+
+    anyhow::ensure!(
+        frac_part.len() <= decimals as usize,
+        "amount {raw:?} has {} decimal places but this token only has {decimals} — it cannot be \
+         represented exactly, so restate it with at most {decimals}",
+        frac_part.len()
+    );
+
+    let scale = pow10(decimals)?;
+    let whole = U256::from_str_radix(int_part, 10)
+        .with_context(|| format!("amount {raw:?} is too large"))?
+        .checked_mul(scale)
+        .ok_or_else(|| anyhow::anyhow!("amount {raw:?} is too large"))?;
+
+    // Right-pad the fraction to the token's precision: "5" on an 18-decimal token is 5e17, not 5.
+    let fraction = if frac_part.is_empty() {
+        U256::ZERO
+    } else {
+        let padded = pow10(decimals - frac_part.len() as u8)?;
+        U256::from_str_radix(frac_part, 10)
+            .with_context(|| format!("amount {raw:?} is too large"))?
+            * padded
+    };
+
+    let total = whole
+        .checked_add(fraction)
+        .ok_or_else(|| anyhow::anyhow!("amount {raw:?} is too large"))?;
+
+    anyhow::ensure!(
+        !total.is_zero(),
+        "amount {raw:?} is zero — supply a positive amount"
+    );
+
+    Ok(total)
+}
+
+/// Renders base units back as a human decimal, for display only — never fed back into calldata.
+fn format_human_amount(raw: U256, decimals: u8) -> String {
+    if decimals == 0 {
+        return raw.to_string();
+    }
+
+    let digits = raw.to_string();
+    let d = decimals as usize;
+    let (whole, frac) = if digits.len() > d {
+        let (w, f) = digits.split_at(digits.len() - d);
+        (w.to_string(), f.to_string())
+    } else {
+        ("0".to_string(), format!("{:0>width$}", digits, width = d))
+    };
+
+    let frac = frac.trim_end_matches('0');
+    if frac.is_empty() {
+        whole
+    } else {
+        format!("{whole}.{frac}")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tick range derivation
+//
+// A caller says "±10%" (1000 bps) and gets a valid, spacing-aligned tick range bracketing the
+// current price. Ticks are a log-scale coordinate — price = 1.0001^tick — so a percentage band
+// becomes a logarithm, and that is the one place in this module that uses floating point.
+//
+// That is deliberate and bounded: the result is a tick, immediately snapped outward onto a
+// coarse tickSpacing grid (10/60/200 for the standard tiers), and valid ticks are confined to
+// ±887272 — far inside f64's exactly-representable integer range. Precision loss cannot move a
+// snapped boundary. Token amounts, where exactness genuinely matters, never touch a float.
+// ---------------------------------------------------------------------------
+
+/// Uniswap V3's absolute tick bounds (`TickMath.MIN_TICK`/`MAX_TICK`).
+const MIN_TICK: i32 = -887272;
+const MAX_TICK: i32 = 887272;
+
+/// Largest multiple of `spacing` that is `<= tick`.
+fn floor_to_spacing(tick: i32, spacing: i32) -> i32 {
+    let mut snapped = (tick / spacing) * spacing;
+    if tick < 0 && snapped != tick {
+        snapped -= spacing; // Rust truncates toward zero, which rounds *up* for negatives.
+    }
+    snapped
+}
+
+/// Smallest multiple of `spacing` that is `>= tick`.
+fn ceil_to_spacing(tick: i32, spacing: i32) -> i32 {
+    let snapped = floor_to_spacing(tick, spacing);
+    if snapped == tick {
+        snapped
+    } else {
+        snapped + spacing
+    }
+}
+
+pub struct TickRange {
+    pub lower: i32,
+    pub upper: i32,
+}
+
+/// Turns a symmetric percentage band around the current price into a spacing-aligned tick range.
+///
+/// `range_width_bps` is the movement allowed on *each* side: 1000 means roughly -10%/+10% before
+/// snapping. Both bounds snap strictly outward, so the resulting range always contains the
+/// current tick — a range that failed to bracket the price would silently create a one-sided
+/// position holding only one of the two tokens.
+fn derive_tick_range(
+    current_tick: i32,
+    tick_spacing: i32,
+    range_width_bps: u16,
+) -> Result<TickRange> {
+    anyhow::ensure!(
+        tick_spacing > 0,
+        "pool reports a non-positive tickSpacing ({tick_spacing})"
+    );
+    anyhow::ensure!(
+        (1..10_000).contains(&range_width_bps),
+        "rangeWidthBps must be between 1 and 9999, got {range_width_bps}"
+    );
+
+    let bps = f64::from(range_width_bps);
+    let ln_base = 1.0001_f64.ln();
+    let lower_offset = ((1.0 - bps / 10_000.0).ln() / ln_base).floor();
+    let upper_offset = ((1.0 + bps / 10_000.0).ln() / ln_base).ceil();
+
+    // Saturating: a current tick near the domain edge plus an offset must clamp, not wrap.
+    let raw_lower = i64::from(current_tick) + lower_offset as i64;
+    let raw_upper = i64::from(current_tick) + upper_offset as i64;
+
+    let usable_min = ceil_to_spacing(MIN_TICK, tick_spacing);
+    let usable_max = floor_to_spacing(MAX_TICK, tick_spacing);
+
+    let lower = floor_to_spacing(
+        raw_lower.clamp(MIN_TICK.into(), MAX_TICK.into()) as i32,
+        tick_spacing,
+    )
+    .clamp(usable_min, usable_max);
+    let upper = ceil_to_spacing(
+        raw_upper.clamp(MIN_TICK.into(), MAX_TICK.into()) as i32,
+        tick_spacing,
+    )
+    .clamp(usable_min, usable_max);
+
+    anyhow::ensure!(
+        lower < upper,
+        "derived tick range collapsed at the edge of the pool's usable range \
+         (current tick {current_tick}, spacing {tick_spacing}, width {range_width_bps} bps)"
+    );
+
+    Ok(TickRange { lower, upper })
+}
+
+// ---------------------------------------------------------------------------
+// Pool selection
+// ---------------------------------------------------------------------------
+
+/// The standard V3 fee tiers, probed in this order when the caller doesn't name a pool.
+/// Nonstandard tiers exist and stay reachable by passing `poolAddress` explicitly.
+const STANDARD_FEE_TIERS: [u32; 4] = [100, 500, 3000, 10000];
+
+/// A pool that exists and has liquidity, as found while probing fee tiers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PoolCandidate {
+    pub fee: u32,
+    pub address: Address,
+    pub liquidity: U256,
+}
+
+/// Probes the standard fee tiers for pools that exist and hold liquidity.
+///
+/// A fee tier with no pool (`getPool` returns the zero address) or a pool nobody has provided
+/// liquidity to yet is skipped rather than reported — quoting against an empty pool would
+/// produce a nonsense price.
+async fn probe_standard_pools(
+    provider: &impl Provider,
+    token_a: Address,
+    token_b: Address,
+) -> Result<Vec<PoolCandidate>> {
+    let mut found = Vec::new();
+
+    for fee in STANDARD_FEE_TIERS {
+        let address = get_pool(provider, token_a, token_b, fee).await?;
+        if address.is_zero() {
+            continue;
+        }
+
+        let liq = call_view(
+            provider,
+            address,
+            abi_function(pool_abi(), "liquidity")?,
+            &[],
+        )
+        .await?;
+        let liquidity = as_u256(out(&liq, 0, "pool.liquidity")?, "pool.liquidity")?;
+
+        found.push(PoolCandidate {
+            fee,
+            address,
+            liquidity,
+        });
+    }
+
+    Ok(found)
+}
+
+/// Ranks non-empty pools deepest first, preferring the lower fee tier on an exact tie.
+///
+/// Deepest wins because liquidity is what determines how little the position's own deposit moves
+/// the price. The tie-break is arbitrary but must be *deterministic* — the same request should
+/// never open a position in a different pool on a retry — so it is fixed here and documented in
+/// the tool description: lower fee tier wins, which is also the better deal for the LP's
+/// counterparties and the more conventional default.
+///
+/// Kept separate from the probing loop so the choice is testable without a live provider.
+fn rank_pools(candidates: &[PoolCandidate]) -> Vec<PoolCandidate> {
+    let mut ranked: Vec<_> = candidates
+        .iter()
+        .filter(|candidate| !candidate.liquidity.is_zero())
+        .copied()
+        .collect();
+    ranked.sort_by(|left, right| {
+        right
+            .liquidity
+            .cmp(&left.liquidity)
+            .then_with(|| left.fee.cmp(&right.fee))
+    });
+    ranked
+}
+
+/// Picks the first-ranked pool. Automatic creation goes one step further: it tries the ranked
+/// candidates in order until the Liquidity API can actually size one.
+#[cfg(test)]
+fn choose_pool(candidates: &[PoolCandidate]) -> Option<PoolCandidate> {
+    rank_pools(candidates).into_iter().next()
+}
+
+// ---------------------------------------------------------------------------
 // Argument parsing / validation
 // ---------------------------------------------------------------------------
 
@@ -853,43 +1392,6 @@ fn parse_address_arg(args: &Map<String, Value>, key: &str) -> Result<Address> {
         .with_context(|| format!("'{key}' is not a valid 0x-prefixed 20-byte address"))
 }
 
-/// A smallest-unit token amount: strictly decimal and non-zero.
-fn parse_amount_arg(args: &Map<String, Value>, key: &str) -> Result<String> {
-    let s = args
-        .get(key)
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("missing '{key}' argument (decimal string, smallest unit)"))?
-        .to_string();
-
-    anyhow::ensure!(
-        !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()),
-        "'{key}' must be a decimal string in the token's smallest unit, got {s:?}"
-    );
-
-    let amount =
-        U256::from_str_radix(&s, 10).with_context(|| format!("'{key}' {s:?} is out of range"))?;
-    anyhow::ensure!(!amount.is_zero(), "'{key}' must be greater than zero");
-
-    Ok(s)
-}
-
-fn parse_tick_arg(args: &Map<String, Value>, key: &str) -> Result<i32> {
-    let v = args
-        .get(key)
-        .ok_or_else(|| anyhow::anyhow!("missing '{key}' argument"))?;
-
-    let tick = match v {
-        Value::Number(n) => n.as_i64(),
-        // Accepted because MCP clients that render everything as text tend to send ticks as
-        // strings; the value still has to be a plain integer.
-        Value::String(s) => s.parse::<i64>().ok(),
-        _ => None,
-    }
-    .ok_or_else(|| anyhow::anyhow!("'{key}' must be an integer tick, got {v}"))?;
-
-    i32::try_from(tick).with_context(|| format!("'{key}' {tick} is outside the int24 tick range"))
-}
-
 /// Optional slippage tolerance in percent. Rejected rather than clamped if nonsensical, since
 /// this is the bound on how much worse than quoted a fill may be.
 fn parse_slippage_arg(args: &Map<String, Value>) -> Result<Option<f64>> {
@@ -932,19 +1434,890 @@ fn parse_liquidity_percentage(args: &Map<String, Value>) -> Result<u8> {
     Ok(pct as u8)
 }
 
-/// Appends any already-broadcast approval hashes to an error.
+/// Native ETH held back from wrapping so the wallet can still pay for the wrap, the approvals
+/// and the mint.
 ///
-/// Approvals are real on-chain state changes. If the flow dies after some of them land, the
-/// caller has to know which ones actually happened — otherwise a retry looks like it is starting
-/// from scratch when it isn't.
-fn with_approvals<T>(result: Result<T>, approval_hashes: &[String]) -> Result<T> {
+/// A fixed, deliberately generous figure rather than a gas estimate, and the only thing standing
+/// between a full-balance wrap and a wallet that cannot afford its own next transaction.
+/// `eth_call` simulation does *not* cover this: nodes generally execute calls without charging
+/// gas against the caller's balance, so a simulation passes happily for an account that could
+/// never pay to broadcast. Re-checked against a fresh balance before every wrap.
+const MIN_NATIVE_GAS_RESERVE_WEI: u128 = 10_000_000_000_000_000; // 0.01 ETH
+
+/// How many times the create flow will re-fund/re-approve and refetch before giving up.
+const MAX_RECONCILIATION_ATTEMPTS: usize = 3;
+
+/// Most positions `list_v3_positions` will enumerate in one call.
+///
+/// Each position costs two eth_calls plus a factory lookup, so an unbounded list would be a
+/// slow request against a wallet holding hundreds. Far above what an agent wallet realistically
+/// holds; when it is hit the response says so rather than silently returning a prefix.
+const LIST_POSITIONS_LIMIT: usize = 50;
+
+/// A token as named by the caller: either an ERC-20 address, or native ETH.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TokenArg {
+    /// The address used for pools, approvals and the Liquidity API — WETH when `is_native`.
+    pub address: Address,
+    /// True when the caller wrote "ETH", meaning the wallet may need to wrap to fund this side.
+    pub is_native: bool,
+}
+
+/// Resolves `"ETH"` or a `0x` address into the address every downstream layer should use.
+///
+/// A V3 pool never holds native ETH — the pair is always WETH — so `"ETH"` is a convenience for
+/// the caller, normalized here once so that pool lookups, approvals and API calls all agree.
+fn parse_token_arg(args: &Map<String, Value>, key: &str) -> Result<TokenArg> {
+    let raw = args
+        .get(key)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing '{key}' argument (an ERC-20 address, or \"ETH\")"))?
+        .trim();
+
+    if raw == "ETH" {
+        return Ok(TokenArg {
+            address: SEPOLIA_V3.weth,
+            is_native: true,
+        });
+    }
+
+    // Only the exact string "ETH" is native; anything else must be an address. Catching
+    // near-misses explicitly beats letting "eth" fail as an unparseable address.
+    anyhow::ensure!(
+        !raw.eq_ignore_ascii_case("eth") && !raw.eq_ignore_ascii_case("weth"),
+        "'{key}' must be either the exact string \"ETH\" (uppercase) for native ether, or a \
+         0x-prefixed token address — got {raw:?}"
+    );
+
+    let address: Address = raw
+        .parse()
+        .with_context(|| format!("'{key}' is not a valid token address or the string \"ETH\""))?;
+
+    Ok(TokenArg {
+        address,
+        is_native: false,
+    })
+}
+
+/// Optional whole-number bps band, defaulting to 1000 (±10%).
+fn parse_range_width_bps(args: &Map<String, Value>) -> Result<u16> {
+    const DEFAULT_RANGE_WIDTH_BPS: u16 = 1000;
+
+    let Some(v) = args.get("rangeWidthBps").filter(|v| !v.is_null()) else {
+        return Ok(DEFAULT_RANGE_WIDTH_BPS);
+    };
+
+    let bps = match v {
+        Value::Number(n) => n.as_u64(),
+        Value::String(s) => s.parse::<u64>().ok(),
+        _ => None,
+    }
+    .ok_or_else(|| {
+        anyhow::anyhow!("'rangeWidthBps' must be a whole number of basis points, got {v}")
+    })?;
+
+    anyhow::ensure!(
+        (1..10_000).contains(&bps),
+        "'rangeWidthBps' must be between 1 and 9999 (10000 bps would put the lower bound at a \
+         price of zero), got {bps}"
+    );
+
+    Ok(bps as u16)
+}
+
+/// Appends every transaction this flow has already broadcast to an error.
+///
+/// Wraps and approvals are real on-chain state changes. If the flow dies after some of them
+/// land, the caller has to know which ones actually happened — otherwise a retry looks like it
+/// is starting from scratch when it isn't, and the wallet has silently moved.
+fn with_completed_txs<T>(result: Result<T>, completed: &[String]) -> Result<T> {
     match result {
         Ok(v) => Ok(v),
-        Err(e) if approval_hashes.is_empty() => Err(e),
+        Err(e) if completed.is_empty() => Err(e),
         Err(e) => Err(anyhow::anyhow!(
-            "{e:#} (completed approval transactions: {})",
-            approval_hashes.join(", ")
+            "{e:#} (completed transactions: {})",
+            completed.join(", ")
         )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Create planning
+//
+// Everything between "the caller said this" and "we are about to sign something" lives here, in
+// one function that *cannot* sign: it holds no vault, no signer and no DbPool, so there is no
+// path from it to sign_and_broadcast. That makes a read-only dry run trustworthy by construction
+// rather than by discipline.
+//
+// It also never asks for a *simulated* create. Every quote it fetches is
+// `simulateTransaction: false`, which the API answers with amounts but which we treat as
+// sizing information only. A signable transaction is fetched exactly once, after funding and
+// approvals are in place, by the reconciliation loop — so planning cannot leave a signable
+// payload lying around, and nothing signable is ever produced before it could succeed.
+// ---------------------------------------------------------------------------
+
+/// The caller's request, parsed but not yet resolved against the chain.
+#[derive(Debug)]
+struct CreateRequest {
+    token_a: TokenArg,
+    token_b: TokenArg,
+    max_a_raw: String,
+    max_b_raw: String,
+    range_width_bps: u16,
+    explicit_pool: Option<Address>,
+    slippage: Option<f64>,
+}
+
+/// A fully-resolved, ready-to-execute position — the output of planning, the input to signing.
+#[derive(Debug)]
+struct SkippedPool {
+    fee: u32,
+    address: Address,
+    liquidity: U256,
+    reason: String,
+}
+
+/// Applies the automatic-selection policy to one candidate result. Only a structured,
+/// pool-local Liquidity API failure is skippable; every other error aborts selection.
+fn consider_auto_candidate<T>(
+    candidate: PoolCandidate,
+    result: Result<T>,
+    skipped: &mut Vec<SkippedPool>,
+) -> Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error) => {
+            let Some(reason) = pool_local_api_failure(&error) else {
+                return Err(error);
+            };
+            skipped.push(SkippedPool {
+                fee: candidate.fee,
+                address: candidate.address,
+                liquidity: candidate.liquidity,
+                reason,
+            });
+            Ok(None)
+        }
+    }
+}
+
+struct CreatePlan {
+    pool_address: Address,
+    pool: V3PoolState,
+    selection_method: &'static str,
+    /// Auto-discovery candidates that ranked higher but could not be sized because the
+    /// Liquidity API specifically reported that pool as unavailable or unindexed.
+    skipped_pools: Vec<SkippedPool>,
+    range: TickRange,
+    /// Base-unit ceilings after clamping the caller's request to what the wallet can actually
+    /// fund. Never larger than what was requested.
+    effective0: U256,
+    effective1: U256,
+    decimals0: u8,
+    decimals1: u8,
+    /// Which side is priced independently, and at what amount. Fixed once chosen: only the
+    /// dependent side moves as the price does.
+    independent_token: Address,
+    independent_amount: U256,
+    /// True when token0/token1 is the side the caller named "ETH" and may need wrapping.
+    native_is_token0: bool,
+    native_is_token1: bool,
+    /// The accepted sizing quote — deliberately unsimulated, and therefore not signable. The
+    /// reconciliation loop replaces it with a freshly simulated one before anything is signed.
+    quote: Value,
+}
+
+impl CreatePlan {
+    /// Rebuilds the /lp/create body parameters for a refetch: same pool, same range, same
+    /// independent side and amount — only the price Uniswap quotes against has moved.
+    fn refetch_params(&self, wallet: Address, slippage: Option<f64>) -> CreateParams<'_> {
+        CreateParams {
+            wallet,
+            pool: self.pool_address,
+            pool_tokens: &self.pool,
+            independent_token: self.independent_token,
+            independent_amount: self.independent_amount,
+            tick_lower: self.range.lower,
+            tick_upper: self.range.upper,
+            slippage,
+        }
+    }
+
+    fn weth_side_amount(&self, quote_amounts: (U256, U256)) -> Option<U256> {
+        match (self.native_is_token0, self.native_is_token1) {
+            (true, _) => Some(quote_amounts.0),
+            (_, true) => Some(quote_amounts.1),
+            _ => None,
+        }
+    }
+}
+
+fn parse_create_request(args: &Map<String, Value>) -> Result<CreateRequest> {
+    let token_a = parse_token_arg(args, "tokenA")?;
+    let token_b = parse_token_arg(args, "tokenB")?;
+
+    anyhow::ensure!(
+        !(token_a.is_native && token_b.is_native),
+        "tokenA and tokenB are both \"ETH\" — a pool needs two different tokens"
+    );
+    anyhow::ensure!(
+        token_a.address != token_b.address,
+        "tokenA and tokenB resolve to the same token ({:#x}) — note that \"ETH\" resolves to \
+         WETH, so pairing \"ETH\" with the WETH address is the same token twice",
+        token_a.address
+    );
+
+    // Amounts are read as raw strings here and converted once decimals() is known.
+    let max_a_raw = match args.get("maxTokenAAmount") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Number(n)) => anyhow::bail!(
+            "'maxTokenAAmount' must be a quoted decimal string, not a number — write \"{n}\" so \
+             the exact value survives JSON encoding"
+        ),
+        Some(other) => anyhow::bail!("'maxTokenAAmount' must be a decimal string, got {other}"),
+        None => anyhow::bail!("missing 'maxTokenAAmount' argument (e.g. \"0.01\")"),
+    };
+    let max_b_raw = match args.get("maxTokenBAmount") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Number(n)) => anyhow::bail!(
+            "'maxTokenBAmount' must be a quoted decimal string, not a number — write \"{n}\" so \
+             the exact value survives JSON encoding"
+        ),
+        Some(other) => anyhow::bail!("'maxTokenBAmount' must be a decimal string, got {other}"),
+        None => anyhow::bail!("missing 'maxTokenBAmount' argument (e.g. \"20\")"),
+    };
+
+    let explicit_pool = match args.get("poolAddress").filter(|v| !v.is_null()) {
+        Some(_) => Some(parse_address_arg(args, "poolAddress")?),
+        None => None,
+    };
+
+    Ok(CreateRequest {
+        token_a,
+        token_b,
+        max_a_raw,
+        max_b_raw,
+        range_width_bps: parse_range_width_bps(args)?,
+        explicit_pool,
+        slippage: parse_slippage_arg(args)?,
+    })
+}
+
+/// Resolves a request into an executable plan. Reads chain state and sizes against the Liquidity
+/// API; signs nothing, broadcasts nothing, and has no way to.
+async fn plan_create_v3_position(
+    provider: &impl Provider,
+    http: &reqwest::Client,
+    wallet: Address,
+    req: &CreateRequest,
+) -> Result<CreatePlan> {
+    match req.explicit_pool {
+        Some(addr) => {
+            let state = read_v3_pool_state(provider, addr)
+                .await
+                .context("stage=pool read")?;
+            // Explicit means explicit: never silently redirect the caller's funds to another
+            // fee tier, even if this pool is temporarily unavailable in the Liquidity API.
+            plan_create_v3_position_in_pool(
+                provider,
+                http,
+                wallet,
+                req,
+                addr,
+                state,
+                "explicit",
+                Vec::new(),
+            )
+            .await
+        }
+        None => {
+            let candidates =
+                probe_standard_pools(provider, req.token_a.address, req.token_b.address)
+                    .await
+                    .context("stage=pool read")?;
+
+            let ranked = rank_pools(&candidates);
+            anyhow::ensure!(
+                !ranked.is_empty(),
+                "no Uniswap V3 pool with liquidity exists for {:#x}/{:#x} on Sepolia at any \
+                 standard fee tier (100, 500, 3000, 10000) — pass poolAddress explicitly to \
+                 use a nonstandard-fee pool",
+                req.token_a.address,
+                req.token_b.address
+            );
+
+            let mut skipped = Vec::new();
+            for candidate in ranked {
+                let state = read_v3_pool_state(provider, candidate.address)
+                    .await
+                    .context("stage=pool read")?;
+
+                let attempt = plan_create_v3_position_in_pool(
+                    provider,
+                    http,
+                    wallet,
+                    req,
+                    candidate.address,
+                    state,
+                    "auto:deepest-api-usable",
+                    Vec::new(),
+                )
+                .await;
+
+                match consider_auto_candidate(candidate, attempt, &mut skipped)? {
+                    Some(mut plan) => {
+                        plan.skipped_pools = skipped;
+                        return Ok(plan);
+                    }
+                    None => continue,
+                }
+            }
+
+            let failures = skipped
+                .iter()
+                .map(|pool| {
+                    format!(
+                        "fee {} pool {:#x} (liquidity {}): {}",
+                        pool.fee, pool.address, pool.liquidity, pool.reason
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            Err(anyhow::anyhow!(
+                "none of the liquid standard-tier pools for {:#x}/{:#x} could be sized by the \
+                 Uniswap Liquidity API: {failures}",
+                req.token_a.address,
+                req.token_b.address
+            ))
+        }
+    }
+}
+
+/// Builds a plan for exactly one already-verified pool. Automatic selection calls this for
+/// candidates in depth order; explicit selection calls it once and propagates every error.
+#[allow(clippy::too_many_arguments)]
+async fn plan_create_v3_position_in_pool(
+    provider: &impl Provider,
+    http: &reqwest::Client,
+    wallet: Address,
+    req: &CreateRequest,
+    pool_address: Address,
+    pool: V3PoolState,
+    selection_method: &'static str,
+    skipped_pools: Vec<SkippedPool>,
+) -> Result<CreatePlan> {
+    // The pool decides the pair; the caller's two tokens must be exactly that pair.
+    let requested = [req.token_a.address, req.token_b.address];
+    anyhow::ensure!(
+        requested.contains(&pool.token0) && requested.contains(&pool.token1),
+        "pool {pool_address:#x} holds {:#x}/{:#x}, which is not the requested pair {:#x}/{:#x}",
+        pool.token0,
+        pool.token1,
+        req.token_a.address,
+        req.token_b.address
+    );
+
+    // Map the caller's A/B onto the pool's canonical token0/token1 ordering.
+    let a_is_token0 = req.token_a.address == pool.token0;
+    let (native_is_token0, native_is_token1) = if a_is_token0 {
+        (req.token_a.is_native, req.token_b.is_native)
+    } else {
+        (req.token_b.is_native, req.token_a.is_native)
+    };
+
+    let decimals0 = erc20_decimals(provider, pool.token0)
+        .await
+        .context("stage=pool read")?;
+    let decimals1 = erc20_decimals(provider, pool.token1)
+        .await
+        .context("stage=pool read")?;
+
+    let (raw0, raw1) = if a_is_token0 {
+        (&req.max_a_raw, &req.max_b_raw)
+    } else {
+        (&req.max_b_raw, &req.max_a_raw)
+    };
+    let requested0 = parse_human_decimal_amount(raw0, decimals0)
+        .with_context(|| format!("invalid maximum amount for {:#x}", pool.token0))?;
+    let requested1 = parse_human_decimal_amount(raw1, decimals1)
+        .with_context(|| format!("invalid maximum amount for {:#x}", pool.token1))?;
+
+    // --- effective budgets: what the wallet can actually fund, never more than requested ---
+    let native_balance = provider
+        .get_balance(wallet)
+        .await
+        .context("stage=balance read: eth_getBalance failed")?;
+    let spendable_native = native_balance.saturating_sub(U256::from(MIN_NATIVE_GAS_RESERVE_WEI));
+
+    let weth_balance = if native_is_token0 || native_is_token1 {
+        erc20_balance_of(provider, SEPOLIA_V3.weth, wallet)
+            .await
+            .context("stage=balance read")?
+    } else {
+        U256::ZERO
+    };
+
+    let available0 = if native_is_token0 {
+        weth_balance + spendable_native
+    } else {
+        erc20_balance_of(provider, pool.token0, wallet)
+            .await
+            .context("stage=balance read")?
+    };
+    let available1 = if native_is_token1 {
+        weth_balance + spendable_native
+    } else {
+        erc20_balance_of(provider, pool.token1, wallet)
+            .await
+            .context("stage=balance read")?
+    };
+
+    let effective0 = requested0.min(available0);
+    let effective1 = requested1.min(available1);
+
+    // Fail here, before any transaction exists, rather than after wrapping or approving.
+    for (effective, available, token, native, decimals) in [
+        (
+            effective0,
+            available0,
+            pool.token0,
+            native_is_token0,
+            decimals0,
+        ),
+        (
+            effective1,
+            available1,
+            pool.token1,
+            native_is_token1,
+            decimals1,
+        ),
+    ] {
+        anyhow::ensure!(
+            !effective.is_zero(),
+            "wallet {wallet:#x} has nothing available to deposit for {token:#x}{} — {}",
+            if native {
+                " (the \"ETH\" side, held as WETH)"
+            } else {
+                ""
+            },
+            if native {
+                format!(
+                    "it holds {} WETH and {} spendable native ETH (after reserving {} ETH for \
+                     gas)",
+                    format_human_amount(weth_balance, decimals),
+                    format_human_amount(spendable_native, 18),
+                    format_human_amount(U256::from(MIN_NATIVE_GAS_RESERVE_WEI), 18)
+                )
+            } else {
+                format!(
+                    "its balance is {}",
+                    format_human_amount(available, decimals)
+                )
+            }
+        );
+    }
+
+    // --- range ---
+    let range = derive_tick_range(pool.current_tick, pool.tick_spacing, req.range_width_bps)?;
+
+    // --- sizing: try token0 as the independent side, fall back to token1 ---
+    let mut params = CreateParams {
+        wallet,
+        pool: pool_address,
+        pool_tokens: &pool,
+        independent_token: pool.token0,
+        independent_amount: effective0,
+        tick_lower: range.lower,
+        tick_upper: range.upper,
+        slippage: req.slippage,
+    };
+
+    let sizing0 = lp_post(http, "/lp/create", &build_lp_create_body(&params, false))
+        .await
+        .context("stage=API request")?;
+    let (_sized0, got1) = quote_amounts(&sizing0, &pool)?;
+
+    let (independent_token, independent_amount) = if got1 <= effective1 {
+        (pool.token0, effective0)
+    } else {
+        params.independent_token = pool.token1;
+        params.independent_amount = effective1;
+
+        let sizing1 = lp_post(http, "/lp/create", &build_lp_create_body(&params, false))
+            .await
+            .context("stage=API request")?;
+        let (alt0, _alt1) = quote_amounts(&sizing1, &pool)?;
+
+        anyhow::ensure!(
+            alt0 <= effective0,
+            "this range cannot be funded within both maximums: sizing from {:#x} needs {} of \
+             {:#x} (limit {}), and sizing from {:#x} needs {} of {:#x} (limit {}). Narrow \
+             rangeWidthBps or raise a maximum.",
+            pool.token0,
+            format_human_amount(got1, decimals1),
+            pool.token1,
+            format_human_amount(effective1, decimals1),
+            pool.token1,
+            format_human_amount(alt0, decimals0),
+            pool.token0,
+            format_human_amount(effective0, decimals0),
+        );
+
+        (pool.token1, effective1)
+    };
+
+    params.independent_token = independent_token;
+    params.independent_amount = independent_amount;
+
+    // Still unsimulated: nothing is funded or approved yet, so a simulated create would fail
+    // for reasons that say nothing about the position, and would hand back a signable payload
+    // before it could possibly succeed. Reconciliation fetches the signable one later.
+    let quote = lp_post(http, "/lp/create", &build_lp_create_body(&params, false))
+        .await
+        .context("stage=API request")?;
+    let (q0, q1) = quote_amounts(&quote, &pool)?;
+    ensure_within_budgets(q0, q1, effective0, effective1, decimals0, decimals1, &pool)?;
+
+    Ok(CreatePlan {
+        pool_address,
+        pool,
+        selection_method,
+        skipped_pools,
+        range,
+        effective0,
+        effective1,
+        decimals0,
+        decimals1,
+        independent_token,
+        independent_amount,
+        native_is_token0,
+        native_is_token1,
+        quote,
+    })
+}
+
+/// Reads a /lp/create response's two amounts, confirming the pair is the pool's own.
+fn quote_amounts(resp: &Value, pool: &V3PoolState) -> Result<(U256, U256)> {
+    let t0 = parse_lp_token(resp, "token0", "/lp/create").context("stage=API request")?;
+    let t1 = parse_lp_token(resp, "token1", "/lp/create").context("stage=API request")?;
+    ensure_pair_matches((t0.0, t1.0), (pool.token0, pool.token1), "/lp/create")
+        .context("stage=API request")?;
+    Ok((t0.1, t1.1))
+}
+
+/// The caller's ceilings are a hard limit at every point a quote is re-read, not just the first.
+#[allow(clippy::too_many_arguments)]
+fn ensure_within_budgets(
+    amount0: U256,
+    amount1: U256,
+    effective0: U256,
+    effective1: U256,
+    decimals0: u8,
+    decimals1: u8,
+    pool: &V3PoolState,
+) -> Result<()> {
+    for (amount, effective, token, decimals) in [
+        (amount0, effective0, pool.token0, decimals0),
+        (amount1, effective1, pool.token1, decimals1),
+    ] {
+        anyhow::ensure!(
+            amount <= effective,
+            "Uniswap now wants {} of {token:#x} but the usable maximum is {} — refusing to \
+             deposit more than requested",
+            format_human_amount(amount, decimals),
+            format_human_amount(effective, decimals)
+        );
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Reconciliation
+//
+// A create quote goes stale while its own approvals confirm. By the time a wrap and two
+// approvals are mined, Uniswap may want a slightly different amount — which can need *more*
+// WETH or *more* allowance than was just provided. Signing the stale quote reverts; signing the
+// fresh one unfunded reverts too.
+//
+// So this loop converges instead of assuming: each pass asks what the current quote needs,
+// provides exactly that, fetches a fresh quote, and only stops when a quote needs nothing
+// further AND is one that was fetched with simulation on. That second condition is what
+// guarantees the mint is never signed from a sizing-only response.
+//
+// The side effects are behind a trait so the ordering logic can be tested without a chain, an
+// API or a vault — the sequencing is the part that is easy to get wrong, and the part that
+// moves real funds.
+// ---------------------------------------------------------------------------
+
+/// Everything the loop needs to do that touches the outside world.
+trait ReconcileEffects {
+    /// Current WETH balance. Re-read every pass, never cached: a wrap changes it, and so can
+    /// anything else using this wallet.
+    async fn weth_balance(&self) -> Result<U256>;
+
+    /// Native ether available to wrap, with the gas reserve already deducted. Re-read before
+    /// every wrap so the reserve is honoured against the balance that actually exists then.
+    async fn spendable_native(&self) -> Result<U256>;
+
+    async fn wrap(&self, amount: U256) -> Result<B256>;
+
+    /// Approvals still outstanding for these amounts; empty when allowances already cover them.
+    async fn check_approvals(&self, want0: U256, want1: U256) -> Result<Vec<Value>>;
+
+    async fn execute_approval(&self, tx: &Value, label: &str) -> Result<B256>;
+
+    /// Fetch a fresh create quote **with simulation on** — i.e. one that may be signed.
+    async fn fetch_signable_quote(&self) -> Result<Value>;
+
+    /// Reads the two token amounts out of a quote, verifying the pair.
+    fn quote_amounts(&self, quote: &Value) -> Result<(U256, U256)>;
+
+    /// Rejects a quote that exceeds either budget.
+    fn check_budgets(&self, amount0: U256, amount1: U256) -> Result<()>;
+
+    /// Which side of the pair is WETH-funded, if either.
+    fn weth_side(&self, amounts: (U256, U256)) -> Option<U256>;
+}
+
+/// A settled, simulated quote plus everything that had to happen on-chain to get there.
+#[derive(Debug)]
+struct Reconciled {
+    quote: Value,
+    attempts: usize,
+    wrap_hashes: Vec<String>,
+    approval_hashes: Vec<String>,
+    completed: Vec<String>,
+}
+
+/// Drives a sizing quote to a funded, approved, simulated one that is safe to sign.
+///
+/// `sizing_quote` is the unsimulated quote planning settled on. It is used only to work out what
+/// funding and approvals are needed; it can never be returned, because the loop refuses to stop
+/// on a quote it did not fetch with simulation on.
+///
+/// Errors carry every wrap and approval already broadcast. Those moved real funds, and a caller
+/// retrying needs to know the wallet is not where it started.
+async fn reconcile<E: ReconcileEffects>(effects: &E, sizing_quote: Value) -> Result<Reconciled> {
+    let mut quote = sizing_quote;
+    let mut signable = false;
+    let mut attempts = 0usize;
+    let mut side_effect_rounds = 0usize;
+
+    let mut wrap_hashes: Vec<String> = Vec::new();
+    let mut approval_hashes: Vec<String> = Vec::new();
+    let mut completed: Vec<String> = Vec::new();
+
+    loop {
+        attempts += 1;
+        let (want0, want1) = with_completed_txs(effects.quote_amounts(&quote), &completed)?;
+        with_completed_txs(effects.check_budgets(want0, want1), &completed)?;
+
+        // Fresh balance every pass: the previous wrap moved it, and so may anything else.
+        let needed_wrap = match effects.weth_side((want0, want1)) {
+            Some(needed) => {
+                let held = with_completed_txs(
+                    effects.weth_balance().await.context("stage=balance read"),
+                    &completed,
+                )?;
+                needed.saturating_sub(held)
+            }
+            None => U256::ZERO,
+        };
+
+        let approvals = with_completed_txs(
+            effects
+                .check_approvals(want0, want1)
+                .await
+                .context("stage=API request"),
+            &completed,
+        )?;
+
+        if needed_wrap.is_zero() && approvals.is_empty() {
+            // Nothing outstanding. Stop only if this quote is one we may actually sign;
+            // otherwise fetch a simulated one and re-check it, since its amounts may differ.
+            if signable {
+                return Ok(Reconciled {
+                    quote,
+                    attempts,
+                    wrap_hashes,
+                    approval_hashes,
+                    completed,
+                });
+            }
+        } else {
+            // The bound applies to rounds that can move funds, not to inspections. In
+            // particular, the quote fetched after the third allowed round must still be
+            // inspected: it may already be settled and safe to return.
+            if side_effect_rounds >= MAX_RECONCILIATION_ATTEMPTS {
+                return with_completed_txs(
+                    Err(anyhow::anyhow!(
+                        "the quote did not settle after {MAX_RECONCILIATION_ATTEMPTS} rounds of \
+                         funding and approval — the pool's price is moving faster than \
+                         transactions confirm; try again or widen rangeWidthBps"
+                    )),
+                    &completed,
+                );
+            }
+            side_effect_rounds += 1;
+
+            if !needed_wrap.is_zero() {
+                // Re-read spendable native here, not once up front: earlier wraps have already
+                // spent from it, and the gas reserve has to hold against what is left now.
+                let spendable = with_completed_txs(
+                    effects
+                        .spendable_native()
+                        .await
+                        .context("stage=balance read"),
+                    &completed,
+                )?;
+                with_completed_txs(
+                    if spendable >= needed_wrap {
+                        Ok(())
+                    } else {
+                        Err(anyhow::anyhow!(
+                            "stage=wrap: need to wrap {needed_wrap} wei more into WETH but only \
+                             {spendable} wei of native ether is spendable after holding back the \
+                             gas reserve"
+                        ))
+                    },
+                    &completed,
+                )?;
+
+                let hash = with_completed_txs(
+                    effects.wrap(needed_wrap).await.context("stage=wrap"),
+                    &completed,
+                )?;
+                completed.push(format!("{hash:#x}"));
+                wrap_hashes.push(format!("{hash:#x}"));
+            }
+
+            for (i, approval) in approvals.iter().enumerate() {
+                let label = format!("approval {}/{}", i + 1, approvals.len());
+                let hash = with_completed_txs(
+                    effects.execute_approval(approval, &label).await,
+                    &completed,
+                )?;
+                completed.push(format!("{hash:#x}"));
+                approval_hashes.push(format!("{hash:#x}"));
+            }
+        }
+
+        // Whether we just funded something or merely need a signable version, the next quote is
+        // always freshly fetched with simulation on.
+        quote = with_completed_txs(
+            effects
+                .fetch_signable_quote()
+                .await
+                .context("stage=API request"),
+            &completed,
+        )?;
+        signable = true;
+    }
+}
+
+/// The real effects: chain, Liquidity API and vault.
+///
+/// Deliberately thin. Every method delegates to machinery that already exists and is tested on
+/// its own, so what is unique to reconciliation is the *ordering* in `reconcile` — which the
+/// scripted tests exercise without needing any of this.
+struct LiveReconcileEffects<'a> {
+    session: &'a LpSession<'a>,
+    http: &'a reqwest::Client,
+    plan: &'a CreatePlan,
+    slippage: Option<f64>,
+}
+
+impl ReconcileEffects for LiveReconcileEffects<'_> {
+    async fn weth_balance(&self) -> Result<U256> {
+        erc20_balance_of(&self.session.provider, SEPOLIA_V3.weth, self.session.wallet).await
+    }
+
+    async fn spendable_native(&self) -> Result<U256> {
+        let native = self
+            .session
+            .provider
+            .get_balance(self.session.wallet)
+            .await
+            .context("eth_getBalance failed")?;
+        Ok(native.saturating_sub(U256::from(MIN_NATIVE_GAS_RESERVE_WEI)))
+    }
+
+    async fn wrap(&self, amount: U256) -> Result<B256> {
+        self.session.wrap_native_to_weth(amount).await
+    }
+
+    async fn check_approvals(&self, want0: U256, want1: U256) -> Result<Vec<Value>> {
+        let resp = lp_post(
+            self.http,
+            "/lp/check_approval",
+            &build_check_approval_body(
+                self.session.wallet,
+                &[
+                    (self.plan.pool.token0, want0),
+                    (self.plan.pool.token1, want1),
+                ],
+            ),
+        )
+        .await?;
+        parse_approval_transactions(&resp)
+    }
+
+    async fn execute_approval(&self, tx: &Value, label: &str) -> Result<B256> {
+        let validated = validate_approval_transaction(
+            tx,
+            self.session.wallet,
+            SEPOLIA_V3.chain_id,
+            (self.plan.pool.token0, self.plan.pool.token1),
+        )
+        .with_context(|| format!("stage=approval ({label})"))?;
+
+        simulate_tx(&self.session.provider, self.session.wallet, &validated)
+            .await
+            .with_context(|| format!("stage=simulation ({label})"))?;
+
+        let hash = self
+            .session
+            .sign_and_broadcast(&validated)
+            .await
+            .with_context(|| format!("stage=broadcast ({label})"))?;
+
+        wait_for_receipt(&self.session.provider, hash, label)
+            .await
+            .with_context(|| format!("stage=receipt ({label})"))?;
+
+        Ok(hash)
+    }
+
+    async fn fetch_signable_quote(&self) -> Result<Value> {
+        lp_post(
+            self.http,
+            "/lp/create",
+            &build_lp_create_body(
+                &self.plan.refetch_params(self.session.wallet, self.slippage),
+                true,
+            ),
+        )
+        .await
+    }
+
+    fn quote_amounts(&self, quote: &Value) -> Result<(U256, U256)> {
+        quote_amounts(quote, &self.plan.pool)
+    }
+
+    fn check_budgets(&self, amount0: U256, amount1: U256) -> Result<()> {
+        ensure_within_budgets(
+            amount0,
+            amount1,
+            self.plan.effective0,
+            self.plan.effective1,
+            self.plan.decimals0,
+            self.plan.decimals1,
+            &self.plan.pool,
+        )
+    }
+
+    fn weth_side(&self, amounts: (U256, U256)) -> Option<U256> {
+        self.plan.weth_side_amount(amounts)
     }
 }
 
@@ -1026,96 +2399,96 @@ pub(super) fn build_uniswap_lp_tools() -> Vec<Tool> {
 
     let create_v3_position = Tool::new(
         "create_v3_position".to_string(),
-        "Open a new Uniswap V3 liquidity position in an EXISTING pool on Ethereum Sepolia, on \
-         behalf of the authenticated agent. Fully automatic and fund-moving: it derives the \
-         pool's token pair on-chain, sizes the position, issues and confirms any required token \
-         approvals, then simulates, signs and broadcasts the mint through the agent's vault — \
-         you never supply a wallet address, private key or rpc_url. Does not create new pools. \
-         You give one side of the position (independentTokenAmount) and Uniswap derives the \
-         other. Returns the transaction hash and the new position NFT's token id."
+        "Open a new Uniswap V3 liquidity position on Ethereum Sepolia, on behalf of the \
+         authenticated agent. Fund-moving and fully automatic: give it a token pair and how much \
+         of each you are willing to spend, and it picks the pool, derives a price range around \
+         the current price, sizes the position to fit both budgets, wraps ETH if needed, runs \
+         approvals, then simulates, signs and broadcasts the mint through the agent's vault. You \
+         never supply ticks, wei amounts, a wallet address, a private key or an rpc_url. \
+         Amounts are human-readable decimal strings in whole tokens ('0.01' ETH, '20' USDC) — \
+         NOT wei; the token's on-chain decimals are read and applied for you. Either token may be \
+         the string 'ETH' for native ether, which is wrapped to WETH automatically and only by \
+         the shortfall not already held. Both amounts are ceilings, not targets: the position is \
+         sized to the largest that fits inside both, and is further capped by what the wallet \
+         actually holds, so it can spend less than you allow but never more. Opens positions in \
+         EXISTING pools only — it cannot create a pool."
             .to_string(),
         object_schema(
             vec![
                 ("chainId", sepolia_chain_id_prop()),
                 (
+                    "tokenA",
+                    json!({
+                        "type": "string",
+                        "description": "First token of the pair: an ERC-20 address, or the exact \
+                                        string \"ETH\" for native ether (which is used as WETH). \
+                                        Order does not matter — the pool's own token0/token1 ordering \
+                                        is used internally."
+                    }),
+                ),
+                (
+                    "tokenB",
+                    json!({
+                        "type": "string",
+                        "description": "Second token of the pair. Same format as tokenA. At most one \
+                                        of the two may be \"ETH\"."
+                    }),
+                ),
+                (
+                    "maxTokenAAmount",
+                    json!({
+                        "type": "string",
+                        "description": "Most of tokenA to deposit, as a human-readable decimal string \
+                                        in whole tokens (e.g. \"0.01\" for 0.01 ETH, \"20\" for 20 \
+                                        USDC). NOT wei. Must be quoted, positive, and no more precise \
+                                        than the token's decimals. This is a ceiling: the actual \
+                                        deposit may be smaller."
+                    }),
+                ),
+                (
+                    "maxTokenBAmount",
+                    json!({
+                        "type": "string",
+                        "description": "Most of tokenB to deposit, same format as maxTokenAAmount."
+                    }),
+                ),
+                (
+                    "rangeWidthBps",
+                    json!({
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9999,
+                        "description": "Half-width of the position's price range, in basis points of \
+                                        price movement on EACH side of the current price. 1000 (the \
+                                        default) is about -10%/+10%. Smaller concentrates liquidity \
+                                        for more fees but goes out of range sooner. The exact ticks \
+                                        are derived from the pool's live price and snapped outward to \
+                                        its tick spacing, always bracketing the current price."
+                    }),
+                ),
+                (
                     "poolAddress",
                     json!({
                         "type": "string",
-                        "description": "Address of an existing Uniswap V3 pool on Sepolia. The pool's \
-                                        token0, token1 and fee tier are read from the pool itself and \
-                                        verified against the V3 factory, so you do not pass them."
-                    }),
-                ),
-                (
-                    "independentTokenAddress",
-                    json!({
-                        "type": "string",
-                        "description": "Which side of the pair you are specifying an amount for. Must \
-                                        be the pool's token0 or token1; the other side's amount is \
-                                        derived by Uniswap from the price range."
-                    }),
-                ),
-                (
-                    "independentTokenAmount",
-                    json!({
-                        "type": "string",
-                        "description": "Amount of independentTokenAddress to deposit, in that token's \
-                                        smallest unit, as a decimal string (e.g. wei for an \
-                                        18-decimal token). Must be greater than zero."
-                    }),
-                ),
-                (
-                    "tickLower",
-                    json!({
-                        "type": "integer",
-                        "description": "Lower tick of the position's price range. Ticks are a \
-                                        LOG-SCALE price coordinate, not a linear offset or a \
-                                        percentage: raw price (token1's smallest unit per token0's \
-                                        smallest unit) = 1.0001^tick. This is unrelated to the \
-                                        tokens' human decimals, so small integers like 1000-2000 do \
-                                        NOT mean 'near the current price' — for most real pools the \
-                                        current tick is a large number (tens or hundreds of \
-                                        thousands, positive or negative). Must be less than \
-                                        tickUpper and an exact multiple of the pool's tick spacing \
-                                        (standard V3 fee tiers: 1 for 0.01% fee, 10 for 0.05%, 60 \
-                                        for 0.3%, 200 for 1% — confirm against the pool itself, \
-                                        since nonstandard tiers exist). \
-                                        CRITICAL: this tool has no way to tell you the pool's \
-                                        current tick, so you must determine it yourself before \
-                                        picking bounds — eth_call the pool's slot0() (returns \
-                                        sqrtPriceX96 and tick as its first two return values) or \
-                                        tickLower/tickUpper of an existing position via \
-                                        get_v3_position. A range that does not bracket the current \
-                                        tick silently creates a one-sided position (all of one \
-                                        token, none of the other): if the current tick is above \
-                                        tickUpper the position needs zero token0, if it's below \
-                                        tickLower it needs zero token1 — supplying \
-                                        independentTokenAddress as the zero side is a mismatch that \
-                                        will fail simulation with an unhelpful bare revert rather \
-                                        than a clear error."
-                    }),
-                ),
-                (
-                    "tickUpper",
-                    json!({
-                        "type": "integer",
-                        "description": "Upper tick of the position's price range. Must be greater \
-                                        than tickLower and a multiple of the pool's tick spacing. \
-                                        See tickLower's description — ticks are log-scale \
-                                        (price = 1.0001^tick) and this range must bracket the \
-                                        pool's actual current tick, which you need to look up \
-                                        on-chain (pool.slot0()) before calling this tool."
+                        "description": "Optional. Omit it to rank the standard fee tiers (100, 500, \
+                                        3000, 10000) by active liquidity and use the deepest pool \
+                                        the Liquidity API can size, preferring the lower fee tier \
+                                        on an exact tie. A candidate is skipped only when the API \
+                                        specifically reports that pool unavailable or unindexed; \
+                                        authentication, rate-limit, transport and generic service \
+                                        failures abort. Supply an address to select exactly that \
+                                        pool (with no fallback) or reach a nonstandard fee tier. It \
+                                        is verified against the factory and requested pair."
                     }),
                 ),
                 ("slippageTolerance", slippage_prop()),
             ],
             &[
                 "chainId",
-                "poolAddress",
-                "independentTokenAddress",
-                "independentTokenAmount",
-                "tickLower",
-                "tickUpper",
+                "tokenA",
+                "tokenB",
+                "maxTokenAAmount",
+                "maxTokenBAmount",
             ],
         ),
     );
@@ -1171,8 +2544,51 @@ pub(super) fn build_uniswap_lp_tools() -> Vec<Tool> {
         ),
     );
 
+    let get_v3_pool_state = Tool::new(
+        "get_v3_pool_state".to_string(),
+        "Read the live state of a Uniswap V3 pool on Ethereum Sepolia: token pair, fee tier, \
+         current tick and sqrt price, tick spacing, and active in-range liquidity. Read-only: \
+         pure on-chain reads, no Uniswap API call, no wallet involved, no funds moved. The \
+         address is verified against the canonical V3 factory, so a contract that merely mimics \
+         a pool's interface is rejected. Use this to inspect price and depth before opening a \
+         position — create_v3_position derives its own range internally, so you do not need this \
+         to compute ticks."
+            .to_string(),
+        object_schema(
+            vec![
+                ("chainId", sepolia_chain_id_prop()),
+                (
+                    "poolAddress",
+                    json!({
+                        "type": "string",
+                        "description": "Address of a Uniswap V3 pool on Sepolia. Verified against \
+                                        the V3 factory before anything is returned."
+                    }),
+                ),
+            ],
+            &["chainId", "poolAddress"],
+        ),
+    );
+
+    let list_v3_positions = Tool::new(
+        "list_v3_positions".to_string(),
+        format!(
+            "List the Uniswap V3 liquidity positions the authenticated agent's own wallet holds \
+             on Ethereum Sepolia. Read-only: pure on-chain reads, no Uniswap API call, no \
+             signing, no funds moved. The wallet is resolved from the agent's vault — you do not \
+             pass an address, and positions owned by anyone else are never returned. Each entry \
+             carries the same fields as get_v3_position, including the tokensOwed0/1 caveat: \
+             those are a cached balance from the position's last on-chain touch, not its live \
+             claimable fees. At most {LIST_POSITIONS_LIMIT} positions are returned; if the wallet \
+             holds more, `truncated` is true and `totalOwned` reports the real count."
+        ),
+        object_schema(vec![("chainId", sepolia_chain_id_prop())], &["chainId"]),
+    );
+
     vec![
         get_v3_position,
+        get_v3_pool_state,
+        list_v3_positions,
         create_v3_position,
         decrease_v3_position,
         claim_v3_fees,
@@ -1184,22 +2600,17 @@ pub(super) fn build_uniswap_lp_tools() -> Vec<Tool> {
 // ---------------------------------------------------------------------------
 
 impl UniswapMcpServer {
-    /// Everything an LP tool needs before it can do anything: who is acting, where to sign, and
-    /// what to talk to. None of it is a tool argument — the wallet comes from the agent's vault
-    /// and the rpc_url from the `networks` table.
-    async fn lp_session(&self, tool: &str) -> Result<LpSession<'_>> {
-        let agent_id = self
-            .agent_id
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("{tool} requires an authenticated agent"))?;
+    /// A Sepolia RPC provider and the url behind it, with no vault involved.
+    ///
+    /// Read-only tools use this instead of `lp_session`: the HTTP route already requires a valid
+    /// bearer token for every call, and a pool-state read has no ownership concept, so demanding
+    /// the calling agent also have a vault *provisioned* would only produce a confusing
+    /// vault-resolution error from a tool that never touches a vault.
+    async fn sepolia_rpc(&self, tool: &str) -> Result<(String, DynProvider)> {
         let db = self
             .db
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("{tool} requires a database connection"))?;
-
-        let wallet = resolve_agent_address(db, agent_id)
-            .await
-            .context("resolving agent wallet failed")?;
 
         let rpc_url = db
             .get_network(SEPOLIA_V3.chain_id)
@@ -1219,13 +2630,134 @@ impl UniswapMcpServer {
             .await
             .context("rpc connect failed")?;
 
+        Ok((rpc_url, provider.erased()))
+    }
+
+    /// Everything a fund-moving LP tool needs before it can do anything: who is acting, where to
+    /// sign, and what to talk to. None of it is a tool argument — the wallet comes from the
+    /// agent's vault and the rpc_url from the `networks` table.
+    async fn lp_session(&self, tool: &str) -> Result<LpSession<'_>> {
+        let agent_id = self
+            .agent_id
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("{tool} requires an authenticated agent"))?;
+        let db = self
+            .db
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("{tool} requires a database connection"))?;
+
+        let wallet = resolve_agent_address(db, agent_id)
+            .await
+            .context("resolving agent wallet failed")?;
+
+        let (rpc_url, provider) = self.sepolia_rpc(tool).await?;
+
         Ok(LpSession {
             agent_id,
             db,
             wallet,
-            provider: provider.erased(),
+            provider,
             rpc_url,
         })
+    }
+
+    pub(super) async fn handle_list_v3_positions(
+        &self,
+        args: &Map<String, Value>,
+    ) -> Result<String> {
+        require_sepolia(args)?;
+
+        let s = self.lp_session("list_v3_positions").await?;
+
+        let balance_out = call_view(
+            &s.provider,
+            SEPOLIA_V3.position_manager,
+            abi_function(position_manager_abi(), "balanceOf")?,
+            &[DynSolValue::Address(s.wallet)],
+        )
+        .await
+        .context("stage=position read")?;
+        let balance = as_u256(out(&balance_out, 0, "balanceOf")?, "balanceOf")
+            .context("stage=position read")?;
+
+        let total = usize::try_from(balance).unwrap_or(usize::MAX);
+        let shown = total.min(LIST_POSITIONS_LIMIT);
+
+        let mut positions = Vec::with_capacity(shown);
+        for index in 0..shown {
+            let id_out = call_view(
+                &s.provider,
+                SEPOLIA_V3.position_manager,
+                abi_function(position_manager_abi(), "tokenOfOwnerByIndex")?,
+                &[
+                    DynSolValue::Address(s.wallet),
+                    DynSolValue::Uint(U256::from(index), 256),
+                ],
+            )
+            .await
+            .context("stage=position read")?;
+            let token_id = as_u256(
+                out(&id_out, 0, "tokenOfOwnerByIndex")?,
+                "tokenOfOwnerByIndex",
+            )
+            .context("stage=position read")?;
+
+            // Deliberately re-confirms ownership per item rather than trusting that enumeration
+            // implies it: one code path that always checks beats a second that assumes.
+            let pos = read_v3_position(&s.provider, token_id, s.wallet)
+                .await
+                .context("stage=position read")?;
+
+            positions.push(json!({
+                "nftTokenId": token_id.to_string(),
+                "poolAddress": pos.pool.to_checksum(None),
+                "token0": pos.token0.to_checksum(None),
+                "token1": pos.token1.to_checksum(None),
+                "fee": pos.fee.to_string(),
+                "tickLower": pos.tick_lower.to_string(),
+                "tickUpper": pos.tick_upper.to_string(),
+                "liquidity": pos.liquidity.to_string(),
+                "tokensOwed0": pos.tokens_owed0.to_string(),
+                "tokensOwed1": pos.tokens_owed1.to_string(),
+            }));
+        }
+
+        Ok(json!({
+            "chainId": SEPOLIA_V3.chain_id,
+            "walletAddress": s.wallet.to_checksum(None),
+            "count": positions.len(),
+            "totalOwned": total,
+            "truncated": total > shown,
+            "positions": positions,
+        })
+        .to_string())
+    }
+
+    pub(super) async fn handle_get_v3_pool_state(
+        &self,
+        args: &Map<String, Value>,
+    ) -> Result<String> {
+        require_sepolia(args)?;
+        let pool_address = parse_address_arg(args, "poolAddress")?;
+
+        let (_rpc_url, provider) = self.sepolia_rpc("get_v3_pool_state").await?;
+
+        let pool = read_v3_pool_state(&provider, pool_address)
+            .await
+            .context("stage=pool read")?;
+
+        Ok(json!({
+            "chainId": SEPOLIA_V3.chain_id,
+            "poolAddress": pool_address.to_checksum(None),
+            "token0": pool.token0.to_checksum(None),
+            "token1": pool.token1.to_checksum(None),
+            "fee": pool.fee.to_string(),
+            "currentTick": pool.current_tick.to_string(),
+            "sqrtPriceX96": pool.sqrt_price_x96.to_string(),
+            "tickSpacing": pool.tick_spacing.to_string(),
+            "liquidity": pool.liquidity.to_string(),
+        })
+        .to_string())
     }
 
     pub(super) async fn handle_get_v3_position(&self, args: &Map<String, Value>) -> Result<String> {
@@ -1257,162 +2789,88 @@ impl UniswapMcpServer {
 
     /// Opens a position in an existing V3 pool.
     ///
-    /// The sequence is: read the pool → size the position → approve → re-price → simulate →
-    /// broadcast. Each `stage=` context marks which of those failed, and any approval that has
-    /// already landed on-chain is reported alongside the error.
+    /// Planning (pool choice, range, budgets, sizing) happens in `plan_create_v3_position`,
+    /// which cannot sign. Everything from here on can, so it is deliberately linear and every
+    /// transaction that lands is recorded before the next one is attempted.
+    ///
+    /// The loop exists because a quote goes stale while its own approvals confirm: by the time a
+    /// wrap and two approvals are mined, Uniswap may want a slightly different amount, which can
+    /// need *more* WETH or *more* allowance than we just provided. Signing the old quote would
+    /// revert; signing the new one unfunded would too. So each pass re-reads what the current
+    /// quote needs, provides exactly that, refetches, and only signs once a quote needs nothing
+    /// further. Bounded, because a pool volatile enough not to settle in three passes is one
+    /// this tool should decline rather than chase.
     pub(super) async fn handle_create_v3_position(
         &self,
         args: &Map<String, Value>,
     ) -> Result<String> {
         require_sepolia(args)?;
-        let pool_address = parse_address_arg(args, "poolAddress")?;
-        let independent_token = parse_address_arg(args, "independentTokenAddress")?;
-        let independent_amount = parse_amount_arg(args, "independentTokenAmount")?;
-        let tick_lower = parse_tick_arg(args, "tickLower")?;
-        let tick_upper = parse_tick_arg(args, "tickUpper")?;
-        let slippage = parse_slippage_arg(args)?;
-
-        anyhow::ensure!(
-            tick_lower < tick_upper,
-            "tickLower ({tick_lower}) must be strictly less than tickUpper ({tick_upper})"
-        );
+        let req = parse_create_request(args)?;
 
         let s = self.lp_session("create_v3_position").await?;
 
-        // The token pair comes from the pool, never from the caller — see read_v3_pool.
-        let pool_tokens = read_v3_pool(&s.provider, pool_address)
-            .await
-            .context("stage=position read")?;
+        let plan = plan_create_v3_position(&s.provider, &self.http, s.wallet, &req).await?;
 
-        anyhow::ensure!(
-            independent_token == pool_tokens.token0 || independent_token == pool_tokens.token1,
-            "independentTokenAddress {independent_token:#x} is not in pool {pool_address:#x}, \
-             whose tokens are {:#x} and {:#x}",
-            pool_tokens.token0,
-            pool_tokens.token1
-        );
-
-        let create_params = CreateParams {
-            wallet: s.wallet,
-            pool: pool_address,
-            pool_tokens: &pool_tokens,
-            independent_token,
-            independent_amount: &independent_amount,
-            tick_lower,
-            tick_upper,
-            slippage,
+        // Funding, approvals and re-quoting until a simulated quote needs nothing further. The
+        // sizing quote handed in here is unsimulated and can never be what gets signed.
+        let effects = LiveReconcileEffects {
+            session: &s,
+            http: &self.http,
+            plan: &plan,
+            slippage: req.slippage,
         };
+        let settled = reconcile(&effects, plan.quote.clone()).await?;
+        let mut completed = settled.completed;
 
-        // Pass 1 — sizing only. Simulation is off: allowances may not exist yet, and a
-        // simulation failure for that reason would say nothing about the position itself.
-        let sizing = lp_post(
-            &self.http,
-            "/lp/create",
-            &build_lp_create_body(&create_params, false),
-        )
-        .await
-        .context("stage=API request")?;
-        let want0 = parse_lp_token(&sizing, "token0", "/lp/create").context("stage=API request")?;
-        let want1 = parse_lp_token(&sizing, "token1", "/lp/create").context("stage=API request")?;
+        // --- the quote is settled and simulated; last checks before it becomes irreversible ---
+        let (final0, final1) = quote_amounts(&settled.quote, &plan.pool)?;
 
-        // These amounts are about to become spending approvals, so the pair they name has to be
-        // the pair we read off the pool — not merely whatever the API replied with.
-        ensure_pair_matches(
-            (want0.0, want1.0),
-            (pool_tokens.token0, pool_tokens.token1),
-            "/lp/create",
-        )
-        .context("stage=API request")?;
+        with_completed_txs(
+            ensure_within_budgets(
+                final0,
+                final1,
+                plan.effective0,
+                plan.effective1,
+                plan.decimals0,
+                plan.decimals1,
+                &plan.pool,
+            ),
+            &completed,
+        )?;
 
-        // Approvals, one at a time, each confirmed before the next is sent.
-        let approval_resp = lp_post(
-            &self.http,
-            "/lp/check_approval",
-            &build_check_approval_body(s.wallet, &[want0, want1]),
-        )
-        .await
-        .context("stage=API request")?;
-        let approvals = parse_approval_transactions(&approval_resp).context("stage=API request")?;
-
-        let mut approval_hashes: Vec<String> = Vec::new();
-        for (i, approval) in approvals.iter().enumerate() {
-            let step = format!("approval {}/{}", i + 1, approvals.len());
-
-            // No destination pin here: an approval's `to` is legitimately the ERC-20 being
-            // approved, which varies per pool.
-            let validated = with_approvals(
-                validate_api_transaction(approval, s.wallet, SEPOLIA_V3.chain_id, None)
-                    .with_context(|| format!("stage=approval ({step})")),
-                &approval_hashes,
-            )?;
-
-            // Simulate before signing. An approval is a real state change that cannot be
-            // un-broadcast, and a reverting one would otherwise burn gas and leave the flow
-            // half-done — with the mint still doomed to fail for want of an allowance.
-            with_approvals(
-                simulate_tx(&s.provider, s.wallet, &validated)
+        // Re-read both balances rather than trusting our own bookkeeping: something else may
+        // have moved this wallet's funds while the approvals were confirming.
+        for (token, amount, decimals) in [
+            (plan.pool.token0, final0, plan.decimals0),
+            (plan.pool.token1, final1, plan.decimals1),
+        ] {
+            let held = with_completed_txs(
+                erc20_balance_of(&s.provider, token, s.wallet)
                     .await
-                    .with_context(|| format!("stage=simulation ({step})")),
-                &approval_hashes,
+                    .context("stage=balance read"),
+                &completed,
             )?;
-
-            let hash = with_approvals(
-                s.sign_and_broadcast(&validated)
-                    .await
-                    .with_context(|| format!("stage=broadcast ({step})")),
-                &approval_hashes,
-            )?;
-            approval_hashes.push(format!("{hash:#x}"));
-
-            with_approvals(
-                wait_for_receipt(&s.provider, hash, &step)
-                    .await
-                    .with_context(|| format!("stage=receipt ({step})")),
-                &approval_hashes,
+            with_completed_txs(
+                if held >= amount {
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!(
+                        "stage=balance read: wallet holds {} of {token:#x} but the mint needs \
+                         {} — balance changed while the position was being prepared",
+                        format_human_amount(held, decimals),
+                        format_human_amount(amount, decimals)
+                    ))
+                },
+                &completed,
             )?;
         }
 
-        // Pass 2 — the transaction we will actually sign. Refetched because the approvals just
-        // took real block time, which staleifies the deadline the first response carried, and
-        // because only now can the server-side simulation mean anything.
-        let created = with_approvals(
-            lp_post(
-                &self.http,
-                "/lp/create",
-                &build_lp_create_body(&create_params, true),
-            )
-            .await
-            .context("stage=API request"),
-            &approval_hashes,
+        let create_tx = with_completed_txs(
+            require_field(&settled.quote, "create", "/lp/create").context("stage=API request"),
+            &completed,
         )?;
 
-        let token0 = with_approvals(
-            parse_lp_token(&created, "token0", "/lp/create").context("stage=API request"),
-            &approval_hashes,
-        )?;
-        let token1 = with_approvals(
-            parse_lp_token(&created, "token1", "/lp/create").context("stage=API request"),
-            &approval_hashes,
-        )?;
-
-        // The refetch is a fresh response and gets the same treatment as the first — these are
-        // the amounts and addresses reported back to the caller as what was actually deposited.
-        with_approvals(
-            ensure_pair_matches(
-                (token0.0, token1.0),
-                (pool_tokens.token0, pool_tokens.token1),
-                "/lp/create",
-            )
-            .context("stage=API request"),
-            &approval_hashes,
-        )?;
-
-        let create_tx = with_approvals(
-            require_field(&created, "create", "/lp/create").context("stage=API request"),
-            &approval_hashes,
-        )?;
-
-        let validated = with_approvals(
+        let validated = with_completed_txs(
             validate_api_transaction(
                 create_tx,
                 s.wallet,
@@ -1420,28 +2878,29 @@ impl UniswapMcpServer {
                 Some(SEPOLIA_V3.position_manager),
             )
             .context("stage=simulation"),
-            &approval_hashes,
+            &completed,
         )?;
 
-        with_approvals(
+        with_completed_txs(
             simulate_tx(&s.provider, s.wallet, &validated)
                 .await
                 .context("stage=simulation"),
-            &approval_hashes,
+            &completed,
         )?;
 
-        let hash = with_approvals(
+        let hash = with_completed_txs(
             s.sign_and_broadcast(&validated)
                 .await
                 .context("stage=broadcast"),
-            &approval_hashes,
+            &completed,
         )?;
+        completed.push(format!("{hash:#x}"));
 
-        let receipt = with_approvals(
+        let receipt = with_completed_txs(
             wait_for_receipt(&s.provider, hash, "position create")
                 .await
                 .context("stage=receipt"),
-            &approval_hashes,
+            &completed,
         )?;
 
         let logs: Vec<PrimitiveLog> = receipt
@@ -1451,23 +2910,46 @@ impl UniswapMcpServer {
             .map(|log| log.inner.clone())
             .collect();
 
-        let nft_token_id = with_approvals(
+        let nft_token_id = with_completed_txs(
             parse_minted_token_id(&logs, SEPOLIA_V3.position_manager, s.wallet)
                 .context("stage=receipt"),
-            &approval_hashes,
+            &completed,
         )?;
 
         Ok(json!({
             "hash": format!("{hash:#x}"),
             "nftTokenId": nft_token_id.to_string(),
-            "poolAddress": pool_address.to_checksum(None),
-            "tickLower": created.get("tickLower").cloned().unwrap_or(json!(tick_lower)),
-            "tickUpper": created.get("tickUpper").cloned().unwrap_or(json!(tick_upper)),
-            "adjustedMinPrice": created.get("adjustedMinPrice").cloned().unwrap_or(Value::Null),
-            "adjustedMaxPrice": created.get("adjustedMaxPrice").cloned().unwrap_or(Value::Null),
-            "token0": lp_token_json(&token0),
-            "token1": lp_token_json(&token1),
-            "approvalHashes": approval_hashes,
+            "wrapHash": settled.wrap_hashes.last().cloned().map(Value::String).unwrap_or(Value::Null),
+            "wrapHashes": settled.wrap_hashes,
+            "approvalHashes": settled.approval_hashes,
+            "reconciliationAttempts": settled.attempts,
+            "poolAddress": plan.pool_address.to_checksum(None),
+            "poolSelectionMethod": plan.selection_method,
+            "skippedPools": plan.skipped_pools.iter().map(|pool| json!({
+                "fee": pool.fee.to_string(),
+                "poolAddress": pool.address.to_checksum(None),
+                "liquidity": pool.liquidity.to_string(),
+                "reason": pool.reason,
+            })).collect::<Vec<_>>(),
+            "fee": plan.pool.fee.to_string(),
+            "currentTick": plan.pool.current_tick.to_string(),
+            "tickSpacing": plan.pool.tick_spacing.to_string(),
+            "tickLower": plan.range.lower.to_string(),
+            "tickUpper": plan.range.upper.to_string(),
+            "rangeWidthBps": req.range_width_bps,
+            "adjustedMinPrice": settled.quote.get("adjustedMinPrice").cloned().unwrap_or(Value::Null),
+            "adjustedMaxPrice": settled.quote.get("adjustedMaxPrice").cloned().unwrap_or(Value::Null),
+            "token0": {
+                "tokenAddress": plan.pool.token0.to_checksum(None),
+                "amount": final0.to_string(),
+                "humanAmount": format_human_amount(final0, plan.decimals0),
+            },
+            "token1": {
+                "tokenAddress": plan.pool.token1.to_checksum(None),
+                "amount": final1.to_string(),
+                "humanAmount": format_human_amount(final1, plan.decimals1),
+            },
+            "wethFundedFromNativeEth": !settled.wrap_hashes.is_empty(),
         })
         .to_string())
     }
@@ -1571,6 +3053,32 @@ impl UniswapMcpServer {
 }
 
 impl LpSession<'_> {
+    /// Wraps `amount` of native ETH into WETH and waits for it to confirm.
+    ///
+    /// The transaction is built here rather than taken from any API response: the destination is
+    /// the compiled-in canonical WETH address and the calldata is `deposit()`'s bare selector,
+    /// so there is nothing for a malformed or hostile response to influence. It still goes
+    /// through the same simulate → sign → broadcast → confirm path as everything else.
+    async fn wrap_native_to_weth(&self, amount: U256) -> Result<B256> {
+        let calldata = abi_function(weth_abi(), "deposit")?
+            .abi_encode_input(&[])
+            .context("failed to encode WETH deposit() calldata")?;
+
+        let tx = ValidatedTx {
+            to: SEPOLIA_V3.weth,
+            data: calldata.into(),
+            value: amount,
+        };
+
+        simulate_tx(&self.provider, self.wallet, &tx)
+            .await
+            .context("wrapping ETH to WETH would revert")?;
+
+        let hash = self.sign_and_broadcast(&tx).await?;
+        wait_for_receipt(&self.provider, hash, "WETH wrap").await?;
+        Ok(hash)
+    }
+
     /// validate → simulate → sign → broadcast → confirm, for the single-transaction LP flows.
     ///
     /// `create_v3_position` runs these steps inline instead, because it has to thread already
@@ -1759,10 +3267,59 @@ mod tests {
 
     #[test]
     fn built_in_abis_parse_and_expose_the_functions_we_call() {
-        for name in ["ownerOf", "positions"] {
+        for name in ["ownerOf", "positions", "balanceOf", "tokenOfOwnerByIndex"] {
             abi_function(position_manager_abi(), name).unwrap();
         }
         abi_function(factory_abi(), "getPool").unwrap();
+        for name in [
+            "token0",
+            "token1",
+            "fee",
+            "tickSpacing",
+            "liquidity",
+            "slot0",
+        ] {
+            abi_function(pool_abi(), name).unwrap();
+        }
+    }
+
+    /// slot0() returns seven values and we read two of them by index, so the ordering in the
+    /// fragment is load-bearing exactly like positions()' is. Decoding a real return blob pins
+    /// it: sqrtPriceX96 first, tick second.
+    #[test]
+    fn decodes_a_real_slot0_return() {
+        // Live capture from the Sepolia UNI/WETH 0.3% pool
+        // (0x287B0e934ed0439E2a7b1d5F0FC25eA2c24b64f7), 2026-07-25.
+        const SLOT0_RETURN: &str = "0x\
+0000000000000000000000000000000000000004b197a8b0d920715a9316b5f5\
+00000000000000000000000000000000000000000000000000000000000078ce\
+00000000000000000000000000000000000000000000000000000000000003de\
+00000000000000000000000000000000000000000000000000000000000003e8\
+00000000000000000000000000000000000000000000000000000000000003e8\
+0000000000000000000000000000000000000000000000000000000000000000\
+0000000000000000000000000000000000000000000000000000000000000001";
+
+        let bytes = alloy::hex::decode(SLOT0_RETURN.trim_start_matches("0x")).unwrap();
+        let func = abi_function(pool_abi(), "slot0").unwrap();
+        let outs = func
+            .abi_decode_output(&bytes)
+            .expect("slot0 fixture should decode");
+
+        // Swapping these two indices is the realistic mistake, and it would be silent: a
+        // sqrt price read as a tick is off by 25 orders of magnitude, not off by a little.
+        let tick = as_i32(out(&outs, 1, "slot0.tick").unwrap(), "slot0.tick").unwrap();
+        assert_eq!(tick, 30926, "tick is the SECOND return value");
+
+        let sqrt = as_u256(
+            out(&outs, 0, "slot0.sqrtPriceX96").unwrap(),
+            "slot0.sqrtPriceX96",
+        )
+        .unwrap();
+        assert_eq!(
+            sqrt,
+            U256::from(371874841214038945356433503733u128),
+            "sqrtPriceX96 is the FIRST return value"
+        );
     }
 
     #[test]
@@ -1781,69 +3338,6 @@ mod tests {
     }
 
     // ─── create_v3_position argument validation ──────────────────────────────
-
-    #[test]
-    fn rejects_non_increasing_tick_ranges() {
-        // Equal or inverted bounds are not a range. Uniswap would revert, but only after the
-        // approvals in front of the mint had already been paid for on-chain.
-        for (lower, upper) in [(100, 100), (100, -100), (-100, -200), (0, 0)] {
-            let a = args(&[("tickLower", json!(lower)), ("tickUpper", json!(upper))]);
-            let l = parse_tick_arg(&a, "tickLower").unwrap();
-            let u = parse_tick_arg(&a, "tickUpper").unwrap();
-            assert!(
-                l >= u,
-                "test case ({lower}, {upper}) should be non-increasing"
-            );
-        }
-    }
-
-    #[test]
-    fn parses_ticks_as_numbers_or_strings_including_negatives() {
-        let a = args(&[
-            ("tickLower", json!(-198950)),
-            ("tickUpper", json!("-198200")),
-        ]);
-        assert_eq!(parse_tick_arg(&a, "tickLower").unwrap(), -198950);
-        assert_eq!(parse_tick_arg(&a, "tickUpper").unwrap(), -198200);
-    }
-
-    #[test]
-    fn rejects_unusable_ticks() {
-        for bad in [
-            json!("abc"),
-            json!(1.5),
-            json!(null),
-            json!(true),
-            json!(i64::MAX),
-        ] {
-            assert!(
-                parse_tick_arg(&args(&[("tickLower", bad.clone())]), "tickLower").is_err(),
-                "{bad} should not parse as a tick"
-            );
-        }
-        assert!(parse_tick_arg(&args(&[]), "tickLower").is_err());
-    }
-
-    #[test]
-    fn requires_a_positive_decimal_amount() {
-        assert_eq!(
-            parse_amount_arg(&args(&[("amt", json!("1000000000000000000"))]), "amt").unwrap(),
-            "1000000000000000000"
-        );
-        for bad in [
-            json!("0"),
-            json!(""),
-            json!("-5"),
-            json!("1.5"),
-            json!("0x10"),
-            json!(5),
-        ] {
-            assert!(
-                parse_amount_arg(&args(&[("amt", bad.clone())]), "amt").is_err(),
-                "{bad} should not parse as an amount"
-            );
-        }
-    }
 
     #[test]
     fn validates_slippage_tolerance_range() {
@@ -2109,6 +3603,1462 @@ mod tests {
         );
     }
 
+    // ─── human decimal amounts ───────────────────────────────────────────────
+
+    #[test]
+    fn parses_human_amounts_for_18_decimal_tokens() {
+        let cases = [
+            ("1", "1000000000000000000"),
+            ("0.01", "10000000000000000"),
+            ("0.000000000000000001", "1"),
+            ("1.5", "1500000000000000000"),
+            ("123.456", "123456000000000000000"),
+            ("0000.5", "500000000000000000"),
+        ];
+        for (input, expected) in cases {
+            let got = parse_human_decimal_amount(input, 18)
+                .unwrap_or_else(|e| panic!("{input} should parse: {e:#}"));
+            assert_eq!(got.to_string(), expected, "for input {input}");
+        }
+    }
+
+    #[test]
+    fn parses_human_amounts_for_6_decimal_tokens() {
+        // USDC is the motivating case: "20" must become 20_000000, not 20e18.
+        let cases = [
+            ("20", "20000000"),
+            ("0.000001", "1"),
+            ("1.5", "1500000"),
+            ("1234.567891", "1234567891"),
+        ];
+        for (input, expected) in cases {
+            let got = parse_human_decimal_amount(input, 6)
+                .unwrap_or_else(|e| panic!("{input} should parse: {e:#}"));
+            assert_eq!(got.to_string(), expected, "for input {input}");
+        }
+    }
+
+    #[test]
+    fn rejects_amounts_with_more_precision_than_the_token_has() {
+        // Truncating silently would deposit less than asked; rounding would deposit more.
+        // Neither is ours to choose, so this is an error.
+        let err = parse_human_decimal_amount("1.0000001", 6)
+            .expect_err("7 decimals on a 6-decimal token must be rejected")
+            .to_string();
+        assert!(err.contains("decimal places"), "got: {err}");
+
+        assert!(parse_human_decimal_amount("0.5", 0).is_err());
+        // The boundary itself is fine.
+        assert!(parse_human_decimal_amount("1.000001", 6).is_ok());
+    }
+
+    #[test]
+    fn rejects_malformed_human_amounts() {
+        let bad = [
+            "",      // nothing
+            "-1",    // sign
+            "+1",    // sign
+            "1e18",  // exponent
+            "1E18",  // exponent
+            "0x10",  // hex
+            " 1",    // whitespace
+            "1 ",    // whitespace
+            "1.",    // trailing dot
+            ".5",    // leading dot
+            "1.2.3", // two dots
+            "1,000", // thousands separator
+            "abc",   // not a number
+            "1_000", // rust-style separator
+            "١٢٣",   // non-ascii digits
+        ];
+        for input in bad {
+            assert!(
+                parse_human_decimal_amount(input, 18).is_err(),
+                "{input:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_zero_however_it_is_spelled() {
+        for input in ["0", "0.0", "00", "0.000", "0000.0000"] {
+            let err = parse_human_decimal_amount(input, 18)
+                .expect_err("{input} is zero and should be rejected")
+                .to_string();
+            assert!(err.contains("zero"), "for {input}, got: {err}");
+        }
+    }
+
+    #[test]
+    fn formats_base_units_back_to_human_readable() {
+        let cases = [
+            (U256::from(1000000000000000000u64), 18, "1"),
+            (U256::from(10000000000000000u64), 18, "0.01"),
+            (U256::from(1u64), 18, "0.000000000000000001"),
+            (U256::from(1500000000000000000u64), 18, "1.5"),
+            (U256::from(20000000u64), 6, "20"),
+            (U256::from(1u64), 6, "0.000001"),
+            (U256::ZERO, 18, "0"),
+            (U256::from(42u64), 0, "42"),
+        ];
+        for (raw, decimals, expected) in cases {
+            assert_eq!(format_human_amount(raw, decimals), expected);
+        }
+    }
+
+    #[test]
+    fn human_amount_round_trips() {
+        // Parse then format must return exactly what was written, for anything already in
+        // canonical form — otherwise the amount reported back would not match the amount asked
+        // for.
+        for (text, decimals) in [
+            ("0.01", 18u8),
+            ("20", 6),
+            ("1.5", 18),
+            ("1234.567891", 6),
+            ("0.000000000000000001", 18),
+            ("1", 18),
+        ] {
+            let raw = parse_human_decimal_amount(text, decimals).unwrap();
+            assert_eq!(
+                format_human_amount(raw, decimals),
+                text,
+                "round trip for {text}"
+            );
+        }
+    }
+
+    // ─── token arguments ─────────────────────────────────────────────────────
+
+    #[test]
+    fn normalizes_eth_to_weth() {
+        let t = parse_token_arg(&args(&[("tokenA", json!("ETH"))]), "tokenA").unwrap();
+        assert_eq!(
+            t.address, SEPOLIA_V3.weth,
+            "ETH must resolve to canonical WETH"
+        );
+        assert!(t.is_native, "the wrapping path keys off this flag");
+    }
+
+    #[test]
+    fn accepts_a_plain_erc20_address_as_non_native() {
+        let usdc = "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238";
+        let t = parse_token_arg(&args(&[("tokenA", json!(usdc))]), "tokenA").unwrap();
+        assert_eq!(
+            t.address,
+            address!("1c7d4b196cb0c7b01d743fbc6116a902379c7238")
+        );
+        assert!(!t.is_native);
+    }
+
+    #[test]
+    fn passing_the_weth_address_directly_is_not_native() {
+        // Meaningful difference: this caller has WETH and does not want ETH wrapped on their
+        // behalf, so no wrap should ever be attempted for this side.
+        let t = parse_token_arg(
+            &args(&[(
+                "tokenA",
+                json!("0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14"),
+            )]),
+            "tokenA",
+        )
+        .unwrap();
+        assert_eq!(t.address, SEPOLIA_V3.weth);
+        assert!(
+            !t.is_native,
+            "an explicit WETH address must not trigger wrapping"
+        );
+    }
+
+    #[test]
+    fn rejects_near_misses_for_the_eth_sentinel() {
+        // "eth"/"weth" are almost certainly meant as the sentinel; failing them as unparseable
+        // addresses would be a confusing way to say so.
+        for bad in ["eth", "Eth", "weth", "WETH", "ether", "0xETH", ""] {
+            assert!(
+                parse_token_arg(&args(&[("tokenA", json!(bad))]), "tokenA").is_err(),
+                "{bad:?} should be rejected"
+            );
+        }
+        assert!(parse_token_arg(&args(&[]), "tokenA").is_err());
+    }
+
+    #[test]
+    fn rejects_a_pair_that_is_the_same_token_twice() {
+        let weth = "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14";
+        let usdc = "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238";
+
+        // Both sides native.
+        assert!(
+            parse_create_request(&args(&[
+                ("tokenA", json!("ETH")),
+                ("tokenB", json!("ETH")),
+                ("maxTokenAAmount", json!("1")),
+                ("maxTokenBAmount", json!("1")),
+            ]))
+            .is_err()
+        );
+
+        // "ETH" plus the WETH address is the same token after normalization — the subtle case.
+        let err = parse_create_request(&args(&[
+            ("tokenA", json!("ETH")),
+            ("tokenB", json!(weth)),
+            ("maxTokenAAmount", json!("1")),
+            ("maxTokenBAmount", json!("1")),
+        ]))
+        .expect_err("ETH and WETH are the same token")
+        .to_string();
+        assert!(err.contains("same token"), "got: {err}");
+
+        // Identical addresses.
+        assert!(
+            parse_create_request(&args(&[
+                ("tokenA", json!(usdc)),
+                ("tokenB", json!(usdc)),
+                ("maxTokenAAmount", json!("1")),
+                ("maxTokenBAmount", json!("1")),
+            ]))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn requires_amounts_to_be_quoted_strings() {
+        // A JSON number has already been through a float by the time it reaches us.
+        let err = parse_create_request(&args(&[
+            ("tokenA", json!("ETH")),
+            (
+                "tokenB",
+                json!("0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"),
+            ),
+            ("maxTokenAAmount", json!(0.01)),
+            ("maxTokenBAmount", json!("20")),
+        ]))
+        .expect_err("a bare number must be refused")
+        .to_string();
+        assert!(err.contains("quoted decimal string"), "got: {err}");
+    }
+
+    // ─── rangeWidthBps ───────────────────────────────────────────────────────
+
+    #[test]
+    fn range_width_defaults_to_ten_percent_each_side() {
+        assert_eq!(parse_range_width_bps(&args(&[])).unwrap(), 1000);
+        assert_eq!(
+            parse_range_width_bps(&args(&[("rangeWidthBps", json!(null))])).unwrap(),
+            1000
+        );
+    }
+
+    #[test]
+    fn validates_the_range_width_bounds() {
+        assert_eq!(
+            parse_range_width_bps(&args(&[("rangeWidthBps", json!(1))])).unwrap(),
+            1
+        );
+        assert_eq!(
+            parse_range_width_bps(&args(&[("rangeWidthBps", json!(9999))])).unwrap(),
+            9999
+        );
+        assert_eq!(
+            parse_range_width_bps(&args(&[("rangeWidthBps", json!("2500"))])).unwrap(),
+            2500
+        );
+
+        // 0 is a zero-width range; 10000 would put the lower bound at a price of zero.
+        for bad in [json!(0), json!(10000), json!(-1), json!(1.5), json!("wide")] {
+            assert!(
+                parse_range_width_bps(&args(&[("rangeWidthBps", bad.clone())])).is_err(),
+                "{bad} should be rejected"
+            );
+        }
+    }
+
+    // ─── tick snapping and range derivation ──────────────────────────────────
+
+    #[test]
+    fn snaps_ticks_outward_including_negatives() {
+        // Rust truncates toward zero, so negatives are where a naive `/ * ` gets this wrong.
+        assert_eq!(floor_to_spacing(125, 60), 120);
+        assert_eq!(ceil_to_spacing(125, 60), 180);
+        assert_eq!(floor_to_spacing(-125, 60), -180);
+        assert_eq!(ceil_to_spacing(-125, 60), -120);
+
+        // Exact multiples must not move.
+        assert_eq!(floor_to_spacing(120, 60), 120);
+        assert_eq!(ceil_to_spacing(120, 60), 120);
+        assert_eq!(floor_to_spacing(-120, 60), -120);
+        assert_eq!(ceil_to_spacing(-120, 60), -120);
+
+        // Spacing of 1 (the 0.01% tier) is the identity.
+        assert_eq!(floor_to_spacing(-7, 1), -7);
+        assert_eq!(ceil_to_spacing(-7, 1), -7);
+    }
+
+    #[test]
+    fn derived_range_brackets_the_current_tick() {
+        // The property that matters: a range that misses the current price silently creates a
+        // one-sided position holding only one of the two tokens.
+        for current in [0, 1, -1, 30926, -61380, 887000, -887000, 199, -199] {
+            for spacing in [1, 10, 60, 200] {
+                for bps in [1u16, 50, 1000, 5000, 9999] {
+                    let r = derive_tick_range(current, spacing, bps)
+                        .unwrap_or_else(|e| panic!("({current},{spacing},{bps}): {e:#}"));
+
+                    assert!(
+                        r.lower <= current && current <= r.upper,
+                        "({current},{spacing},{bps}) produced [{}, {}] which does not bracket \
+                         the current tick",
+                        r.lower,
+                        r.upper
+                    );
+                    assert!(r.lower < r.upper, "({current},{spacing},{bps}) collapsed");
+                    assert_eq!(r.lower % spacing, 0, "lower not aligned to spacing");
+                    assert_eq!(r.upper % spacing, 0, "upper not aligned to spacing");
+                    assert!(
+                        r.lower >= MIN_TICK && r.upper <= MAX_TICK,
+                        "outside V3 bounds"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wider_bps_produces_a_wider_or_equal_range() {
+        let narrow = derive_tick_range(30926, 60, 100).unwrap();
+        let wide = derive_tick_range(30926, 60, 5000).unwrap();
+        assert!(wide.lower <= narrow.lower && wide.upper >= narrow.upper);
+        assert!(
+            (wide.upper - wide.lower) > (narrow.upper - narrow.lower),
+            "5000bps should be strictly wider than 100bps at spacing 60"
+        );
+    }
+
+    #[test]
+    fn derived_range_is_approximately_the_requested_band() {
+        // 1000 bps is ±10%. ln(1.1)/ln(1.0001) = 953.15 and ln(0.9)/ln(1.0001) = -1053.66;
+        // both round outward, so the band is a shade wider than asked rather than narrower.
+        // Spacing 1 keeps the snap from obscuring the arithmetic.
+        let r = derive_tick_range(0, 1, 1000).unwrap();
+        assert_eq!(r.upper, 954, "+10% is 953.15 ticks, ceiled outward");
+        assert_eq!(r.lower, -1054, "-10% is -1053.66 ticks, floored outward");
+
+        // The band is asymmetric in tick space because price is exponential in ticks: a 10%
+        // fall is a longer log-distance than a 10% rise.
+        assert!(r.upper.abs() < r.lower.abs());
+    }
+
+    #[test]
+    fn range_derivation_clamps_at_the_v3_boundaries() {
+        // Near the top of the tick domain the upper bound must clamp to a usable multiple
+        // rather than overflow or exceed MAX_TICK.
+        let r = derive_tick_range(MAX_TICK - 10, 60, 9999).unwrap();
+        assert!(r.upper <= MAX_TICK);
+        assert_eq!(r.upper % 60, 0);
+        assert!(r.lower < r.upper);
+
+        let r = derive_tick_range(MIN_TICK + 10, 60, 9999).unwrap();
+        assert!(r.lower >= MIN_TICK);
+        assert_eq!(r.lower % 60, 0);
+        assert!(r.lower < r.upper);
+    }
+
+    #[test]
+    fn range_derivation_rejects_bad_inputs() {
+        assert!(derive_tick_range(0, 0, 1000).is_err(), "zero spacing");
+        assert!(derive_tick_range(0, -60, 1000).is_err(), "negative spacing");
+        assert!(derive_tick_range(0, 60, 0).is_err(), "zero width");
+        assert!(derive_tick_range(0, 60, 10000).is_err(), "full width");
+    }
+
+    // ─── pool selection ──────────────────────────────────────────────────────
+
+    fn candidate(fee: u32, liquidity: u128) -> PoolCandidate {
+        PoolCandidate {
+            fee,
+            address: Address::from_word(B256::from(U256::from(fee).to_be_bytes::<32>())),
+            liquidity: U256::from(liquidity),
+        }
+    }
+
+    #[test]
+    fn picks_the_deepest_pool() {
+        let chosen = choose_pool(&[
+            candidate(100, 5),
+            candidate(500, 900),
+            candidate(3000, 42),
+            candidate(10000, 1),
+        ])
+        .expect("one should win");
+        assert_eq!(chosen.fee, 500);
+    }
+
+    #[test]
+    fn prefers_the_lower_fee_tier_on_an_exact_tie() {
+        // Documented tie-break. It must be deterministic above all: the same request must not
+        // open a position in a different pool on a retry.
+        let candidates = [candidate(500, 1000), candidate(3000, 1000)];
+        assert_eq!(choose_pool(&candidates).unwrap().fee, 500);
+        // Order of discovery must not change the answer.
+        let reversed = [candidate(3000, 1000), candidate(500, 1000)];
+        assert_eq!(choose_pool(&reversed).unwrap().fee, 500);
+    }
+
+    #[test]
+    fn ignores_pools_with_no_liquidity() {
+        // A pool that exists but nobody has funded would quote a nonsense price.
+        let chosen = choose_pool(&[candidate(100, 0), candidate(500, 0), candidate(3000, 7)])
+            .expect("the only funded pool should win");
+        assert_eq!(chosen.fee, 3000);
+    }
+
+    #[test]
+    fn reports_no_pool_when_none_have_liquidity() {
+        assert!(choose_pool(&[]).is_none(), "no candidates at all");
+        assert!(
+            choose_pool(&[candidate(100, 0), candidate(3000, 0)]).is_none(),
+            "existing but empty pools are not usable"
+        );
+    }
+
+    #[test]
+    fn standard_fee_tiers_are_probed_low_to_high() {
+        // Probe order is stable, although ranking now enforces its tie-break independently.
+        assert_eq!(STANDARD_FEE_TIERS, [100, 500, 3000, 10000]);
+    }
+
+    fn lp_http_error(status: reqwest::StatusCode, body: &str) -> anyhow::Error {
+        anyhow::Error::new(LpHttpError {
+            path: "/lp/create".to_string(),
+            status,
+            body_excerpt: body.to_string(),
+        })
+        .context("stage=API request")
+    }
+
+    #[test]
+    fn auto_pool_falls_back_from_deepest_pool_local_failure() {
+        let ranked = rank_pools(&[candidate(500, 20), candidate(10000, 100)]);
+        assert_eq!(
+            ranked.iter().map(|pool| pool.fee).collect::<Vec<_>>(),
+            [10000, 500]
+        );
+
+        let mut skipped = Vec::new();
+        let first: Option<&str> = consider_auto_candidate(
+            ranked[0],
+            Err(lp_http_error(
+                reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                r#"{"error":"Slot 0 Info not available"}"#,
+            )),
+            &mut skipped,
+        )
+        .expect("the observed pool-local indexing gap is skippable");
+        assert!(first.is_none());
+
+        let second = consider_auto_candidate(ranked[1], Ok("usable"), &mut skipped)
+            .expect("the next candidate succeeds");
+        assert_eq!(second, Some("usable"));
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].fee, 10000);
+    }
+
+    #[test]
+    fn auto_pool_allows_all_candidates_to_report_local_unavailability() {
+        let mut skipped = Vec::new();
+        for pool in [candidate(10000, 100), candidate(500, 20)] {
+            let selected: Option<()> = consider_auto_candidate(
+                pool,
+                Err(lp_http_error(
+                    reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                    "pool is not indexed",
+                )),
+                &mut skipped,
+            )
+            .expect("a pool-local failure is skippable");
+            assert!(selected.is_none());
+        }
+        assert_eq!(skipped.len(), 2);
+        assert!(skipped.iter().all(|pool| !pool.reason.is_empty()));
+    }
+
+    #[test]
+    fn auto_pool_never_masks_auth_rate_limit_or_generic_service_failures() {
+        for (status, body) in [
+            (
+                reqwest::StatusCode::UNAUTHORIZED,
+                "Slot 0 Info not available",
+            ),
+            (
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                "pool is not indexed",
+            ),
+            (
+                reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal Server Error",
+            ),
+        ] {
+            let mut skipped = Vec::new();
+            let result: Result<Option<()>> = consider_auto_candidate(
+                candidate(10000, 100),
+                Err(lp_http_error(status, body)),
+                &mut skipped,
+            );
+            assert!(result.is_err(), "{status} must abort auto-selection");
+            assert!(skipped.is_empty());
+        }
+    }
+
+    #[test]
+    fn explicit_pool_errors_are_not_reclassified_as_fallbacks() {
+        // The explicit path calls the one-pool planner directly. Even an otherwise skippable
+        // indexing response therefore remains the caller-visible error.
+        let error = lp_http_error(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            "Slot 0 Info not available",
+        );
+        assert!(pool_local_api_failure(&error).is_some());
+        let direct: Result<()> = Err(error);
+        assert!(direct.is_err());
+    }
+
+    // ─── budget enforcement ──────────────────────────────────────────────────
+
+    #[test]
+    fn accepts_a_quote_inside_both_budgets() {
+        let pool = test_pool();
+        assert!(
+            ensure_within_budgets(
+                U256::from(100u64),
+                U256::from(200u64),
+                U256::from(100u64),
+                U256::from(200u64),
+                18,
+                6,
+                &pool,
+            )
+            .is_ok(),
+            "exactly at the limit is within it"
+        );
+    }
+
+    #[test]
+    fn rejects_a_quote_over_either_budget() {
+        let pool = test_pool();
+
+        let err = ensure_within_budgets(
+            U256::from(101u64),
+            U256::from(200u64),
+            U256::from(100u64),
+            U256::from(200u64),
+            18,
+            6,
+            &pool,
+        )
+        .expect_err("token0 over budget")
+        .to_string();
+        assert!(err.contains("refusing to deposit more"), "got: {err}");
+
+        assert!(
+            ensure_within_budgets(
+                U256::from(100u64),
+                U256::from(201u64),
+                U256::from(100u64),
+                U256::from(200u64),
+                18,
+                6,
+                &pool,
+            )
+            .is_err(),
+            "token1 over budget"
+        );
+    }
+
+    // ─── position enumeration ────────────────────────────────────────────────
+
+    /// Mirrors the handler's `total`/`shown`/`truncated` arithmetic. Kept in step with it by
+    /// the assertions below; the handler's own version needs a live position manager.
+    fn enumeration_window(total: usize) -> (usize, bool) {
+        let shown = total.min(LIST_POSITIONS_LIMIT);
+        (shown, total > shown)
+    }
+
+    #[test]
+    fn enumerates_every_position_below_the_limit() {
+        for total in [0usize, 1, 3, 49, LIST_POSITIONS_LIMIT] {
+            let (shown, truncated) = enumeration_window(total);
+            assert_eq!(shown, total, "should list all {total}");
+            assert!(!truncated, "{total} is within the limit");
+        }
+    }
+
+    #[test]
+    fn flags_truncation_past_the_limit() {
+        // Silently returning a prefix would let an agent conclude a position does not exist.
+        for total in [LIST_POSITIONS_LIMIT + 1, 100, 10_000] {
+            let (shown, truncated) = enumeration_window(total);
+            assert_eq!(shown, LIST_POSITIONS_LIMIT, "capped at the limit");
+            assert!(truncated, "{total} exceeds the limit and must say so");
+        }
+    }
+
+    #[test]
+    fn the_enumeration_limit_is_documented_in_the_tool_description() {
+        let d = description_of("list_v3_positions");
+        assert!(
+            d.contains(&LIST_POSITIONS_LIMIT.to_string()),
+            "the cap must be stated, not discovered: {d}"
+        );
+        assert!(d.contains("truncated"), "the flag must be named: {d}");
+        // The staleness caveat has to travel with the fields it applies to.
+        assert!(d.contains("tokensOwed0/1"), "got: {d}");
+        assert!(d.contains("cached"), "got: {d}");
+    }
+
+    #[test]
+    fn list_positions_takes_no_wallet_argument() {
+        // Accepting one would let a caller enumerate somebody else's positions.
+        let tools = build_uniswap_lp_tools();
+        let list = tools
+            .iter()
+            .find(|t| t.name == "list_v3_positions")
+            .unwrap();
+        let props = list.input_schema.get("properties").unwrap();
+
+        assert!(props.get("walletAddress").is_none());
+        assert!(props.get("owner").is_none());
+        assert_eq!(
+            props.as_object().map(|o| o.len()),
+            Some(1),
+            "chainId should be the only argument"
+        );
+    }
+
+    // ─── Stage A: live, read-only planning ───────────────────────────────────
+    //
+    // Ignored by default; run explicitly with a funded-wallet address, an RPC endpoint and an
+    // API key:
+    //
+    //   UNISWAP_API_KEY=... STAGE_A_WALLET=0x... \
+    //     cargo test stage_a -- --ignored --nocapture
+    //
+    // These call `plan_create_v3_position`, never `handle_create_v3_position`. That is the whole
+    // point: planning holds no vault, no signer and no DbPool, so no amount of misconfiguration
+    // here can broadcast a transaction. The guarantee is structural, not procedural.
+
+    fn stage_a_env() -> Option<(String, Address)> {
+        let key = std::env::var("UNISWAP_API_KEY").ok()?;
+        if key.is_empty() {
+            return None;
+        }
+        let wallet: Address = std::env::var("STAGE_A_WALLET").ok()?.parse().ok()?;
+        let rpc = std::env::var("STAGE_A_RPC_URL")
+            .unwrap_or_else(|_| "https://ethereum-sepolia-rpc.publicnode.com".to_string());
+        Some((rpc, wallet))
+    }
+
+    async fn stage_a_provider(rpc: &str) -> DynProvider {
+        ProviderBuilder::new()
+            .connect(rpc)
+            .await
+            .expect("stage A needs a reachable Sepolia RPC")
+            .erased()
+    }
+
+    #[tokio::test]
+    #[ignore = "live: needs UNISWAP_API_KEY and STAGE_A_WALLET"]
+    async fn stage_a_position_manager_supports_enumeration() {
+        let Some((rpc, wallet)) = stage_a_env() else {
+            return;
+        };
+        let provider = stage_a_provider(&rpc).await;
+
+        let balance = call_view(
+            &provider,
+            SEPOLIA_V3.position_manager,
+            abi_function(position_manager_abi(), "balanceOf").unwrap(),
+            &[DynSolValue::Address(wallet)],
+        )
+        .await
+        .expect("balanceOf must work — list_v3_positions depends on ERC-721 enumeration");
+        let balance = as_u256(out(&balance, 0, "balanceOf").unwrap(), "balanceOf").unwrap();
+        println!("[stage A] balanceOf({wallet:#x}) = {balance}");
+
+        if balance.is_zero() {
+            println!("[stage A] wallet holds no positions; tokenOfOwnerByIndex not exercised");
+            return;
+        }
+
+        let id = call_view(
+            &provider,
+            SEPOLIA_V3.position_manager,
+            abi_function(position_manager_abi(), "tokenOfOwnerByIndex").unwrap(),
+            &[
+                DynSolValue::Address(wallet),
+                DynSolValue::Uint(U256::ZERO, 256),
+            ],
+        )
+        .await
+        .expect("tokenOfOwnerByIndex must work on this deployment");
+        let id = as_u256(out(&id, 0, "tokenOfOwnerByIndex").unwrap(), "id").unwrap();
+        println!("[stage A] tokenOfOwnerByIndex({wallet:#x}, 0) = {id}");
+    }
+
+    #[tokio::test]
+    #[ignore = "live: needs UNISWAP_API_KEY and STAGE_A_WALLET"]
+    async fn stage_a_reads_real_pool_state() {
+        let Some((rpc, _wallet)) = stage_a_env() else {
+            return;
+        };
+        let provider = stage_a_provider(&rpc).await;
+
+        let pool = address!("287b0e934ed0439e2a7b1d5f0fc25ea2c24b64f7"); // UNI/WETH 0.3%
+        let state = read_v3_pool_state(&provider, pool)
+            .await
+            .expect("a canonical pool must verify against the factory");
+
+        println!(
+            "[stage A] pool {pool:#x}: token0={:#x} token1={:#x} fee={} tick={} spacing={} liq={}",
+            state.token0,
+            state.token1,
+            state.fee,
+            state.current_tick,
+            state.tick_spacing,
+            state.liquidity
+        );
+        assert!(state.tick_spacing > 0);
+
+        // The derived range must bracket the pool's real, live tick — not just a synthetic one.
+        let range = derive_tick_range(state.current_tick, state.tick_spacing, 1000).unwrap();
+        println!(
+            "[stage A] 1000bps range around {}: [{}, {}]",
+            state.current_tick, range.lower, range.upper
+        );
+        assert!(range.lower <= state.current_tick && state.current_tick <= range.upper);
+    }
+
+    #[tokio::test]
+    #[ignore = "live: needs UNISWAP_API_KEY and STAGE_A_WALLET"]
+    async fn stage_a_discovers_pools_by_fee_tier() {
+        let Some((rpc, _wallet)) = stage_a_env() else {
+            return;
+        };
+        let provider = stage_a_provider(&rpc).await;
+
+        let uni = address!("1f9840a85d5af5bf1d1762f925bdaddc4201f984");
+        let candidates = probe_standard_pools(&provider, SEPOLIA_V3.weth, uni)
+            .await
+            .expect("probing standard fee tiers should not error");
+
+        for c in &candidates {
+            println!(
+                "[stage A] fee {:>5}: {:#x} liquidity={}",
+                c.fee, c.address, c.liquidity
+            );
+        }
+        let chosen = choose_pool(&candidates).expect("WETH/UNI has at least one funded pool");
+        println!(
+            "[stage A] chose fee {} at {:#x}",
+            chosen.fee, chosen.address
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "live: needs UNISWAP_API_KEY and STAGE_A_WALLET"]
+    async fn stage_a_plans_a_position_without_signing() {
+        let Some((rpc, wallet)) = stage_a_env() else {
+            return;
+        };
+        let provider = stage_a_provider(&rpc).await;
+
+        let req = parse_create_request(&args(&[
+            ("tokenA", json!("ETH")),
+            (
+                "tokenB",
+                json!("0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984"),
+            ),
+            ("maxTokenAAmount", json!("0.01")),
+            ("maxTokenBAmount", json!("20")),
+            ("rangeWidthBps", json!(1000)),
+        ]))
+        .expect("request should parse");
+
+        let plan = plan_create_v3_position(&provider, &reqwest::Client::new(), wallet, &req)
+            .await
+            .expect("planning should succeed against a funded wallet");
+
+        let (a0, a1) = quote_amounts(&plan.quote, &plan.pool).unwrap();
+        println!(
+            "[stage A] pool={:#x} ({}) fee={} tick={} spacing={}",
+            plan.pool_address,
+            plan.selection_method,
+            plan.pool.fee,
+            plan.pool.current_tick,
+            plan.pool.tick_spacing
+        );
+        println!(
+            "[stage A] range=[{}, {}]",
+            plan.range.lower, plan.range.upper
+        );
+        println!(
+            "[stage A] effective caps: token0={} token1={}",
+            format_human_amount(plan.effective0, plan.decimals0),
+            format_human_amount(plan.effective1, plan.decimals1)
+        );
+        println!(
+            "[stage A] sized deposit: token0={} token1={} (independent side {:#x})",
+            format_human_amount(a0, plan.decimals0),
+            format_human_amount(a1, plan.decimals1),
+            plan.independent_token
+        );
+
+        assert!(
+            a0 <= plan.effective0 && a1 <= plan.effective1,
+            "quote must fit the budgets"
+        );
+        assert!(
+            plan.range.lower <= plan.pool.current_tick
+                && plan.pool.current_tick <= plan.range.upper
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "live: needs UNISWAP_API_KEY and STAGE_A_WALLET"]
+    async fn stage_a_plans_weth_usdc_with_api_aware_pool_selection() {
+        let Some((rpc, wallet)) = stage_a_env() else {
+            return;
+        };
+        let provider = stage_a_provider(&rpc).await;
+        let req = parse_create_request(&args(&[
+            ("tokenA", json!("ETH")),
+            (
+                "tokenB",
+                json!("0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"),
+            ),
+            ("maxTokenAAmount", json!("0.01")),
+            ("maxTokenBAmount", json!("20")),
+            ("rangeWidthBps", json!(1000)),
+        ]))
+        .expect("request should parse");
+
+        let plan = plan_create_v3_position(&provider, &reqwest::Client::new(), wallet, &req)
+            .await
+            .expect("automatic selection should find an API-usable WETH/USDC pool");
+        let (amount0, amount1) = quote_amounts(&plan.quote, &plan.pool).unwrap();
+
+        println!(
+            "[stage A WETH/USDC] selected fee={} pool={:#x}; skipped={:?}",
+            plan.pool.fee, plan.pool_address, plan.skipped_pools
+        );
+        assert_eq!(plan.selection_method, "auto:deepest-api-usable");
+        assert!(amount0 <= plan.effective0 && amount1 <= plan.effective1);
+        assert!(
+            plan.range.lower <= plan.pool.current_tick
+                && plan.pool.current_tick <= plan.range.upper
+        );
+    }
+
+    // ─── approval validation ─────────────────────────────────────────────────
+
+    const POOL_T0_APPROVAL: Address = address!("1f9840a85d5af5bf1d1762f925bdaddc4201f984");
+    const POOL_T1_APPROVAL: Address = address!("fff9976782d46cc05630d1f6ebab18b2324d6b14");
+
+    /// A real approval as returned by /lp/check_approval on Sepolia (captured 2026-07-25):
+    /// `approve(NonfungiblePositionManager, uint256::MAX)` on the token, with zero value.
+    fn live_approval(to: Address) -> Value {
+        json!({
+            "to": to.to_checksum(None),
+            "from": WALLET.to_checksum(None),
+            "chainId": 11155111,
+            "data": "0x095ea7b30000000000000000000000001238536071e1c677a632429e3655c799b22cda52\
+        ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "value": "0x00",
+        })
+    }
+
+    fn check_approval(tx: &Value) -> Result<ValidatedTx> {
+        validate_approval_transaction(
+            tx,
+            WALLET,
+            SEPOLIA_V3.chain_id,
+            (POOL_T0_APPROVAL, POOL_T1_APPROVAL),
+        )
+    }
+
+    #[test]
+    fn accepts_the_real_approval_shape_for_either_token() {
+        for token in [POOL_T0_APPROVAL, POOL_T1_APPROVAL] {
+            let v = check_approval(&live_approval(token))
+                .unwrap_or_else(|e| panic!("live approval for {token:#x} should pass: {e:#}"));
+            assert_eq!(v.to, token);
+            assert_eq!(v.value, U256::ZERO);
+        }
+    }
+
+    #[test]
+    fn rejects_an_approval_for_a_token_outside_the_pair() {
+        // Approving a token this position never touches is not something the flow asked for.
+        let stranger = address!("00000000000000000000000000000000deadbeef");
+        let err = check_approval(&live_approval(stranger))
+            .expect_err("a token outside the pair must be refused")
+            .to_string();
+        assert!(err.contains("neither token of this position"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_an_approval_naming_any_other_spender() {
+        // The single most damaging thing a malformed approval could do: hand spending rights to
+        // an address this flow never transacts with.
+        let mut tx = live_approval(POOL_T0_APPROVAL);
+        tx["data"] = json!(
+            "0x095ea7b3000000000000000000000000deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        );
+
+        let err = check_approval(&tx)
+            .expect_err("a foreign spender must be refused")
+            .to_string();
+        assert!(err.contains("only permitted spender"), "got: {err}");
+        assert!(
+            err.contains("deadbeef"),
+            "the rejected spender should be named: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_an_approval_that_is_not_an_approve_call() {
+        // transfer(address,uint256) — right shape, wrong operation.
+        let mut tx = live_approval(POOL_T0_APPROVAL);
+        tx["data"] = json!(
+            "0xa9059cbb0000000000000000000000001238536071e1c677a632429e3655c799b22cda52\
+ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        );
+        assert!(
+            check_approval(&tx).is_err(),
+            "a transfer() must not pass as an approval"
+        );
+
+        // Right selector, truncated arguments.
+        let mut short = live_approval(POOL_T0_APPROVAL);
+        short["data"] = json!("0x095ea7b3");
+        assert!(
+            check_approval(&short).is_err(),
+            "a bare selector must not pass"
+        );
+    }
+
+    #[test]
+    fn rejects_an_approval_carrying_ether() {
+        let mut tx = live_approval(POOL_T0_APPROVAL);
+        tx["value"] = json!("1000000000000000000");
+        let err = check_approval(&tx)
+            .expect_err("an approval must not move value")
+            .to_string();
+        assert!(err.contains("must not transfer value"), "got: {err}");
+    }
+
+    #[test]
+    fn approval_validation_still_enforces_sender_and_chain() {
+        let mut wrong_from = live_approval(POOL_T0_APPROVAL);
+        wrong_from["from"] = json!(OTHER.to_checksum(None));
+        assert!(check_approval(&wrong_from).is_err());
+
+        let mut wrong_chain = live_approval(POOL_T0_APPROVAL);
+        wrong_chain["chainId"] = json!(1);
+        assert!(check_approval(&wrong_chain).is_err());
+    }
+
+    #[test]
+    fn the_only_permitted_spender_is_the_position_manager() {
+        // Everything this flow signs is pinned to the position manager, so it is also the only
+        // contract that ever needs to move the agent's tokens.
+        assert_eq!(ALLOWED_APPROVAL_SPENDER, SEPOLIA_V3.position_manager);
+    }
+
+    #[test]
+    fn rejects_an_approval_response_for_a_different_operation() {
+        // The wrapper's `action` says what the approval is for; a MIGRATE approval is not
+        // something a create flow requested.
+        let resp = json!({
+            "transactions": [
+                { "transaction": { "to": "0x1", "data": "0xaa" }, "action": "MIGRATE" }
+            ]
+        });
+        let err = parse_approval_transactions(&resp)
+            .expect_err("a non-CREATE approval must be refused")
+            .to_string();
+        assert!(err.contains("MIGRATE"), "got: {err}");
+
+        let missing = json!({ "transactions": [ { "transaction": { "to": "0x1" } } ] });
+        assert!(
+            parse_approval_transactions(&missing).is_err(),
+            "an entry with no action must not be executed blindly"
+        );
+    }
+
+    // ─── reconciliation loop (scripted: no chain, no API, no vault) ──────────
+    //
+    // The loop's job is ordering: fund what the current quote needs, re-quote, and never sign
+    // anything that was not fetched with simulation on. That sequencing moves real funds, so it
+    // is scripted here rather than left to a live run to discover.
+
+    use std::cell::RefCell;
+
+    /// One programmed pass: what the quote asks for, and what is outstanding for it.
+    #[derive(Clone)]
+    struct ScriptedPass {
+        want0: u64,
+        want1: u64,
+        /// WETH the wallet holds when this pass reads it.
+        weth_held: u64,
+        /// How many approvals /lp/check_approval still returns on this pass.
+        approvals: usize,
+    }
+
+    #[derive(Default)]
+    struct ScriptLog {
+        weth_reads: usize,
+        native_reads: usize,
+        wraps: Vec<U256>,
+        approvals_executed: usize,
+        signable_fetches: usize,
+    }
+
+    struct ScriptedEffects {
+        passes: Vec<ScriptedPass>,
+        cursor: RefCell<usize>,
+        log: RefCell<ScriptLog>,
+        spendable_native: U256,
+        /// False models a pair with no ETH side at all.
+        weth_is_token1: bool,
+        budget0: U256,
+        budget1: U256,
+    }
+
+    impl ScriptedEffects {
+        fn new(passes: Vec<ScriptedPass>) -> Self {
+            Self {
+                passes,
+                cursor: RefCell::new(0),
+                log: RefCell::new(ScriptLog::default()),
+                spendable_native: U256::from(u64::MAX),
+                weth_is_token1: true,
+                budget0: U256::from(u64::MAX),
+                budget1: U256::from(u64::MAX),
+            }
+        }
+
+        /// The pass the loop is currently on. Saturates on the last entry, so a script can say
+        /// "and it stays like this" without repeating itself.
+        fn current(&self) -> ScriptedPass {
+            let i = (*self.cursor.borrow()).min(self.passes.len() - 1);
+            self.passes[i].clone()
+        }
+    }
+
+    impl ReconcileEffects for ScriptedEffects {
+        async fn weth_balance(&self) -> Result<U256> {
+            self.log.borrow_mut().weth_reads += 1;
+            Ok(U256::from(self.current().weth_held))
+        }
+
+        async fn spendable_native(&self) -> Result<U256> {
+            self.log.borrow_mut().native_reads += 1;
+            Ok(self.spendable_native)
+        }
+
+        async fn wrap(&self, amount: U256) -> Result<B256> {
+            self.log.borrow_mut().wraps.push(amount);
+            Ok(B256::repeat_byte(0x11))
+        }
+
+        async fn check_approvals(&self, _want0: U256, _want1: U256) -> Result<Vec<Value>> {
+            Ok((0..self.current().approvals)
+                .map(|i| json!({ "to": "0x1", "data": format!("0x{i:02x}") }))
+                .collect())
+        }
+
+        async fn execute_approval(&self, _tx: &Value, _label: &str) -> Result<B256> {
+            self.log.borrow_mut().approvals_executed += 1;
+            Ok(B256::repeat_byte(0xa1))
+        }
+
+        async fn fetch_signable_quote(&self) -> Result<Value> {
+            self.log.borrow_mut().signable_fetches += 1;
+            // Advancing here is what lets a script mean "after funding, the next quote is…".
+            *self.cursor.borrow_mut() += 1;
+            let p = self.current();
+            Ok(json!({ "token0": p.want0, "token1": p.want1, "simulated": true }))
+        }
+
+        fn quote_amounts(&self, quote: &Value) -> Result<(U256, U256)> {
+            Ok((
+                U256::from(quote["token0"].as_u64().unwrap_or_default()),
+                U256::from(quote["token1"].as_u64().unwrap_or_default()),
+            ))
+        }
+
+        fn check_budgets(&self, amount0: U256, amount1: U256) -> Result<()> {
+            anyhow::ensure!(amount0 <= self.budget0, "token0 over budget");
+            anyhow::ensure!(amount1 <= self.budget1, "token1 over budget");
+            Ok(())
+        }
+
+        fn weth_side(&self, amounts: (U256, U256)) -> Option<U256> {
+            self.weth_is_token1.then_some(amounts.1)
+        }
+    }
+
+    fn sizing_quote(want0: u64, want1: u64) -> Value {
+        json!({ "token0": want0, "token1": want1, "simulated": false })
+    }
+
+    #[tokio::test]
+    async fn never_signs_the_unsimulated_sizing_quote() {
+        // Even when the sizing quote needs nothing at all, a simulated one must still be
+        // fetched: the sizing response carries no signable transaction.
+        let effects = ScriptedEffects::new(vec![ScriptedPass {
+            want0: 100,
+            want1: 50,
+            weth_held: 50,
+            approvals: 0,
+        }]);
+
+        let out = reconcile(&effects, sizing_quote(100, 50)).await.unwrap();
+
+        assert_eq!(
+            out.quote["simulated"],
+            json!(true),
+            "must return a simulated quote"
+        );
+        assert_eq!(effects.log.borrow().signable_fetches, 1);
+        assert!(effects.log.borrow().wraps.is_empty(), "nothing to fund");
+        assert_eq!(effects.log.borrow().approvals_executed, 0);
+        assert!(out.wrap_hashes.is_empty() && out.approval_hashes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn wraps_only_the_shortfall() {
+        // Holds 20, quote wants 50 → wrap exactly 30, not 50.
+        let effects = ScriptedEffects::new(vec![
+            ScriptedPass {
+                want0: 100,
+                want1: 50,
+                weth_held: 20,
+                approvals: 0,
+            },
+            ScriptedPass {
+                want0: 100,
+                want1: 50,
+                weth_held: 50,
+                approvals: 0,
+            },
+        ]);
+
+        let out = reconcile(&effects, sizing_quote(100, 50)).await.unwrap();
+
+        assert_eq!(effects.log.borrow().wraps, vec![U256::from(30)]);
+        assert_eq!(out.wrap_hashes.len(), 1);
+        assert_eq!(out.quote["simulated"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn funds_an_additional_wrap_when_the_refreshed_quote_wants_more() {
+        // The audit case: the refetched quote needs MORE WETH than the one just funded.
+        let effects = ScriptedEffects::new(vec![
+            ScriptedPass {
+                want0: 100,
+                want1: 50,
+                weth_held: 0,
+                approvals: 0,
+            },
+            ScriptedPass {
+                want0: 100,
+                want1: 80,
+                weth_held: 50,
+                approvals: 0,
+            },
+            ScriptedPass {
+                want0: 100,
+                want1: 80,
+                weth_held: 80,
+                approvals: 0,
+            },
+        ]);
+
+        let out = reconcile(&effects, sizing_quote(100, 50)).await.unwrap();
+
+        assert_eq!(
+            effects.log.borrow().wraps,
+            vec![U256::from(50), U256::from(30)],
+            "the second wrap tops up the difference, it does not re-wrap the whole amount"
+        );
+        assert_eq!(out.wrap_hashes.len(), 2, "both wraps reported");
+        assert_eq!(out.attempts, 3);
+    }
+
+    #[tokio::test]
+    async fn runs_an_additional_approval_when_the_refreshed_quote_needs_one() {
+        let effects = ScriptedEffects::new(vec![
+            ScriptedPass {
+                want0: 100,
+                want1: 50,
+                weth_held: 50,
+                approvals: 1,
+            },
+            ScriptedPass {
+                want0: 100,
+                want1: 50,
+                weth_held: 50,
+                approvals: 1,
+            },
+            ScriptedPass {
+                want0: 100,
+                want1: 50,
+                weth_held: 50,
+                approvals: 0,
+            },
+        ]);
+
+        let out = reconcile(&effects, sizing_quote(100, 50)).await.unwrap();
+
+        assert_eq!(effects.log.borrow().approvals_executed, 2);
+        assert_eq!(out.approval_hashes.len(), 2);
+        assert!(
+            effects.log.borrow().wraps.is_empty(),
+            "nothing needed wrapping"
+        );
+    }
+
+    #[tokio::test]
+    async fn handles_a_wrap_and_an_approval_in_the_same_pass() {
+        let effects = ScriptedEffects::new(vec![
+            ScriptedPass {
+                want0: 100,
+                want1: 50,
+                weth_held: 10,
+                approvals: 2,
+            },
+            ScriptedPass {
+                want0: 100,
+                want1: 50,
+                weth_held: 50,
+                approvals: 0,
+            },
+        ]);
+
+        let out = reconcile(&effects, sizing_quote(100, 50)).await.unwrap();
+
+        assert_eq!(effects.log.borrow().wraps, vec![U256::from(40)]);
+        assert_eq!(effects.log.borrow().approvals_executed, 2);
+        assert_eq!(out.wrap_hashes.len(), 1);
+        assert_eq!(out.approval_hashes.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn gives_up_after_the_attempt_limit_and_reports_everything_broadcast() {
+        // A quote that always wants more than is held never settles. It must stop — and account
+        // for every transaction it already sent.
+        let effects = ScriptedEffects::new(vec![ScriptedPass {
+            want0: 100,
+            want1: 50,
+            weth_held: 0,
+            approvals: 1,
+        }]);
+
+        let err = reconcile(&effects, sizing_quote(100, 50))
+            .await
+            .expect_err("a quote that never settles must fail")
+            .to_string();
+
+        assert!(err.contains("did not settle"), "got: {err}");
+        assert!(
+            err.contains("completed transactions"),
+            "hashes must be reported: {err}"
+        );
+        assert_eq!(
+            effects.log.borrow().wraps.len(),
+            MAX_RECONCILIATION_ATTEMPTS,
+            "one wrap per attempt, then stop"
+        );
+    }
+
+    #[tokio::test]
+    async fn accepts_a_quote_that_settles_after_the_third_side_effect_round() {
+        let effects = ScriptedEffects::new(vec![
+            ScriptedPass {
+                want0: 100,
+                want1: 50,
+                weth_held: 0,
+                approvals: 0,
+            },
+            ScriptedPass {
+                want0: 100,
+                want1: 60,
+                weth_held: 50,
+                approvals: 0,
+            },
+            ScriptedPass {
+                want0: 100,
+                want1: 70,
+                weth_held: 60,
+                approvals: 0,
+            },
+            ScriptedPass {
+                want0: 100,
+                want1: 70,
+                weth_held: 70,
+                approvals: 0,
+            },
+        ]);
+
+        let out = reconcile(&effects, sizing_quote(100, 50))
+            .await
+            .expect("the quote fetched after the third allowed funding round is settled");
+
+        assert_eq!(
+            effects.log.borrow().wraps,
+            vec![U256::from(50), U256::from(10), U256::from(10)]
+        );
+        assert_eq!(
+            out.attempts, 4,
+            "three funding rounds plus final inspection"
+        );
+        assert_eq!(out.quote["simulated"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn refuses_to_wrap_more_native_than_is_spendable() {
+        // spendable_native already has the gas reserve deducted, so this is the guard that keeps
+        // a wallet able to pay for its own next transaction.
+        let mut effects = ScriptedEffects::new(vec![ScriptedPass {
+            want0: 100,
+            want1: 50,
+            weth_held: 0,
+            approvals: 0,
+        }]);
+        effects.spendable_native = U256::from(10);
+
+        let err = reconcile(&effects, sizing_quote(100, 50))
+            .await
+            .expect_err("wrapping beyond the reserve must fail")
+            .to_string();
+
+        assert!(err.contains("stage=wrap"), "got: {err}");
+        assert!(
+            effects.log.borrow().wraps.is_empty(),
+            "must fail before wrapping, not after"
+        );
+    }
+
+    #[tokio::test]
+    async fn re_reads_balances_every_pass() {
+        // Caching balances is how a loop like this silently over- or under-wraps.
+        let effects = ScriptedEffects::new(vec![
+            ScriptedPass {
+                want0: 100,
+                want1: 50,
+                weth_held: 0,
+                approvals: 0,
+            },
+            ScriptedPass {
+                want0: 100,
+                want1: 70,
+                weth_held: 50,
+                approvals: 0,
+            },
+            ScriptedPass {
+                want0: 100,
+                want1: 70,
+                weth_held: 70,
+                approvals: 0,
+            },
+        ]);
+
+        reconcile(&effects, sizing_quote(100, 50)).await.unwrap();
+
+        let log = effects.log.borrow();
+        assert_eq!(log.weth_reads, 3, "WETH re-read on every pass");
+        assert_eq!(
+            log.native_reads, 2,
+            "native re-read before each of the two wraps"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_a_refreshed_quote_that_breaks_a_budget() {
+        // Price moved enough that the new quote exceeds the caller's ceiling: stop rather than
+        // keep funding toward it.
+        let mut effects = ScriptedEffects::new(vec![
+            ScriptedPass {
+                want0: 100,
+                want1: 50,
+                weth_held: 50,
+                approvals: 1,
+            },
+            ScriptedPass {
+                want0: 100,
+                want1: 999,
+                weth_held: 50,
+                approvals: 0,
+            },
+        ]);
+        effects.budget1 = U256::from(100);
+
+        let err = reconcile(&effects, sizing_quote(100, 50))
+            .await
+            .expect_err("an over-budget refresh must fail")
+            .to_string();
+
+        assert!(err.contains("over budget"), "got: {err}");
+        assert!(
+            err.contains("completed transactions"),
+            "the approval already sent must be reported: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pair_with_no_eth_side_never_wraps() {
+        let mut effects = ScriptedEffects::new(vec![ScriptedPass {
+            want0: 100,
+            want1: 50,
+            weth_held: 0,
+            approvals: 0,
+        }]);
+        effects.weth_is_token1 = false;
+
+        reconcile(&effects, sizing_quote(100, 50)).await.unwrap();
+
+        let log = effects.log.borrow();
+        assert!(log.wraps.is_empty(), "no ETH side means no wrapping");
+        assert_eq!(log.weth_reads, 0, "and no reason to read a WETH balance");
+    }
+
+    // ─── completed-transaction reporting ─────────────────────────────────────
+
+    #[test]
+    fn errors_report_wraps_and_approvals_together() {
+        // A wrap moved real funds; if a later stage fails the caller must learn that the wallet
+        // now holds WETH it did not before, not just that "the mint failed".
+        let completed = vec![
+            "0xwrap".to_string(),
+            "0xapproval1".to_string(),
+            "0xapproval2".to_string(),
+        ];
+        let err = with_completed_txs::<()>(Err(anyhow::anyhow!("stage=receipt: nope")), &completed)
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            err.contains("stage=receipt"),
+            "original error survives: {err}"
+        );
+        for hash in &completed {
+            assert!(err.contains(hash.as_str()), "{hash} missing from: {err}");
+        }
+    }
+
     // ─── minted NFT id ───────────────────────────────────────────────────────
 
     fn transfer_log(contract: Address, from: Address, to: Address, id: u64) -> PrimitiveLog {
@@ -2193,10 +5143,15 @@ mod tests {
 
     // ─── LP API request bodies ───────────────────────────────────────────────
 
-    fn test_pool() -> V3Pool {
-        V3Pool {
+    fn test_pool() -> V3PoolState {
+        V3PoolState {
             token0: address!("1f9840a85d5af5bf1d1762f925bdaddc4201f984"),
             token1: address!("fff9976782d46cc05630d1f6ebab18b2324d6b14"),
+            fee: 3000,
+            tick_spacing: 60,
+            current_tick: -61380,
+            sqrt_price_x96: U256::from(1u64) << 96,
+            liquidity: U256::from(349461572960640780840u128),
         }
     }
 
@@ -2208,7 +5163,7 @@ mod tests {
                 pool: address!("287b0e934ed0439e2a7b1d5f0fc25ea2c24b64f7"),
                 pool_tokens: &test_pool(),
                 independent_token: address!("1f9840a85d5af5bf1d1762f925bdaddc4201f984"),
-                independent_amount: "198251669183062942",
+                independent_amount: U256::from(198251669183062942u64),
                 tick_lower: -198950,
                 tick_upper: -198200,
                 slippage: Some(0.5),
@@ -2244,7 +5199,7 @@ mod tests {
                 pool: Address::ZERO,
                 pool_tokens: &test_pool(),
                 independent_token: test_pool().token0,
-                independent_amount: "1",
+                independent_amount: U256::from(1u64),
                 tick_lower: -10,
                 tick_upper: 10,
                 slippage: None,
@@ -2388,7 +5343,7 @@ mod tests {
         // An approval is real on-chain state. If a later step fails, a retry must not look like
         // it is starting from scratch.
         let hashes = vec!["0xaaa".to_string(), "0xbbb".to_string()];
-        let err = with_approvals::<()>(Err(anyhow::anyhow!("stage=broadcast: nope")), &hashes)
+        let err = with_completed_txs::<()>(Err(anyhow::anyhow!("stage=broadcast: nope")), &hashes)
             .unwrap_err()
             .to_string();
         assert!(
@@ -2403,7 +5358,7 @@ mod tests {
 
     #[test]
     fn errors_before_any_approval_are_left_alone() {
-        let err = with_approvals::<()>(Err(anyhow::anyhow!("stage=position read: nope")), &[])
+        let err = with_completed_txs::<()>(Err(anyhow::anyhow!("stage=position read: nope")), &[])
             .unwrap_err()
             .to_string();
         assert_eq!(err, "stage=position read: nope");
@@ -2541,7 +5496,7 @@ mod tests {
     #[test]
     fn every_lp_tool_is_pinned_to_sepolia() {
         let tools = build_uniswap_lp_tools();
-        assert_eq!(tools.len(), 4);
+        assert_eq!(tools.len(), 6);
 
         for tool in &tools {
             let props = tool.input_schema.get("properties").unwrap();
@@ -2579,11 +5534,10 @@ mod tests {
             required("create_v3_position"),
             json!([
                 "chainId",
-                "poolAddress",
-                "independentTokenAddress",
-                "independentTokenAmount",
-                "tickLower",
-                "tickUpper"
+                "tokenA",
+                "tokenB",
+                "maxTokenAAmount",
+                "maxTokenBAmount"
             ])
         );
     }
@@ -2653,10 +5607,11 @@ mod tests {
         );
     }
 
+    /// The public interface must not leak the low-level concepts it exists to hide. A model that
+    /// sees a `tickLower` field will try to compute one, which is exactly the failure this
+    /// interface was rewritten to prevent.
     #[test]
-    fn create_does_not_accept_caller_supplied_token_addresses() {
-        // The pool's pair is read on-chain instead. Exposing these would let a model pair a
-        // real pool with unrelated tokens and get approvals issued for the wrong assets.
+    fn create_exposes_no_raw_ticks_or_smallest_unit_amounts() {
         let tools = build_uniswap_lp_tools();
         let create = tools
             .iter()
@@ -2664,8 +5619,41 @@ mod tests {
             .unwrap();
         let props = create.input_schema.get("properties").unwrap();
 
-        assert!(props.get("token0Address").is_none());
-        assert!(props.get("token1Address").is_none());
-        assert!(props.get("independentTokenAddress").is_some());
+        for gone in [
+            "tickLower",
+            "tickUpper",
+            "independentTokenAddress",
+            "independentTokenAmount",
+            "token0Address",
+            "token1Address",
+        ] {
+            assert!(
+                props.get(gone).is_none(),
+                "{gone} must not be part of the public schema any more"
+            );
+        }
+
+        for present in [
+            "tokenA",
+            "tokenB",
+            "maxTokenAAmount",
+            "maxTokenBAmount",
+            "rangeWidthBps",
+            "poolAddress",
+        ] {
+            assert!(props.get(present).is_some(), "{present} should be offered");
+        }
+
+        // poolAddress stays available for nonstandard-fee pools, but must not be demanded.
+        assert_eq!(
+            create.input_schema["required"],
+            json!([
+                "chainId",
+                "tokenA",
+                "tokenB",
+                "maxTokenAAmount",
+                "maxTokenBAmount"
+            ])
+        );
     }
 }

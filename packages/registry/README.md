@@ -87,7 +87,7 @@ separate base URLs and separate request shapes, and share only the `UNISWAP_API_
 | Override | `UNISWAP_API_URL` | `UNISWAP_LP_API_URL` |
 | Purpose | Swaps | Uniswap V3 liquidity positions |
 | Chains | any chain in the `networks` table | **Ethereum Sepolia (11155111) only** |
-| Tools | `quote`, `swap`, `supported_networks` | `get_v3_position`, `create_v3_position`, `decrease_v3_position`, `claim_v3_fees` |
+| Tools | `quote`, `swap`, `supported_networks` | `get_v3_position`, `get_v3_pool_state`, `list_v3_positions`, `create_v3_position`, `decrease_v3_position`, `claim_v3_fees` |
 
 **Every write tool signs and broadcasts automatically** and waits for the transaction to confirm.
 Callers never supply a wallet address, a private key, or an `rpc_url` — the wallet is resolved
@@ -103,6 +103,7 @@ Contracts used, both verified on-chain rather than copied from a doc page:
 |---|---|
 | `UniswapV3Factory` | `0x0227628f3F023bb0B980b67D528571c95c6DaC1c` |
 | `NonfungiblePositionManager` | `0x1238536071E1c677A632429e3655c799b22cDA52` |
+| `WETH9` | `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14` |
 
 > Some sources quote `0x3B5E3c5E595D85fbFBC2a42ECC091e183E76697C` as Sepolia's position manager.
 > It is not one — on-chain that address is a Solidity library, and `ownerOf`/`positions` revert on
@@ -113,7 +114,9 @@ Every liquidity tool refuses to act on a position NFT the agent's wallet does no
 | Tool | Arguments | Effect |
 |---|---|---|
 | `get_v3_position` | `chainId`, `nftTokenId` | **Read-only.** Returns pool, token pair, fee tier, tick range, liquidity and `tokensOwed0`/`tokensOwed1`. Pure on-chain reads — no Uniswap API call, so this works with only an RPC endpoint. See the caveat on `tokensOwed` below. |
-| `create_v3_position` | `chainId`, `poolAddress`, `independentTokenAddress`, `independentTokenAmount`, `tickLower`, `tickUpper`, `slippageTolerance?` | Opens a position in an **existing** pool (it cannot create pools). Runs any required approvals first and waits for each. Returns the transaction hash and the minted NFT's token id. |
+| `get_v3_pool_state` | `chainId`, `poolAddress` | **Read-only.** Token pair, fee tier, current tick, `sqrtPriceX96`, tick spacing and active liquidity, verified against the factory. Needs no vault — only a bearer token and an RPC endpoint. |
+| `list_v3_positions` | `chainId` | **Read-only.** Every position the agent's wallet holds, up to 50 (`truncated` + `totalOwned` report the rest). The wallet comes from the vault, so another owner's positions cannot be enumerated. |
+| `create_v3_position` | `chainId`, `tokenA`, `tokenB`, `maxTokenAAmount`, `maxTokenBAmount`, `rangeWidthBps?`, `poolAddress?`, `slippageTolerance?` | Opens a position in an **existing** pool (it cannot create pools). Picks the pool, derives the range, sizes to both budgets, wraps ETH, approves, mints. See below. |
 | `decrease_v3_position` | `chainId`, `nftTokenId`, `liquidityPercentageToDecrease`, `slippageTolerance?` | Withdraws liquidity; `100` closes the position out. **Also collects accrued fees** — see below. Does **not** open a replacement position. |
 | `claim_v3_fees` | `chainId`, `nftTokenId` | Takes accrued trading fees while leaving liquidity in place — for harvesting from a position you intend to keep open. |
 
@@ -142,10 +145,68 @@ in a while they are stale, and frequently read zero while real fees are owed. Co
 claimable fees means reading the pool's and ticks' fee-growth accumulators, which these tools do
 not do.
 
-`create_v3_position` deliberately does **not** take `token0Address`/`token1Address`. It reads the
-pair off the pool and verifies the pool against the factory. Accepting both a pool and a token
-pair from the caller would let a client pair a genuine pool with unrelated token addresses and get
-approvals issued against the wrong assets.
+### `create_v3_position`
+
+The interface is deliberately high-level: **no ticks, no wei, no wallet address**.
+
+```json
+{
+  "chainId": "11155111",
+  "tokenA": "ETH",
+  "tokenB": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+  "maxTokenAAmount": "0.01",
+  "maxTokenBAmount": "20",
+  "rangeWidthBps": 1000
+}
+```
+
+**Amounts are human decimals in whole tokens, as quoted strings** — `"0.01"` is 0.01 ETH, `"20"`
+is 20 USDC. Not wei. Each token's `decimals()` is read on-chain and applied exactly; parsing is
+integer-only and rejects signs, exponents, separators and more precision than the token has rather
+than silently truncating. A bare JSON number is refused, because by the time `0.01` has been
+through a JSON float it may no longer be `0.01`.
+
+Both maximums are **ceilings, not targets**. The position is sized to the largest that fits inside
+both, and is clamped further by what the wallet actually holds — so it can spend less than you
+allow, never more.
+
+**`tokenA`/`tokenB` accept the exact string `"ETH"`** (at most one side). A V3 pool never holds
+native ether, so `"ETH"` is normalized to WETH everywhere, and any shortfall is wrapped
+automatically — only the shortfall, after counting WETH already held. Passing the WETH address
+directly instead means "use my WETH, do not wrap".
+
+**`rangeWidthBps`** is the price movement allowed on *each* side of the current price; 1000 (the
+default) is roughly -10%/+10%. The ticks are derived from the pool's live tick and snapped
+*outward* to its spacing, so the range always brackets the current price — a range that misses it
+would silently build a one-sided position holding only one of the two tokens.
+
+**`poolAddress` is optional.** Omitted, the standard fee tiers (100, 500, 3000, 10000) are probed
+and ranked by active liquidity; the deepest pool the Liquidity API can actually size wins. On an
+exact tie the **lower fee tier** wins. A candidate is skipped only when the API specifically says
+that pool is unavailable or unindexed. Authentication, rate-limit, transport and generic service
+failures abort instead of being hidden by retries. Pools with no liquidity are skipped. Supply
+`poolAddress` to select exactly that pool with no fallback, or to reach a nonstandard-fee pool; it
+is verified against the factory and must hold exactly the requested pair. The response's
+`skippedPools` records any higher-ranked candidates skipped during automatic selection.
+
+The token pair always comes from the pool, never from the caller alongside it — accepting both
+would let a client pair a genuine pool with unrelated token addresses and get approvals issued
+against the wrong assets.
+
+#### Sizing, funding and the reconciliation loop
+
+A quote goes stale while its own approvals confirm: by the time a wrap and two approvals are
+mined, Uniswap may want a slightly different amount, needing *more* WETH or *more* allowance than
+was just provided. Signing the stale quote reverts; signing the fresh one unfunded reverts too. So
+each pass re-reads what the current quote needs, provides exactly that, refetches, and only signs
+a quote that needs nothing further — **bounded to three rounds that move funds**, followed by one
+final inspection of the resulting quote, then declining rather than chasing a pool that volatile.
+
+Immediately before signing, both token balances are re-read from chain rather than trusted from
+internal bookkeeping, in case something else moved the wallet meanwhile.
+
+Every wrap and approval hash is recorded as it lands and included in any later error, because
+those moved real funds and a retry does not start from scratch.
 
 ### What is checked before anything is signed
 
@@ -156,6 +217,11 @@ half-done. API calldata is never rewritten.
 - **Destination is pinned.** The `create`, `decrease` and `claim` transactions must be addressed
   to the Sepolia `NonfungiblePositionManager`; any other destination is refused. Approvals are
   exempt from the pin, since an approval's destination is legitimately the ERC-20 being approved.
+- **Wraps are built locally, not taken from any API.** The ETH→WETH transaction's destination is
+  the compiled-in WETH address and its calldata is `deposit()`'s bare selector, so no API response
+  can influence either. It is simulated before broadcast like everything else.
+- **Budgets are enforced at every re-read**, not just the first quote: a refreshed amount over
+  either ceiling fails rather than being retried.
 - **`from` must be the agent's own wallet**, and **`chainId` must be 11155111**.
 - **Calldata must be non-empty** — every LP operation is a contract call, so a bare value transfer
   would be a silent loss.
