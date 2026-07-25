@@ -23,6 +23,7 @@ async fn main() -> anyhow::Result<()> {
     eprintln!("[db] connecting to {db_url}");
     let db = Arc::new(DbPool::connect(&db_url).await?);
     db.ensure_tables().await?;
+    db.upsert_uniswap_entry().await?;
     seed_networks(&db).await?;
 
     let registry = new_registry();

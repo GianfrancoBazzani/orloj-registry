@@ -93,6 +93,20 @@ async fn list_mcp(State(state): State<SharedState>) -> Response {
     let items: Vec<Value> = rows
         .into_iter()
         .map(|row: ContractMetaRow| {
+            // uniswap-mcp is chain-agnostic — sentinel row (chain_id=0, address='uniswap',
+            // see DbPool::upsert_uniswap_entry) maps to its own fixed route, not the usual
+            // {chain_id}_{address} naming, and has no single chainId to report.
+            if row.address == "uniswap" {
+                return json!({
+                    "name": "uniswap",
+                    "chainId": Value::Null,
+                    "address": row.address,
+                    "implementation": row.implementation,
+                    "contractName": row.contract_name,
+                    "url": "/interface/uniswap/mcp",
+                });
+            }
+
             let name = if row.address == "native" {
                 native_entry_name(row.chain_id)
             } else {

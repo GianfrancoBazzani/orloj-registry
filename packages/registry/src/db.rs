@@ -233,6 +233,35 @@ impl DbPool {
 }
 
 // ---------------------------------------------------------------------------
+// Uniswap MCP persistence
+// ---------------------------------------------------------------------------
+
+impl DbPool {
+    /// Upsert the single `registered_contracts` row that makes `GET /mcp` list uniswap-mcp
+    /// alongside EVM contract and native-token MCPs.
+    ///
+    /// uniswap-mcp is chain-agnostic (chainId is a per-call tool argument, not a fixed
+    /// address/chain — see mcps/uniswap_mcp.rs), so there's no real (chain_id, address) pair
+    /// to key off. Uses chain_id=0 (no real chain has id 0) and address='uniswap' as sentinels,
+    /// mirroring the existing address='native' sentinel convention for native-token chains.
+    /// Called once at startup (see main.rs) — there's no dynamic registration flow for it,
+    /// unlike contracts/native chains which go through POST /register(-native).
+    pub async fn upsert_uniswap_entry(&self) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO registered_contracts \
+               (chain_id, address, implementation, rpc_url, abi, contract_name) \
+             VALUES (0, 'uniswap', NULL, NULL, '[]', 'Uniswap') \
+             ON CONFLICT (chain_id, address) DO NOTHING",
+        )
+        .execute(&self.pool)
+        .await
+        .context("upsert_uniswap_entry failed")?;
+
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Auth — auth.mjs
 // ---------------------------------------------------------------------------
 
