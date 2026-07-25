@@ -38,7 +38,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-// TEMPORARY — seeds the `networks` table (used by uniswap_mcp's `swap` to resolve an rpc_url
+// TEMPORARY — seeds the `networks` table (used by the uniswap MCP's `swap` to resolve an rpc_url
 // when the caller omits one) with Ethereum Mainnet + Sepolia. Fill in real rpc_url values
 // below, then delete this function and its call site in main() once done.
 //
