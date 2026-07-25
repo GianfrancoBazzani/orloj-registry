@@ -240,7 +240,6 @@ export function SessionView({
           r.json() as Promise<{
             configured?: boolean;
             mcps?: McpSelectionItem[];
-            assigned?: string[];
           }>,
       )
       .then((d) => {
@@ -250,9 +249,8 @@ export function SessionView({
           setSelection((d.mcps ?? []).map((m) => m.mcpName));
           void start(undefined);
         } else {
-          // First run starts from what the user already assigned in the registry, so the
-          // marketplace assignment means something here instead of an empty wizard.
-          setSelection(d.assigned ?? []);
+          // First run opens the wizard with nothing checked — the picker lists the full
+          // registry, and every agent may use all of it.
           setPhase("wizard");
         }
       })

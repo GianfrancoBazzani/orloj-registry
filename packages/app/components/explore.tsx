@@ -330,7 +330,7 @@ export const Explore = ({ mcps }: { mcps: Mcp[] }) => {
                         openLaunchModal(m);
                       }}
                     >
-                      {t("explore.assignAgent")} →
+                      {t("explore.connectAgent")} →
                     </Btn>
                   </td>
                 </tr>
@@ -562,7 +562,7 @@ const MCPCard = ({
             onAddMcp();
           }}
         >
-          {t("explore.assignAgent")} →
+          {t("explore.connectAgent")} →
         </Btn>
       </div>
     </div>
@@ -769,7 +769,7 @@ const DetailDrawer = ({
 
         <div style={{ display: "flex", gap: 12, marginTop: 32 }}>
           <Btn kind="brass" size="lg" onClick={onAddMcp}>
-            {t("explore.assignAgent")} →
+            {t("explore.connectAgent")} →
           </Btn>
         </div>
       </div>

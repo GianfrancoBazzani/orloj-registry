@@ -50,7 +50,6 @@ export interface Agent {
   vaultId?: string;
   grantId?: string;
   keyPath?: string;
-  mcps: string[];
   status: string;
   runs: number;
   lastRun: string;

@@ -84,18 +84,10 @@ const ensureSchema = async (pool: Pool): Promise<void> => {
     CREATE INDEX IF NOT EXISTS agent_ownership_user_idx
       ON agent_ownership(user_id)
   `);
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS agent_mcp_binding (
-      agent_id  TEXT NOT NULL REFERENCES agent_ownership(agent_id) ON DELETE CASCADE,
-      mcp_name TEXT NOT NULL,
-      bound_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      PRIMARY KEY (agent_id, mcp_name)
-    )
-  `);
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS agent_mcp_binding_mcp_idx
-      ON agent_mcp_binding(mcp_name)
-  `);
+  // Per-agent MCP assignment was removed: a valid bearer token authorizes an agent for every
+  // registry MCP. There is no migration runner in this repo, so the one-time drop lives here —
+  // idempotent, and safe to delete once every environment has booted once.
+  await pool.query(`DROP TABLE IF EXISTS agent_mcp_binding`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS agent_app_branding (
       agent_id    TEXT PRIMARY KEY REFERENCES agent_ownership(agent_id) ON DELETE CASCADE,
@@ -150,15 +142,6 @@ const ensureSchema = async (pool: Pool): Promise<void> => {
       bound_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       PRIMARY KEY (user_id, mcp_name)
     )
-  `);
-  // Preserve access for pre-agent-scoped bindings during the rollout. Future
-  // assignments are written only to agent_mcp_binding.
-  await pool.query(`
-    INSERT INTO agent_mcp_binding (agent_id, mcp_name)
-    SELECT ownership.agent_id, binding.mcp_name
-      FROM agent_ownership ownership
-      JOIN user_mcp_binding binding ON binding.user_id = ownership.user_id
-    ON CONFLICT (agent_id, mcp_name) DO NOTHING
   `);
 };
 

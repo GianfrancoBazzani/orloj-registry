@@ -294,23 +294,6 @@ impl DbPool {
             Ok(None)
         }
     }
-
-    /// Check whether an authenticated agent may use a specific registry MCP.
-    pub async fn agent_has_mcp(&self, agent_id: &str, mcp_name: &str) -> Result<bool> {
-        let row = sqlx::query(
-            "SELECT 1 \
-               FROM agent_mcp_binding \
-              WHERE agent_id = $1 AND mcp_name = $2 \
-              LIMIT 1",
-        )
-        .bind(agent_id)
-        .bind(mcp_name)
-        .fetch_optional(&self.pool)
-        .await
-        .context("agent_mcp_binding lookup failed")?;
-
-        Ok(row.is_some())
-    }
 }
 
 // ---------------------------------------------------------------------------

@@ -8,7 +8,6 @@ interface AgentOption {
   id: string;
   name: string;
   api_key: string | null;
-  mcps?: string[];
 }
 
 export interface RegisterResult {
@@ -110,8 +109,6 @@ export const LaunchModal = ({
   const [agentsLoading, setAgentsLoading] = useState(true);
   const [agentsError, setAgentsError] = useState<string | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string>("");
-  const [assigning, setAssigning] = useState(false);
-  const [assignError, setAssignError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/agents")
@@ -125,53 +122,14 @@ export const LaunchModal = ({
   }, []);
 
   const selectedAgent = agents.find((a) => a.id === selectedAgentId);
-  const isAssigned = selectedAgent?.mcps?.includes(result.name) ?? false;
-  const token = isAssigned
-    ? selectedAgent?.api_key ?? "<token>"
-    : "<assign this MCP first>";
+  const token = selectedAgent?.api_key ?? "<token>";
   const config = getConfig(tab, result.contractName, result.mcpUrl, token);
   const onClose = onCloseAction;
 
   const copy = () => {
-    if (!isAssigned) return;
     navigator.clipboard.writeText(config.code);
     setCopied(true);
     setTimeout(() => setCopied(false), 1800);
-  };
-
-  const assign = async () => {
-    if (!selectedAgent || assigning || isAssigned) return;
-    setAssigning(true);
-    setAssignError(null);
-    try {
-      const response = await fetch(`/api/agents/${selectedAgent.id}/mcps`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ mcpName: result.name }),
-      });
-      const payload = (await response.json().catch(() => null)) as
-        | { error?: string }
-        | null;
-      if (!response.ok) {
-        throw new Error(payload?.error ?? `Request failed (${response.status})`);
-      }
-      setAgents((current) =>
-        current.map((agent) =>
-          agent.id === selectedAgent.id
-            ? {
-                ...agent,
-                mcps: [...new Set([...(agent.mcps ?? []), result.name])],
-              }
-            : agent,
-        ),
-      );
-    } catch (error) {
-      setAssignError(
-        error instanceof Error ? error.message : t("launch.assignFailed"),
-      );
-    } finally {
-      setAssigning(false);
-    }
   };
 
   return (
@@ -315,10 +273,7 @@ export const LaunchModal = ({
               ) : (
                 <select
                   value={selectedAgentId}
-                  onChange={(e) => {
-                    setSelectedAgentId(e.target.value);
-                    setAssignError(null);
-                  }}
+                  onChange={(e) => setSelectedAgentId(e.target.value)}
                   style={{
                     flex: 1,
                     padding: "7px 10px",
@@ -335,31 +290,7 @@ export const LaunchModal = ({
                   ))}
                 </select>
               )}
-              {selectedAgent && (
-                <Btn
-                  size="sm"
-                  kind={isAssigned ? "ghost" : "brass"}
-                  disabled={assigning || isAssigned}
-                  onClick={assign}
-                >
-                  {isAssigned
-                    ? t("launch.assigned")
-                    : assigning
-                      ? t("launch.assigning")
-                      : t("launch.assign")}
-                </Btn>
-              )}
             </div>
-            {assignError && (
-              <div style={{ fontSize: 12, color: "var(--wine)" }}>
-                {assignError}
-              </div>
-            )}
-            {!isAssigned && selectedAgent && !assignError && (
-              <div style={{ fontSize: 12, color: "var(--ink-soft)" }}>
-                {t("launch.assignHint")}
-              </div>
-            )}
           </div>
 
           {/* Platform tabs */}
@@ -430,7 +361,6 @@ export const LaunchModal = ({
             </pre>
             <button
               onClick={copy}
-              disabled={!isAssigned}
               className="smallcaps"
               style={{
                 position: "absolute",
@@ -447,8 +377,7 @@ export const LaunchModal = ({
                   ? "var(--verdigris-deep)"
                   : "rgba(241,233,212,0.22)"
                   }`,
-                cursor: isAssigned ? "pointer" : "not-allowed",
-                opacity: isAssigned ? 1 : 0.55,
+                cursor: "pointer",
                 letterSpacing: "0.12em",
               }}
             >

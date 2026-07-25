@@ -199,29 +199,6 @@ fn marketplace_metadata(
     )
 }
 
-async fn require_mcp_assignment(
-    state: &SharedState,
-    agent_id: &str,
-    mcp_name: &str,
-) -> Result<(), Response> {
-    match state.db.agent_has_mcp(agent_id, mcp_name).await {
-        Ok(true) => Ok(()),
-        Ok(false) => Err((
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "mcp_not_assigned" })),
-        )
-            .into_response()),
-        Err(error) => {
-            eprintln!("[auth] assignment lookup failed: {error:#}");
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "internal error" })),
-            )
-                .into_response())
-        }
-    }
-}
-
 /// Validates scheme, connects, and verifies the chain ID.
 /// Returns the live provider on success so callers can reuse it.
 /// Returns Err(Response) with the appropriate 400/502 on any failure.
@@ -478,10 +455,6 @@ async fn handle_mcp(
         Ok(id) => id,
         Err(resp) => return resp,
     };
-    if let Err(resp) = require_mcp_assignment(&state, &agent_id, &name).await {
-        return resp;
-    }
-
     // Registry lookup with lazy-load fallback.
     let entry = match get_or_load(&state, &name).await {
         Ok(Some(e)) => e,
@@ -616,10 +589,6 @@ async fn handle_uniswap_mcp(
         Ok(id) => id,
         Err(resp) => return resp,
     };
-    if let Err(resp) = require_mcp_assignment(&state, &agent_id, "uniswap").await {
-        return resp;
-    }
-
     let body_json: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(e) => {

@@ -6,7 +6,6 @@ import {
   listAgentIdsForUser,
 } from "@/lib/agent-ownership";
 import { getActiveTokenForAgent, issueTokenForAgent } from "@/lib/mcp-tokens";
-import { listMcpsForAgents } from "@/lib/agent-mcps";
 
 const NAME_MAX = 80;
 const DESCRIPTION_MAX = 500;
@@ -43,13 +42,11 @@ export async function GET() {
   }
 
   const owned = data.agents.filter((a) => ownedIds.has(a.id));
-  const bindingsByAgent = await listMcpsForAgents(owned.map((agent) => agent.id));
 
   const enriched = await Promise.all(
     owned.map(async (a) => ({
       ...a,
       api_key: await getActiveTokenForAgent(a.id),
-      mcps: bindingsByAgent.get(a.id) ?? [],
     })),
   );
 

@@ -58,22 +58,14 @@ export function manifestAppName(agentName: string, customName: string | null): s
     : `${base} · Orloj`;
 }
 
-export function defaultAppDescription(
-  agentName: string,
-  mcpNames: string[],
-): string {
+export function defaultAppDescription(agentName: string): string {
   const safeAgentName =
     agentName
       .replace(UNSAFE_NAME_CHARS_GLOBAL, "")
       .trim()
       .replace(/\s+/g, " ")
       .slice(0, 80) || "This agent";
-  if (mcpNames.length === 0) {
-    return `${safeAgentName} is an Orloj blockchain agent ready for MCP assignments.`;
-  }
-  const names = mcpNames.slice(0, 3).join(", ");
-  const suffix = mcpNames.length > 3 ? ` +${mcpNames.length - 3}` : "";
-  return `${safeAgentName} uses ${names}${suffix} through Orloj.`;
+  return `${safeAgentName} is an Orloj blockchain agent.`;
 }
 
 export function validatePng(bytes: Buffer, contentType: string): ValidatedPng {

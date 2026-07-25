@@ -9,8 +9,6 @@ import {
   getAgentBranding,
   manifestAppName,
 } from "@/lib/agent-branding";
-import { listMcpsForAgent } from "@/lib/agent-mcps";
-import { fetchMcps } from "@/lib/registry-mcps";
 
 const LOCALES = new Set(["en", "cs", "de", "fr", "es", "zh"]);
 
@@ -29,18 +27,10 @@ export async function GET(
   const { data: agent, error } = await client.agents.get(id);
   if (error || !agent) return new Response("Not found", { status: 404 });
 
-  const [branding, assignedIds, registry] = await Promise.all([
-    getAgentBranding(id),
-    listMcpsForAgent(id),
-    fetchMcps(),
-  ]);
+  const branding = await getAgentBranding(id);
   const url = new URL(request.url);
   const requestedLocale = url.searchParams.get("lang") ?? "en";
   const locale = LOCALES.has(requestedLocale) ? requestedLocale : "en";
-  const assigned = new Set(assignedIds);
-  const mcpNames = registry
-    .filter((mcp) => assigned.has(mcp.id))
-    .map((mcp) => mcp.name);
   const name = manifestAppName(agent.name, branding.appName);
   const shortBase = name.replace(/ · Orloj$/u, "");
   const shortName = `${shortBase.slice(0, 14)} · Orloj`;
@@ -75,7 +65,7 @@ export async function GET(
       id: `/session/${encodeURIComponent(id)}`,
       name,
       short_name: shortName,
-      description: defaultAppDescription(agent.name, mcpNames),
+      description: defaultAppDescription(agent.name),
       start_url: startUrl,
       scope: appUrl,
       display: "standalone",
