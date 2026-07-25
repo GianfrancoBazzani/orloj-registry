@@ -5,6 +5,8 @@
  * Design: missing or insufficient evidence → `{ value: null, reason }` — never a
  * fabricated 0 that could be mistaken for measured inactivity (except where an
  * empty fresh window explicitly establishes zero *activity*).
+ *
+ * Safe finite Number math only — no decimal library.
  */
 
 import { DEFAULT_CHAIN_ID, toSubgraphPoolId } from "./config.mjs";
@@ -16,6 +18,13 @@ export const WINDOW_24H_SECONDS = 24 * 60 * 60;
 export const MIN_TICK_SAMPLES_6H = 3;
 /** Minimum hour rows with tick for a 24h volatility proxy. */
 export const MIN_TICK_SAMPLES_24H = 6;
+
+/**
+ * Minimum span between earliest and latest tick observation (seconds)
+ * before a volatility proxy may be marked sufficient.
+ */
+export const MIN_TICK_SPAN_6H_SECONDS = 2 * 60 * 60;
+export const MIN_TICK_SPAN_24H_SECONDS = 12 * 60 * 60;
 
 /** Sepolia USD values at/above this TVL are treated as suspicious. */
 export const SUSPICIOUS_TVL_USD = 1e9;
@@ -64,6 +73,9 @@ export function extractFeatures(position, market, opts = {}) {
   if (!market || typeof market !== "object") {
     throw new Error("extractFeatures requires normalized Graph market context");
   }
+  if (!Array.isArray(market.hourData)) {
+    throw new Error("market.hourData must be a present array");
+  }
 
   assertCrossSourceAgreement(position, market, opts);
 
@@ -81,8 +93,8 @@ export function extractFeatures(position, market, opts = {}) {
   const distanceToUpper = tickUpper - currentTick;
   const absLower = Math.abs(distanceToLower);
   const absUpper = Math.abs(distanceToUpper);
-  const nearestBoundaryDistance =
-    absLower <= absUpper ? distanceToLower : distanceToUpper;
+  const nearestBoundary = absLower <= absUpper ? "lower" : "upper";
+  const nearestBoundaryDistance = Math.min(absLower, absUpper);
   const normalizedRangePosition = distanceToLower / rangeWidth;
 
   const inRange = isInRange(currentTick, tickLower, tickUpper);
@@ -97,29 +109,57 @@ export function extractFeatures(position, market, opts = {}) {
     throw new Error("market.queriedAt must be a unix seconds number");
   }
 
-  const hours = Array.isArray(market.hourData) ? market.hourData : [];
-  const hours6h = filterHours(hours, now - WINDOW_6H_SECONDS, now);
-  const hours24h = filterHours(hours, now - WINDOW_24H_SECONDS, now);
+  const hours = market.hourData;
+  // Current 6h: [now-6h, now] inclusive. Previous 6h: [now-12h, now-6h) excludes boundary.
+  const hours6h = filterHours(hours, now - WINDOW_6H_SECONDS, now, {
+    includeEnd: true,
+  });
+  const hours24h = filterHours(hours, now - WINDOW_24H_SECONDS, now, {
+    includeEnd: true,
+  });
   const hoursPrev6h = filterHours(
     hours,
     now - 2 * WINDOW_6H_SECONDS,
     now - WINDOW_6H_SECONDS,
+    { includeEnd: false },
   );
 
   const usd = assessUsdDataUsable(market.pool, hours24h);
 
-  const vol6h = tickVolatilityProxy(hours6h, MIN_TICK_SAMPLES_6H, "6h");
-  const vol24h = tickVolatilityProxy(hours24h, MIN_TICK_SAMPLES_24H, "24h");
+  const vol6h = tickVolatilityProxy(
+    hours6h,
+    MIN_TICK_SAMPLES_6H,
+    MIN_TICK_SPAN_6H_SECONDS,
+    "6h",
+  );
+  const vol24h = tickVolatilityProxy(
+    hours24h,
+    MIN_TICK_SAMPLES_24H,
+    MIN_TICK_SPAN_24H_SECONDS,
+    "24h",
+  );
 
-  const activity6h = activityFromTxCount(hours6h, "6h");
-  const activity24h = activityFromTxCount(hours24h, "24h");
+  const activity6h = sumRequiredField(hours6h, "txCount", "6h", {
+    integer: true,
+  });
+  const activity24h = sumRequiredField(hours24h, "txCount", "24h", {
+    integer: true,
+  });
 
-  const volumeToken0_6h = sumTokenField(hours6h, "volumeToken0", "6h");
-  const volumeToken1_6h = sumTokenField(hours6h, "volumeToken1", "6h");
-  const volumeToken0_24h = sumTokenField(hours24h, "volumeToken0", "24h");
-  const volumeToken1_24h = sumTokenField(hours24h, "volumeToken1", "24h");
-  const volumeToken0_prev6h = sumTokenField(hoursPrev6h, "volumeToken0", "prev6h");
-  const volumeToken1_prev6h = sumTokenField(hoursPrev6h, "volumeToken1", "prev6h");
+  const volumeToken0_6h = sumRequiredField(hours6h, "volumeToken0", "6h");
+  const volumeToken1_6h = sumRequiredField(hours6h, "volumeToken1", "6h");
+  const volumeToken0_24h = sumRequiredField(hours24h, "volumeToken0", "24h");
+  const volumeToken1_24h = sumRequiredField(hours24h, "volumeToken1", "24h");
+  const volumeToken0_prev6h = sumRequiredField(
+    hoursPrev6h,
+    "volumeToken0",
+    "prev6h",
+  );
+  const volumeToken1_prev6h = sumRequiredField(
+    hoursPrev6h,
+    "volumeToken1",
+    "prev6h",
+  );
 
   const volumeTrendToken0_6h = ratioTrend(
     volumeToken0_6h,
@@ -133,13 +173,13 @@ export function extractFeatures(position, market, opts = {}) {
   );
 
   const feesUsd_6h = usd.usable
-    ? sumTokenField(hours6h, "feesUSD", "6h")
+    ? sumRequiredField(hours6h, "feesUSD", "6h")
     : nullFeature(usd.reasons.join("; ") || "usd_data_unusable");
   const feesUsd_prev6h = usd.usable
-    ? sumTokenField(hoursPrev6h, "feesUSD", "prev6h")
+    ? sumRequiredField(hoursPrev6h, "feesUSD", "prev6h")
     : nullFeature(usd.reasons.join("; ") || "usd_data_unusable");
   const feesUsd_24h = usd.usable
-    ? sumTokenField(hours24h, "feesUSD", "24h")
+    ? sumRequiredField(hours24h, "feesUSD", "24h")
     : nullFeature(usd.reasons.join("; ") || "usd_data_unusable");
 
   const feeTrend_6h = usd.usable
@@ -148,29 +188,23 @@ export function extractFeatures(position, market, opts = {}) {
 
   const feeToTvl24h = feeToTvlProxy(feesUsd_24h, hours24h, usd);
 
-  const liquidityTrend24h = liquidityTrend(hours24h, market.pool.liquidity);
+  const liquidityTrend24h = endpointTrend(
+    hours24h,
+    "liquidity",
+    "liquidity_24h",
+  );
   const tvlTrend24h = usd.usable
-    ? tvlTrend(hours24h)
+    ? endpointTrend(hours24h, "tvlUSD", "tvlUSD_24h")
     : nullFeature(usd.reasons.join("; ") || "usd_data_unusable");
 
-  const missingInputFlags = collectMissingFlags({
-    hours6h,
-    hours24h,
-    hoursPrev6h,
-    usd,
-    vol6h,
-    vol24h,
-    market,
-  });
-
-  return {
+  const features = {
     position: {
       nftTokenId: position.nftTokenId,
       chainId: position.chainId,
       poolAddress: toSubgraphPoolId(position.poolAddress),
       tickLower,
       tickUpper,
-      liquidity: position.liquidity,
+      positionLiquidity: position.liquidity,
       fee: position.fee,
       token0: position.token0.toLowerCase(),
       token1: position.token1.toLowerCase(),
@@ -182,17 +216,19 @@ export function extractFeatures(position, market, opts = {}) {
       width: rangeWidth,
       distanceToLower,
       distanceToUpper,
+      nearestBoundary,
       nearestBoundaryDistance,
       normalizedRangePosition,
     },
     windows: {
       nowUnix: now,
-      h6: windowMeta(hours6h, now - WINDOW_6H_SECONDS, now),
-      h24: windowMeta(hours24h, now - WINDOW_24H_SECONDS, now),
+      h6: windowMeta(hours6h, now - WINDOW_6H_SECONDS, now, true),
+      h24: windowMeta(hours24h, now - WINDOW_24H_SECONDS, now, true),
       prev6h: windowMeta(
         hoursPrev6h,
         now - 2 * WINDOW_6H_SECONDS,
         now - WINDOW_6H_SECONDS,
+        false,
       ),
     },
     volatility: {
@@ -223,7 +259,8 @@ export function extractFeatures(position, market, opts = {}) {
       feeToTvl_24h: feeToTvl24h,
     },
     liquidity: {
-      poolLiquidity: position.liquidity,
+      positionLiquidity: position.liquidity,
+      poolLiquidity: market.pool.liquidity,
       trend_24h: liquidityTrend24h,
     },
     tvl: {
@@ -244,7 +281,6 @@ export function extractFeatures(position, market, opts = {}) {
         limit: market.windows?.swap?.limit,
       },
     },
-    missingInputFlags,
     evidence: {
       hourRowsTotal: hours.length,
       hourRows6h: hours6h.length,
@@ -253,6 +289,9 @@ export function extractFeatures(position, market, opts = {}) {
       swapRowsSampled: Array.isArray(market.swaps) ? market.swaps.length : 0,
     },
   };
+
+  features.missingInputFlags = collectMissingFlags(features, market);
+  return features;
 }
 
 /**
@@ -266,8 +305,10 @@ function assertCrossSourceAgreement(position, market, opts) {
       `cross-source mismatch: position.chainId ${position.chainId} !== ${DEFAULT_CHAIN_ID}`,
     );
   }
-  if (opts.expectedNftTokenId !== undefined &&
-      opts.expectedNftTokenId !== position.nftTokenId) {
+  if (
+    opts.expectedNftTokenId !== undefined &&
+    opts.expectedNftTokenId !== position.nftTokenId
+  ) {
     throw new Error(
       `cross-source mismatch: nftTokenId ${position.nftTokenId} !== expected ${opts.expectedNftTokenId}`,
     );
@@ -296,7 +337,7 @@ function assertCrossSourceAgreement(position, market, opts) {
 }
 
 /**
- * @param {string} raw
+ * @param {string|number} raw
  * @param {string} path
  */
 function parseIntTick(raw, path) {
@@ -311,15 +352,38 @@ function parseIntTick(raw, path) {
 }
 
 /**
+ * @param {unknown} raw
+ * @param {string} path
+ * @returns {{ ok: true, value: number } | { ok: false, reason: string }}
+ */
+export function parseNonNegativeFinite(raw, path) {
+  if (raw === undefined || raw === null) {
+    return { ok: false, reason: `missing_${path}` };
+  }
+  const n = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(n)) {
+    return { ok: false, reason: `non_finite_${path}` };
+  }
+  if (n < 0) {
+    return { ok: false, reason: `negative_${path}` };
+  }
+  return { ok: true, value: n };
+}
+
+/**
  * @param {object[]} hours
  * @param {number} start
  * @param {number} end
+ * @param {{ includeEnd: boolean }} opts
  */
-function filterHours(hours, start, end) {
+function filterHours(hours, start, end, opts) {
   return hours
     .filter((h) => {
       const t = Number(h.periodStartUnix);
-      return Number.isFinite(t) && t >= start && t <= end;
+      if (!Number.isFinite(t)) return false;
+      if (t < start) return false;
+      if (opts.includeEnd) return t <= end;
+      return t < end;
     })
     .slice()
     .sort((a, b) => Number(a.periodStartUnix) - Number(b.periodStartUnix));
@@ -329,8 +393,9 @@ function filterHours(hours, start, end) {
  * @param {object[]} hours
  * @param {number} start
  * @param {number} end
+ * @param {boolean} includeEnd
  */
-function windowMeta(hours, start, end) {
+function windowMeta(hours, start, end, includeEnd) {
   const span = end - start;
   let covered = 0;
   if (hours.length > 0) {
@@ -341,6 +406,7 @@ function windowMeta(hours, start, end) {
   return {
     startUnix: start,
     endUnix: end,
+    includeEnd,
     observationCount: hours.length,
     coverageSeconds: covered,
     coverageRatio: span > 0 ? covered / span : null,
@@ -351,13 +417,10 @@ function windowMeta(hours, start, end) {
 /**
  * @param {object[]} hours
  * @param {number} minSamples
+ * @param {number} minSpanSeconds
  * @param {string} label
- * @returns {object}
  */
-function tickVolatilityProxy(hours, minSamples, label) {
-  const withTick = hours.filter((h) => h.tick !== undefined && h.tick !== null);
-  const sampleCount = withTick.length;
-
+function tickVolatilityProxy(hours, minSamples, minSpanSeconds, label) {
   if (hours.length === 0) {
     return {
       tickMovement: nullFeature(
@@ -367,10 +430,50 @@ function tickVolatilityProxy(hours, minSamples, label) {
         `empty_${label}_window_cannot_infer_volatility`,
       ),
       sampleCount: 0,
+      observationSpanSeconds: 0,
+      minSpanSeconds,
       sufficient: false,
       reason: `empty_${label}_window`,
     };
   }
+
+  const withTick = [];
+  for (const h of hours) {
+    if (h.tick === undefined || h.tick === null) {
+      return {
+        tickMovement: nullFeature(`missing_tick_in_${label}_hour_rows`),
+        meanAbsTickDelta: nullFeature(`missing_tick_in_${label}_hour_rows`),
+        sampleCount: 0,
+        observationSpanSeconds: 0,
+        minSpanSeconds,
+        sufficient: false,
+        reason: `missing_tick_in_${label}_hour_rows`,
+      };
+    }
+    withTick.push(h);
+  }
+
+  const timestamps = withTick.map((h) => Number(h.periodStartUnix));
+  const unique = new Set(timestamps.map(String));
+  if (unique.size !== timestamps.length) {
+    return {
+      tickMovement: nullFeature(`duplicate_periodStartUnix_in_${label}_window`),
+      meanAbsTickDelta: nullFeature(
+        `duplicate_periodStartUnix_in_${label}_window`,
+      ),
+      sampleCount: withTick.length,
+      observationSpanSeconds: 0,
+      minSpanSeconds,
+      sufficient: false,
+      reason: `duplicate_periodStartUnix_in_${label}_window`,
+    };
+  }
+
+  const span =
+    timestamps.length > 0
+      ? Math.max(...timestamps) - Math.min(...timestamps)
+      : 0;
+  const sampleCount = withTick.length;
 
   if (sampleCount < minSamples) {
     return {
@@ -381,8 +484,26 @@ function tickVolatilityProxy(hours, minSamples, label) {
         `insufficient_tick_samples_${label}: ${sampleCount} < ${minSamples}`,
       ),
       sampleCount,
+      observationSpanSeconds: span,
+      minSpanSeconds,
       sufficient: false,
       reason: `insufficient_tick_samples_${label}`,
+    };
+  }
+
+  if (span < minSpanSeconds) {
+    return {
+      tickMovement: nullFeature(
+        `insufficient_tick_span_${label}: ${span}s < ${minSpanSeconds}s`,
+      ),
+      meanAbsTickDelta: nullFeature(
+        `insufficient_tick_span_${label}: ${span}s < ${minSpanSeconds}s`,
+      ),
+      sampleCount,
+      observationSpanSeconds: span,
+      minSpanSeconds,
+      sufficient: false,
+      reason: `insufficient_tick_span_${label}`,
     };
   }
 
@@ -399,60 +520,46 @@ function tickVolatilityProxy(hours, minSamples, label) {
     tickMovement: numberFeature(movement),
     meanAbsTickDelta: numberFeature(meanAbs),
     sampleCount,
+    observationSpanSeconds: span,
+    minSpanSeconds,
     sufficient: true,
   };
 }
 
 /**
- * Empty fresh window → measured zero activity. Missing txCount on rows → null.
- * @param {object[]} hours
- * @param {string} label
- * @returns {MaybeNumber}
- */
-function activityFromTxCount(hours, label) {
-  if (hours.length === 0) {
-    return numberFeature(0);
-  }
-  let sum = 0;
-  for (const h of hours) {
-    if (h.txCount === undefined || h.txCount === null) {
-      return nullFeature(`missing_txCount_in_${label}_hour_rows`);
-    }
-    const n = Number(h.txCount);
-    if (!Number.isFinite(n) || n < 0) {
-      return nullFeature(`invalid_txCount_in_${label}_hour_rows`);
-    }
-    sum += n;
-  }
-  return numberFeature(sum);
-}
-
-/**
+ * Empty window → measured 0. Nonempty → every row must have the field;
+ * never publish a partial sum as complete.
+ *
  * @param {object[]} hours
  * @param {string} field
  * @param {string} label
+ * @param {{ integer?: boolean }} [opts]
  * @returns {MaybeNumber}
  */
-function sumTokenField(hours, field, label) {
+function sumRequiredField(hours, field, label, opts = {}) {
   if (hours.length === 0) {
     return numberFeature(0);
   }
   let sum = 0;
-  let any = false;
-  for (const h of hours) {
-    const raw = h[field];
-    if (raw === undefined || raw === null) {
-      continue;
+  for (let i = 0; i < hours.length; i++) {
+    const parsed = parseNonNegativeFinite(
+      hours[i][field],
+      `${field}_in_${label}[${i}]`,
+    );
+    if (!parsed.ok) {
+      return nullFeature(parsed.reason);
     }
-    const n = Number(raw);
-    if (!Number.isFinite(n)) {
-      return nullFeature(`invalid_${field}_in_${label}`);
+    if (opts.integer && !Number.isSafeInteger(parsed.value)) {
+      return nullFeature(`unsafe_integer_${field}_in_${label}[${i}]`);
     }
-    sum += n;
-    any = true;
-  }
-  if (!any) {
-    return nullFeature(`missing_${field}_in_${label}`);
+    const next = sum + parsed.value;
+    if (!Number.isFinite(next)) {
+      return nullFeature(`overflow_summing_${field}_in_${label}`);
+    }
+    if (opts.integer && !Number.isSafeInteger(next)) {
+      return nullFeature(`overflow_summing_${field}_in_${label}`);
+    }
+    sum = next;
   }
   return numberFeature(sum);
 }
@@ -476,7 +583,11 @@ function ratioTrend(current, previous, name) {
     }
     return nullFeature(`cannot_ratio_${name}: previous_window_zero`);
   }
-  return numberFeature(current.value / previous.value - 1);
+  const ratio = current.value / previous.value - 1;
+  if (!Number.isFinite(ratio)) {
+    return nullFeature(`non_finite_ratio_${name}`);
+  }
+  return numberFeature(ratio);
 }
 
 /**
@@ -492,58 +603,72 @@ function feeToTvlProxy(fees24h, hours24h, usd) {
   if (fees24h.value === null) {
     return nullFeature(fees24h.reason);
   }
-  const tvls = hours24h
-    .map((h) => (h.tvlUSD !== undefined ? Number(h.tvlUSD) : NaN))
-    .filter((n) => Number.isFinite(n) && n > 0);
-  if (tvls.length === 0) {
-    return nullFeature("missing_positive_tvlUSD_for_fee_to_tvl");
+  if (hours24h.length === 0) {
+    return nullFeature("empty_24h_window_for_fee_to_tvl");
   }
-  const avgTvl = tvls.reduce((a, b) => a + b, 0) / tvls.length;
-  return numberFeature(fees24h.value / avgTvl);
+  let tvlSum = 0;
+  for (let i = 0; i < hours24h.length; i++) {
+    const parsed = parseNonNegativeFinite(
+      hours24h[i].tvlUSD,
+      `tvlUSD_in_24h[${i}]`,
+    );
+    if (!parsed.ok) {
+      return nullFeature(parsed.reason);
+    }
+    if (parsed.value <= 0) {
+      return nullFeature(`non_positive_tvlUSD_in_24h[${i}]`);
+    }
+    tvlSum += parsed.value;
+    if (!Number.isFinite(tvlSum)) {
+      return nullFeature("overflow_summing_tvlUSD_for_fee_to_tvl");
+    }
+  }
+  const avgTvl = tvlSum / hours24h.length;
+  const ratio = fees24h.value / avgTvl;
+  if (!Number.isFinite(ratio)) {
+    return nullFeature("non_finite_fee_to_tvl");
+  }
+  return numberFeature(ratio);
 }
 
 /**
- * @param {object[]} hours24h
- * @param {string} poolLiquidity
+ * Endpoint trend over hour series; every row must have the field.
+ * @param {object[]} hours
+ * @param {string} field
+ * @param {string} label
  * @returns {MaybeNumber}
  */
-function liquidityTrend(hours24h, poolLiquidity) {
-  const withLiq = hours24h.filter(
-    (h) => h.liquidity !== undefined && h.liquidity !== null,
-  );
-  if (withLiq.length < 2) {
-    return nullFeature("insufficient_liquidity_hour_samples_for_trend");
+function endpointTrend(hours, field, label) {
+  if (hours.length < 2) {
+    return nullFeature(`insufficient_${label}_samples_for_trend`);
   }
-  const first = Number(withLiq[0].liquidity);
-  const last = Number(withLiq[withLiq.length - 1].liquidity);
-  if (!Number.isFinite(first) || !Number.isFinite(last) || first === 0) {
-    return nullFeature("invalid_liquidity_for_trend");
+  const values = [];
+  for (let i = 0; i < hours.length; i++) {
+    const parsed = parseNonNegativeFinite(
+      hours[i][field],
+      `${field}_in_${label}[${i}]`,
+    );
+    if (!parsed.ok) {
+      return nullFeature(parsed.reason);
+    }
+    values.push(parsed.value);
   }
-  // Prefer hour series endpoints; poolLiquidity retained in evidence only.
-  void poolLiquidity;
-  return numberFeature(last / first - 1);
+  const first = values[0];
+  const last = values[values.length - 1];
+  if (first === 0) {
+    return nullFeature(`cannot_trend_${label}: first_value_zero`);
+  }
+  const ratio = last / first - 1;
+  if (!Number.isFinite(ratio)) {
+    return nullFeature(`non_finite_trend_${label}`);
+  }
+  return numberFeature(ratio);
 }
 
 /**
- * @param {object[]} hours24h
- * @returns {MaybeNumber}
- */
-function tvlTrend(hours24h) {
-  const withTvl = hours24h.filter(
-    (h) => h.tvlUSD !== undefined && h.tvlUSD !== null,
-  );
-  if (withTvl.length < 2) {
-    return nullFeature("insufficient_tvlUSD_hour_samples_for_trend");
-  }
-  const first = Number(withTvl[0].tvlUSD);
-  const last = Number(withTvl[withTvl.length - 1].tvlUSD);
-  if (!Number.isFinite(first) || !Number.isFinite(last) || first === 0) {
-    return nullFeature("invalid_tvlUSD_for_trend");
-  }
-  return numberFeature(last / first - 1);
-}
-
-/**
+ * Fail closed when required USD evidence is missing, non-finite, negative,
+ * inconsistent with positive raw TVL/volume, fees>volume, or suspiciously large.
+ *
  * @param {object} pool
  * @param {object[]} hours24h
  */
@@ -551,49 +676,115 @@ export function assessUsdDataUsable(pool, hours24h) {
   /** @type {string[]} */
   const reasons = [];
 
-  const poolVol0 = Number(pool.volumeToken0 ?? NaN);
-  const poolVol1 = Number(pool.volumeToken1 ?? NaN);
-  const poolVolUsd = Number(pool.volumeUSD ?? NaN);
-  const poolTvlUsd = Number(pool.totalValueLockedUSD ?? NaN);
-  const poolFeesUsd = Number(pool.feesUSD ?? NaN);
-
-  const tokenVolumePositive =
-    (Number.isFinite(poolVol0) && poolVol0 > 0) ||
-    (Number.isFinite(poolVol1) && poolVol1 > 0);
-
-  if (tokenVolumePositive && (!Number.isFinite(poolVolUsd) || poolVolUsd === 0)) {
-    reasons.push("pool_volumeUSD_zero_or_missing_while_token_volume_positive");
+  const requiredPoolUsd = [
+    ["volumeUSD", pool.volumeUSD],
+    ["totalValueLockedUSD", pool.totalValueLockedUSD],
+    ["feesUSD", pool.feesUSD],
+  ];
+  for (const [name, raw] of requiredPoolUsd) {
+    const parsed = parseNonNegativeFinite(raw, `pool.${name}`);
+    if (!parsed.ok) {
+      reasons.push(parsed.reason);
+    }
   }
 
-  if (Number.isFinite(poolTvlUsd) && poolTvlUsd >= SUSPICIOUS_TVL_USD) {
+  const poolVol0 = parseNonNegativeFinite(
+    pool.volumeToken0 ?? "0",
+    "pool.volumeToken0",
+  );
+  const poolVol1 = parseNonNegativeFinite(
+    pool.volumeToken1 ?? "0",
+    "pool.volumeToken1",
+  );
+  const poolTvl0 = parseNonNegativeFinite(
+    pool.totalValueLockedToken0 ?? "0",
+    "pool.totalValueLockedToken0",
+  );
+  const poolTvl1 = parseNonNegativeFinite(
+    pool.totalValueLockedToken1 ?? "0",
+    "pool.totalValueLockedToken1",
+  );
+
+  for (const p of [poolVol0, poolVol1, poolTvl0, poolTvl1]) {
+    if (!p.ok) reasons.push(p.reason);
+  }
+
+  const poolVolUsd = parseNonNegativeFinite(pool.volumeUSD, "pool.volumeUSD");
+  const poolTvlUsd = parseNonNegativeFinite(
+    pool.totalValueLockedUSD,
+    "pool.totalValueLockedUSD",
+  );
+  const poolFeesUsd = parseNonNegativeFinite(pool.feesUSD, "pool.feesUSD");
+
+  if (
+    poolVol0.ok &&
+    poolVol1.ok &&
+    poolVolUsd.ok &&
+    (poolVol0.value > 0 || poolVol1.value > 0) &&
+    poolVolUsd.value === 0
+  ) {
+    reasons.push("pool_volumeUSD_zero_while_token_volume_positive");
+  }
+
+  if (
+    poolTvl0.ok &&
+    poolTvl1.ok &&
+    poolTvlUsd.ok &&
+    (poolTvl0.value > 0 || poolTvl1.value > 0) &&
+    poolTvlUsd.value === 0
+  ) {
+    reasons.push("pool_totalValueLockedUSD_zero_while_token_tvl_positive");
+  }
+
+  if (poolTvlUsd.ok && poolTvlUsd.value >= SUSPICIOUS_TVL_USD) {
     reasons.push(`pool_totalValueLockedUSD_suspicious_ge_${SUSPICIOUS_TVL_USD}`);
   }
 
   if (
-    Number.isFinite(poolFeesUsd) &&
-    Number.isFinite(poolVolUsd) &&
-    poolVolUsd > 0 &&
-    poolFeesUsd > poolVolUsd
+    poolFeesUsd.ok &&
+    poolVolUsd.ok &&
+    poolVolUsd.value > 0 &&
+    poolFeesUsd.value > poolVolUsd.value
   ) {
     reasons.push("pool_feesUSD_exceeds_volumeUSD");
   }
 
-  for (const h of hours24h) {
-    const v0 = Number(h.volumeToken0 ?? 0);
-    const v1 = Number(h.volumeToken1 ?? 0);
-    const vUsd = h.volumeUSD !== undefined ? Number(h.volumeUSD) : NaN;
-    if ((v0 > 0 || v1 > 0) && (!Number.isFinite(vUsd) || vUsd === 0)) {
-      reasons.push("hour_volumeUSD_zero_or_missing_while_token_volume_positive");
-      break;
+  for (let i = 0; i < hours24h.length; i++) {
+    const h = hours24h[i];
+    for (const field of ["volumeUSD", "feesUSD", "tvlUSD"]) {
+      const parsed = parseNonNegativeFinite(h[field], `hour[${i}].${field}`);
+      if (!parsed.ok) {
+        reasons.push(parsed.reason);
+        continue;
+      }
+      if (field === "tvlUSD" && parsed.value >= SUSPICIOUS_TVL_USD) {
+        reasons.push(`hour_tvlUSD_suspicious_at_${i}`);
+      }
     }
-    const tvl = h.tvlUSD !== undefined ? Number(h.tvlUSD) : NaN;
-    if (Number.isFinite(tvl) && tvl >= SUSPICIOUS_TVL_USD) {
-      reasons.push("hour_tvlUSD_suspicious");
-      break;
+    const v0 = parseNonNegativeFinite(
+      h.volumeToken0 ?? "0",
+      `hour[${i}].volumeToken0`,
+    );
+    const v1 = parseNonNegativeFinite(
+      h.volumeToken1 ?? "0",
+      `hour[${i}].volumeToken1`,
+    );
+    const vUsd = parseNonNegativeFinite(h.volumeUSD, `hour[${i}].volumeUSD`);
+    const fUsd = parseNonNegativeFinite(h.feesUSD, `hour[${i}].feesUSD`);
+    if (
+      v0.ok &&
+      v1.ok &&
+      vUsd.ok &&
+      (v0.value > 0 || v1.value > 0) &&
+      vUsd.value === 0
+    ) {
+      reasons.push(`hour_volumeUSD_zero_while_token_volume_positive_at_${i}`);
+    }
+    if (fUsd.ok && vUsd.ok && vUsd.value > 0 && fUsd.value > vUsd.value) {
+      reasons.push(`hour_feesUSD_exceeds_volumeUSD_at_${i}`);
     }
   }
 
-  // Deduplicate
   const unique = [...new Set(reasons)];
   return {
     usable: unique.length === 0,
@@ -602,18 +793,66 @@ export function assessUsdDataUsable(pool, hours24h) {
 }
 
 /**
- * @param {object} parts
+ * @param {object} features
+ * @param {object} market
  * @returns {string[]}
  */
-function collectMissingFlags(parts) {
+function collectMissingFlags(features, market) {
   /** @type {string[]} */
   const flags = [];
-  if (parts.hours6h.length === 0) flags.push("no_hour_rows_in_6h_window");
-  if (parts.hours24h.length === 0) flags.push("no_hour_rows_in_24h_window");
-  if (parts.hoursPrev6h.length === 0) flags.push("no_hour_rows_in_prev_6h_window");
-  if (!parts.usd.usable) flags.push("usd_data_unusable");
-  if (!parts.vol6h.sufficient) flags.push("insufficient_volatility_samples_6h");
-  if (!parts.vol24h.sufficient) flags.push("insufficient_volatility_samples_24h");
-  if (parts.market.windows?.swap?.truncated) flags.push("swap_sample_truncated");
+
+  if (features.windows.h6.observationCount === 0) {
+    flags.push("no_hour_rows_in_6h_window");
+  }
+  if (features.windows.h24.observationCount === 0) {
+    flags.push("no_hour_rows_in_24h_window");
+  }
+  if (features.windows.prev6h.observationCount === 0) {
+    flags.push("no_hour_rows_in_prev_6h_window");
+  }
+  if (!features.usdDataUsable.usable) flags.push("usd_data_unusable");
+  if (!features.volatility.tickProxy6h.sufficient) {
+    flags.push("insufficient_volatility_samples_6h");
+  }
+  if (!features.volatility.tickProxy24h.sufficient) {
+    flags.push("insufficient_volatility_samples_24h");
+  }
+  if (market.windows?.swap?.truncated) flags.push("swap_sample_truncated");
+
+  /** @type {Array<[string, MaybeNumber]>} */
+  const maybeNumbers = [
+    ["activity.txCountSum6h", features.activity.txCountSum6h],
+    ["activity.txCountSum24h", features.activity.txCountSum24h],
+    ["volumes.token0_6h", features.volumes.token0_6h],
+    ["volumes.token1_6h", features.volumes.token1_6h],
+    ["volumes.token0_24h", features.volumes.token0_24h],
+    ["volumes.token1_24h", features.volumes.token1_24h],
+    ["volumes.token0_prev6h", features.volumes.token0_prev6h],
+    ["volumes.token1_prev6h", features.volumes.token1_prev6h],
+    ["volumes.trendToken0_6hVsPrev6h", features.volumes.trendToken0_6hVsPrev6h],
+    ["volumes.trendToken1_6hVsPrev6h", features.volumes.trendToken1_6hVsPrev6h],
+    ["fees.usd_6h", features.fees.usd_6h],
+    ["fees.usd_prev6h", features.fees.usd_prev6h],
+    ["fees.usd_24h", features.fees.usd_24h],
+    ["fees.trend_6hVsPrev6h", features.fees.trend_6hVsPrev6h],
+    ["fees.feeToTvl_24h", features.fees.feeToTvl_24h],
+    ["liquidity.trend_24h", features.liquidity.trend_24h],
+    ["tvl.trend_24h", features.tvl.trend_24h],
+    [
+      "volatility.tickProxy6h.tickMovement",
+      features.volatility.tickProxy6h.tickMovement,
+    ],
+    [
+      "volatility.tickProxy24h.tickMovement",
+      features.volatility.tickProxy24h.tickMovement,
+    ],
+  ];
+
+  for (const [path, feat] of maybeNumbers) {
+    if (feat && feat.value === null) {
+      flags.push(`null:${path}`);
+    }
+  }
+
   return flags;
 }

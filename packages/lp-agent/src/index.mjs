@@ -29,10 +29,13 @@ export {
   assessUsdDataUsable,
   nullFeature,
   numberFeature,
+  parseNonNegativeFinite,
   WINDOW_6H_SECONDS,
   WINDOW_24H_SECONDS,
   MIN_TICK_SAMPLES_6H,
   MIN_TICK_SAMPLES_24H,
+  MIN_TICK_SPAN_6H_SECONDS,
+  MIN_TICK_SPAN_24H_SECONDS,
   SUSPICIOUS_TVL_USD,
 } from "./features.mjs";
 export {

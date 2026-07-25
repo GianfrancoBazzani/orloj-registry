@@ -169,7 +169,11 @@ describe("features", () => {
     assert.equal(inRange.range.width, 200);
     assert.equal(inRange.range.distanceToLower, 100);
     assert.equal(inRange.range.distanceToUpper, 100);
+    assert.equal(inRange.range.nearestBoundaryDistance, 100);
+    assert.equal(inRange.range.nearestBoundary, "lower");
     assert.equal(inRange.range.normalizedRangePosition, 0.5);
+    assert.equal(inRange.liquidity.positionLiquidity, "1000");
+    assert.equal(inRange.liquidity.poolLiquidity, "1000");
 
     const below = extractFeatures(
       basePosition(),
@@ -247,6 +251,8 @@ describe("features", () => {
     assert.equal(above.range.status, "above_range");
     assert.equal(above.range.inRange, false);
     assert.equal(above.range.distanceToUpper, 0);
+    assert.equal(above.range.nearestBoundaryDistance, 0);
+    assert.equal(above.range.nearestBoundary, "upper");
   });
 
   it("uses timestamp windows and never treats sparse ticks as zero volatility", () => {
@@ -466,7 +472,7 @@ describe("features", () => {
 
   it("computes sufficient tick proxies and keeps token volumes separate", () => {
     const hours = [];
-    // 6 observations across 24h (every 4h) for 24h vol minimum
+    // 6 observations across 24h (every 4h) → span 20h >= 12h min
     for (let i = 0; i < MIN_TICK_SAMPLES_24H; i++) {
       hours.push(
         hour(NOW - (i + 1) * 4 * 3600, {
@@ -481,10 +487,10 @@ describe("features", () => {
         }),
       );
     }
-    // Extra dense samples in the last 6h so 6h vol is sufficient
+    // 3 samples in last 6h spanning 2h (3600*2) for 6h vol sufficiency
     for (let i = 0; i < MIN_TICK_SAMPLES_6H; i++) {
       hours.push(
-        hour(NOW - (i + 1) * 1800, {
+        hour(NOW - (i + 1) * 3600, {
           tick: String(50 + i),
           txCount: "1",
           volumeUSD: "1",
@@ -500,10 +506,166 @@ describe("features", () => {
     const f = extractFeatures(basePosition(), baseMarket({ hourData: hours }));
     assert.equal(f.volatility.tickProxy24h.sufficient, true);
     assert.equal(f.volatility.tickProxy6h.sufficient, true);
+    assert.ok(f.volatility.tickProxy6h.observationSpanSeconds >= 7200);
     assert.notEqual(f.volatility.tickProxy24h.tickMovement.value, null);
-    assert.equal(f.volumes.token0_6h.value, f.volumes.token1_6h.value * (3 / 7));
     assert.equal(f.volumes.token0_6h.value / 3, f.volumes.token1_6h.value / 7);
     assert.notEqual(f.volumes.token0_6h.value, f.volumes.token1_6h.value);
     assert.match(f.volumes.note, /never added/);
+  });
+
+  it("rejects missing or non-array market.hourData", () => {
+    assert.throws(
+      () => extractFeatures(basePosition(), { ...baseMarket(), hourData: null }),
+      /hourData must be a present array/,
+    );
+    assert.throws(
+      () =>
+        extractFeatures(basePosition(), { ...baseMarket(), hourData: undefined }),
+      /hourData must be a present array/,
+    );
+  });
+
+  it("returns null for partial aggregates instead of incomplete sums", () => {
+    const hours = [
+      hour(NOW - 3600, { volumeToken0: "1", txCount: "1" }),
+      hour(NOW - 7200, { volumeToken0: undefined, txCount: "1" }),
+    ];
+    // rebuild without volumeToken0 on second row
+    hours[1] = {
+      ...hours[1],
+    };
+    delete hours[1].volumeToken0;
+
+    const f = extractFeatures(basePosition(), baseMarket({ hourData: hours }));
+    assert.equal(f.volumes.token0_6h.value, null);
+    assert.match(f.volumes.token0_6h.reason, /missing_volumeToken0/);
+    assert.ok(f.missingInputFlags.includes("null:volumes.token0_6h"));
+  });
+
+  it("rejects negative or non-finite aggregate inputs", () => {
+    const f = extractFeatures(
+      basePosition(),
+      baseMarket({
+        hourData: [
+          hour(NOW - 3600, { txCount: "-1", volumeToken0: "1", volumeToken1: "1" }),
+        ],
+      }),
+    );
+    assert.equal(f.activity.txCountSum6h.value, null);
+    assert.match(f.activity.txCountSum6h.reason, /negative/);
+  });
+
+  it("USD gate fails closed on missing, negative, inconsistent, or fees>volume evidence", () => {
+    assert.equal(
+      assessUsdDataUsable(
+        {
+          volumeUSD: undefined,
+          feesUSD: "1",
+          totalValueLockedUSD: "10",
+          volumeToken0: "0",
+          volumeToken1: "0",
+          totalValueLockedToken0: "0",
+          totalValueLockedToken1: "0",
+        },
+        [],
+      ).usable,
+      false,
+    );
+    assert.equal(
+      assessUsdDataUsable(
+        {
+          volumeUSD: "-1",
+          feesUSD: "1",
+          totalValueLockedUSD: "10",
+          volumeToken0: "0",
+          volumeToken1: "0",
+          totalValueLockedToken0: "0",
+          totalValueLockedToken1: "0",
+        },
+        [],
+      ).usable,
+      false,
+    );
+    assert.equal(
+      assessUsdDataUsable(
+        {
+          volumeUSD: "1",
+          feesUSD: "5",
+          totalValueLockedUSD: "10",
+          volumeToken0: "0",
+          volumeToken1: "0",
+          totalValueLockedToken0: "0",
+          totalValueLockedToken1: "0",
+        },
+        [],
+      ).usable,
+      false,
+    );
+    assert.equal(
+      assessUsdDataUsable(
+        {
+          volumeUSD: "10",
+          feesUSD: "1",
+          totalValueLockedUSD: "0",
+          volumeToken0: "0",
+          volumeToken1: "0",
+          totalValueLockedToken0: "5",
+          totalValueLockedToken1: "0",
+        },
+        [],
+      ).usable,
+      false,
+    );
+  });
+
+  it("keeps adjacent 6h windows non-overlapping at the boundary", () => {
+    const boundary = NOW - 6 * 3600;
+    const hours = [
+      hour(boundary, { tick: "1", txCount: "9", volumeToken0: "1", volumeToken1: "1", volumeUSD: "1", feesUSD: "0.01", tvlUSD: "10", liquidity: "1" }),
+      hour(boundary - 3600, { tick: "2", txCount: "1", volumeToken0: "1", volumeToken1: "1", volumeUSD: "1", feesUSD: "0.01", tvlUSD: "10", liquidity: "1" }),
+      hour(NOW - 3600, { tick: "3", txCount: "1", volumeToken0: "1", volumeToken1: "1", volumeUSD: "1", feesUSD: "0.01", tvlUSD: "10", liquidity: "1" }),
+    ];
+    const f = extractFeatures(basePosition(), baseMarket({ hourData: hours }));
+    assert.equal(f.windows.h6.includeEnd, true);
+    assert.equal(f.windows.prev6h.includeEnd, false);
+    // Boundary row counted in current 6h activity (txCount 9), not prev
+    assert.equal(f.activity.txCountSum6h.value, 10); // 9 + 1
+    assert.equal(f.volumes.token0_prev6h.value, 1); // only boundary-3600
+  });
+
+  it("requires unique timestamps and min observation span for sufficient volatility", () => {
+    const dup = extractFeatures(
+      basePosition(),
+      baseMarket({
+        hourData: [
+          hour(NOW - 3600, { tick: "1", txCount: "1" }),
+          hour(NOW - 3600, { tick: "2", txCount: "1", id: "dup" }),
+          hour(NOW - 7200, { tick: "3", txCount: "1" }),
+        ],
+      }),
+    );
+    assert.equal(dup.volatility.tickProxy6h.sufficient, false);
+    assert.match(
+      dup.volatility.tickProxy6h.reason,
+      /duplicate_periodStartUnix/,
+    );
+
+    const shortSpan = extractFeatures(
+      basePosition(),
+      baseMarket({
+        hourData: [
+          hour(NOW - 100, { tick: "1", txCount: "1" }),
+          hour(NOW - 200, { tick: "2", txCount: "1" }),
+          hour(NOW - 300, { tick: "3", txCount: "1" }),
+        ],
+      }),
+    );
+    assert.equal(shortSpan.volatility.tickProxy6h.sufficient, false);
+    assert.match(shortSpan.volatility.tickProxy6h.reason, /insufficient_tick_span/);
+    assert.equal(shortSpan.volatility.tickProxy6h.sampleCount, 3);
+    assert.ok(
+      shortSpan.volatility.tickProxy6h.observationSpanSeconds <
+        shortSpan.volatility.tickProxy6h.minSpanSeconds,
+    );
   });
 });
