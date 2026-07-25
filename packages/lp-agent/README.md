@@ -88,7 +88,7 @@ Activity intensity uses summed `PoolHourData.txCount` — sampled swap row count
 
 ## Orloj MCP tools (external HTTP)
 
-`POST <ORLOJ_MCP_URL>` with `Authorization: Bearer <ORLOJ_MCP_API_KEY>` and JSON-RPC `tools/call`:
+`POST <ORLOJ_MCP_URL>` with `Authorization: Bearer <ORLOJ_AGENT_BEARER_TOKEN>` and JSON-RPC `tools/call`:
 
 - `get_v3_position` — read position (Phase 1 uses this)
 - `decrease_v3_position` — proposed on `REDUCE_LIQUIDITY` (also collects accrued fees; returned amounts are withdrawn principal only)

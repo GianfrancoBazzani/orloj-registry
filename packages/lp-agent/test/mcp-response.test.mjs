@@ -19,7 +19,7 @@ import {
 
 const validEnv = {
   ORLOJ_MCP_URL: "http://127.0.0.1:3001/interface/uniswap/mcp",
-  ORLOJ_MCP_API_KEY: "mcpk_live_test_secret",
+  ORLOJ_AGENT_BEARER_TOKEN: "mcpk_live_test_secret",
   THE_GRAPH_API_KEY: "graph_test_secret",
   AI_CHAT_COMPLETIONS_URL: "https://example.com/v1/chat/completions",
   AI_API_KEY: "ai_test_secret",
@@ -73,7 +73,7 @@ describe("config", () => {
     try {
       loadConfig({
         ORLOJ_MCP_URL: "http://example",
-        ORLOJ_MCP_API_KEY: "super-secret-key",
+        ORLOJ_AGENT_BEARER_TOKEN: "super-secret-key",
         AGENT_MODE: "observe",
       });
     } catch (e) {

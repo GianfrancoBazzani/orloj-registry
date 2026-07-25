@@ -71,7 +71,7 @@ export function loadConfig(env = process.env) {
   };
 
   const orlojMcpUrl = requireString("ORLOJ_MCP_URL");
-  const orlojMcpApiKey = requireString("ORLOJ_MCP_API_KEY");
+  const orlojMcpApiKey = requireString("ORLOJ_AGENT_BEARER_TOKEN");
   const theGraphApiKey = requireString("THE_GRAPH_API_KEY");
   const aiChatCompletionsUrl = requireString("AI_CHAT_COMPLETIONS_URL");
   const aiApiKey = requireString("AI_API_KEY");
