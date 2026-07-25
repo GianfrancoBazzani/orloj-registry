@@ -7,6 +7,7 @@ import {
   DEFAULT_SUBGRAPH_ID,
   DEFAULT_CHAIN_ID,
   PHASE1_ACTIONS,
+  toSubgraphPoolId,
 } from "../src/index.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -20,6 +21,7 @@ describe("lp-agent scaffold", () => {
     assert.equal(DEFAULT_CHAIN_ID, "11155111");
     assert.deepEqual([...PHASE1_ACTIONS], ["HOLD", "REDUCE_LIQUIDITY"]);
     assert.ok(!PHASE1_ACTIONS.includes("CLAIM_FEES"));
+    assert.equal(toSubgraphPoolId("0xAbC"), "0xabc");
   });
 
   it("declares zero runtime dependencies", () => {
