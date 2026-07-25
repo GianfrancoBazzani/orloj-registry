@@ -21,7 +21,19 @@ export {
   DEFAULT_HOUR_LOOKBACK_SECONDS,
   DEFAULT_SWAP_LOOKBACK_SECONDS,
 } from "./graph-client.mjs";
-export { PHASE1_ACTIONS, validateDecision } from "./decision-schema.mjs";
+export {
+  PHASE1_ACTIONS,
+  MIN_REDUCE_SIGNALS,
+  featurePathExists,
+  validateDecision,
+} from "./decision-schema.mjs";
+export {
+  DEFAULT_AI_TIMEOUT_MS,
+  buildDecisionMessages,
+  extractChatCompletionJsonText,
+  pairContextFromMarket,
+  requestDecision,
+} from "./decision-client.mjs";
 export { planAction } from "./action-planner.mjs";
 export {
   extractFeatures,
