@@ -485,6 +485,84 @@ describe("mcp-response", () => {
     );
   });
 
+  it("resolveManagedNftTokenId requires truncated=false, count=1, totalOwned=1, length=1", async () => {
+    const client = {
+      url: "http://mcp.test/mcp",
+      apiKey: "k",
+      fetchImpl: async () => {
+        throw new Error("unused");
+      },
+    };
+    const cfg = { chainId: "11155111", nftTokenId: null };
+
+    // Truncated even with one row shown
+    await assert.rejects(
+      () =>
+        resolveManagedNftTokenId(client, cfg, {
+          listPositions: async () => ({
+            count: 1,
+            totalOwned: 3,
+            truncated: true,
+            positions: [{ nftTokenId: "42" }],
+          }),
+        }),
+      /exactly one owned position/,
+    );
+
+    // count disagrees with positions.length
+    await assert.rejects(
+      () =>
+        resolveManagedNftTokenId(client, cfg, {
+          listPositions: async () => ({
+            count: 2,
+            totalOwned: 1,
+            truncated: false,
+            positions: [{ nftTokenId: "42" }],
+          }),
+        }),
+      /exactly one owned position/,
+    );
+
+    // totalOwned disagrees
+    await assert.rejects(
+      () =>
+        resolveManagedNftTokenId(client, cfg, {
+          listPositions: async () => ({
+            count: 1,
+            totalOwned: 2,
+            truncated: false,
+            positions: [{ nftTokenId: "42" }],
+          }),
+        }),
+      /exactly one owned position/,
+    );
+
+    // Missing metadata fields
+    await assert.rejects(
+      () =>
+        resolveManagedNftTokenId(client, cfg, {
+          listPositions: async () => ({
+            positions: [{ nftTokenId: "42" }],
+          }),
+        }),
+      /exactly one owned position/,
+    );
+
+    // Malformed nftTokenId despite clean metadata
+    await assert.rejects(
+      () =>
+        resolveManagedNftTokenId(client, cfg, {
+          listPositions: async () => ({
+            count: 1,
+            totalOwned: 1,
+            truncated: false,
+            positions: [{ nftTokenId: "0xabc" }],
+          }),
+        }),
+      /nftTokenId is missing or malformed/,
+    );
+  });
+
   it("get_v3_pool_state posts poolAddress", async () => {
     let body;
     await getV3PoolState(

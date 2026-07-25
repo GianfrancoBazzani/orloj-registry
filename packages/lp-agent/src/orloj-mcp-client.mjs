@@ -602,21 +602,31 @@ export async function resolveManagedNftTokenId(client, config, deps = {}) {
 
   const listFn = deps.listPositions ?? listV3Positions;
   const listed = await listFn(client, { chainId: config.chainId });
-  const positions = listed.positions ?? [];
-  if (positions.length === 0) {
+  const positions = listed.positions;
+  const truncated = listed.truncated;
+  const count = listed.count;
+  const totalOwned = listed.totalOwned;
+
+  const metadataOk =
+    truncated === false &&
+    Array.isArray(positions) &&
+    positions.length === 1 &&
+    count === 1 &&
+    totalOwned === 1;
+
+  if (!metadataOk) {
     throw new Error(
-      "NFT_TOKEN_ID is unset and list_v3_positions returned no positions — set NFT_TOKEN_ID or open a position first",
+      "NFT_TOKEN_ID is unset and list_v3_positions does not report exactly one owned position " +
+        `(truncated=${JSON.stringify(truncated)}, positions.length=${Array.isArray(positions) ? positions.length : "n/a"}, ` +
+        `count=${JSON.stringify(count)}, totalOwned=${JSON.stringify(totalOwned)}) — set NFT_TOKEN_ID explicitly`,
     );
   }
-  if (positions.length !== 1 || listed.truncated === true) {
-    throw new Error(
-      `NFT_TOKEN_ID is unset but wallet owns ${listed.totalOwned ?? positions.length} position(s)` +
-        `${listed.truncated ? " (list truncated)" : ""} — set NFT_TOKEN_ID explicitly`,
-    );
-  }
+
   const id = positions[0]?.nftTokenId;
   if (typeof id !== "string" || !UNSIGNED_DECIMAL_RE.test(id)) {
-    throw new Error("list_v3_positions[0].nftTokenId is missing or malformed");
+    throw new Error(
+      "list_v3_positions reports one position but nftTokenId is missing or malformed — set NFT_TOKEN_ID explicitly",
+    );
   }
   return { nftTokenId: id, source: "list_v3_positions" };
 }

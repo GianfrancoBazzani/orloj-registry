@@ -109,74 +109,10 @@ export async function runOnce(deps = {}) {
     chainId: position.chainId ?? config.chainId,
   });
 
-  /** @type {Record<string, unknown>} */
-  let execution;
-  if (plan.kind === "no_write" || plan.mcpCall === null) {
-    // HOLD: never write — even in execute mode.
-    execution = {
-      status: config.agentMode === "execute" ? "held" : "observe",
-      kind: "no_write",
-      mode: config.agentMode,
-      message:
-        config.agentMode === "execute"
-          ? "HOLD — no write planned; nothing executed"
-          : "Dry-run complete — HOLD; no MCP write performed",
-      proposedCall: null,
-      wouldCall: null,
-      called: null,
-      mcpResponse: null,
-    };
-  } else if (config.agentMode === "execute") {
-    // Phase 2: actually call decrease_v3_position exactly once with plan args.
-    let mcpResponse;
-    try {
-      mcpResponse = await decreasePosition(mcpClient, {
-        chainId: plan.mcpCall.arguments.chainId,
-        nftTokenId: plan.mcpCall.arguments.nftTokenId,
-        liquidityPercentageToDecrease:
-          plan.mcpCall.arguments.liquidityPercentageToDecrease,
-      });
-    } catch (err) {
-      const raw = err instanceof Error ? err.message : String(err);
-      const message = redactSecrets(raw, config.orlojMcpApiKey);
-      // Fail closed — do not downgrade to observe.
-      const failure = new Error(`execute decrease_v3_position failed: ${message}`);
-      /** @type {any} */ (failure).execution = {
-        status: "failed",
-        kind: "proposed_write",
-        mode: "execute",
-        message: `MCP write failed: ${message}`,
-        called: plan.mcpCall,
-        mcpResponse: null,
-        error: message,
-      };
-      throw failure;
-    }
-
-    execution = {
-      status: "executed",
-      kind: "proposed_write",
-      mode: "execute",
-      message: "decrease_v3_position executed via Orloj MCP",
-      called: plan.mcpCall,
-      mcpResponse,
-    };
-  } else {
-    execution = {
-      status: "observe",
-      kind: "proposed_write",
-      mode: "observe",
-      message: "Dry-run complete — no MCP write performed",
-      proposedCall: plan.mcpCall,
-      called: null,
-      mcpResponse: null,
-    };
-  }
-
   const phase = config.agentMode === "execute" ? 2 : 1;
 
-  return {
-    status: "ok",
+  /** Audit envelope shared by success and execute-failure paths. */
+  const baseTrace = {
     phase,
     agentMode: config.agentMode,
     nftResolution: {
@@ -223,6 +159,81 @@ export async function runOnce(deps = {}) {
       graphEvidence: decision.graphEvidence,
     },
     plan,
+  };
+
+  /** @type {Record<string, unknown>} */
+  let execution;
+  if (plan.kind === "no_write" || plan.mcpCall === null) {
+    // HOLD: never write — even in execute mode.
+    execution = {
+      status: config.agentMode === "execute" ? "held" : "observe",
+      kind: "no_write",
+      mode: config.agentMode,
+      message:
+        config.agentMode === "execute"
+          ? "HOLD — no write planned; nothing executed"
+          : "Dry-run complete — HOLD; no MCP write performed",
+      proposedCall: null,
+      wouldCall: null,
+      called: null,
+      mcpResponse: null,
+    };
+  } else if (config.agentMode === "execute") {
+    // Phase 2: actually call decrease_v3_position exactly once with plan args.
+    let mcpResponse;
+    try {
+      mcpResponse = await decreasePosition(mcpClient, {
+        chainId: plan.mcpCall.arguments.chainId,
+        nftTokenId: plan.mcpCall.arguments.nftTokenId,
+        liquidityPercentageToDecrease:
+          plan.mcpCall.arguments.liquidityPercentageToDecrease,
+      });
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      const message = redactSecrets(raw, config.orlojMcpApiKey);
+      const failedExecution = {
+        status: "failed",
+        kind: "proposed_write",
+        mode: "execute",
+        message: `MCP write failed: ${message}`,
+        called: plan.mcpCall,
+        mcpResponse: null,
+        error: message,
+      };
+      // Fail closed — full audit-complete trace (not observe downgrade).
+      const failure = new Error(`execute decrease_v3_position failed: ${message}`);
+      /** @type {any} */ (failure).auditTrace = {
+        status: "error",
+        ...baseTrace,
+        execution: failedExecution,
+      };
+      /** @type {any} */ (failure).execution = failedExecution;
+      throw failure;
+    }
+
+    execution = {
+      status: "executed",
+      kind: "proposed_write",
+      mode: "execute",
+      message: "decrease_v3_position executed via Orloj MCP",
+      called: plan.mcpCall,
+      mcpResponse,
+    };
+  } else {
+    execution = {
+      status: "observe",
+      kind: "proposed_write",
+      mode: "observe",
+      message: "Dry-run complete — no MCP write performed",
+      proposedCall: plan.mcpCall,
+      called: null,
+      mcpResponse: null,
+    };
+  }
+
+  return {
+    status: "ok",
+    ...baseTrace,
     execution,
   };
 }
@@ -233,16 +244,18 @@ async function main() {
     console.log(JSON.stringify(trace, null, 2));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    /** @type {Record<string, unknown>} */
-    const payload = {
-      status: "error",
-      phase: 2,
-      message,
-    };
-    if (err && typeof err === "object" && "execution" in err) {
-      payload.execution = /** @type {any} */ (err).execution;
+    if (err && typeof err === "object" && "auditTrace" in err) {
+      // Audit-complete failed execute: full envelope already built.
+      console.error(JSON.stringify(/** @type {any} */ (err).auditTrace, null, 2));
+    } else {
+      console.error(
+        JSON.stringify({
+          status: "error",
+          phase: 2,
+          message,
+        }),
+      );
     }
-    console.error(JSON.stringify(payload));
     process.exitCode = 1;
   }
 }

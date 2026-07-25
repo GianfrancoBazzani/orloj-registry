@@ -265,7 +265,7 @@ describe("run-once pipeline", () => {
     assert.deepEqual(trace.execution.mcpResponse, mcpPayload);
   });
 
-  it("execute mode surfaces MCP failure and does not downgrade to observe", async () => {
+  it("execute mode surfaces MCP failure with full audit-complete trace", async () => {
     await assert.rejects(
       () =>
         runOnce({
@@ -281,9 +281,19 @@ describe("run-once pipeline", () => {
       (err) => {
         assert.match(String(err.message), /execute decrease_v3_position failed/);
         assert.match(String(err.message), /insufficient liquidity/);
-        assert.equal(/** @type {any} */ (err).execution?.status, "failed");
-        assert.equal(/** @type {any} */ (err).execution?.mode, "execute");
-        assert.notEqual(/** @type {any} */ (err).execution?.status, "observe");
+        const trace = /** @type {any} */ (err).auditTrace;
+        assert.ok(trace, "auditTrace must be attached");
+        assert.equal(trace.status, "error");
+        assert.equal(trace.phase, 2);
+        assert.equal(trace.agentMode, "execute");
+        assert.equal(trace.position.nftTokenId, "7");
+        assert.equal(trace.graph.subgraphId, CONFIG.subgraphId);
+        assert.equal(trace.decision.action, "REDUCE_LIQUIDITY");
+        assert.equal(trace.plan.mcpCall.toolName, "decrease_v3_position");
+        assert.equal(trace.execution.status, "failed");
+        assert.equal(trace.execution.mode, "execute");
+        assert.match(trace.execution.error, /insufficient liquidity/);
+        assert.notEqual(trace.execution.status, "observe");
         return true;
       },
     );
