@@ -27,6 +27,12 @@ src/
     mod.rs
     evm_mcp.rs             # EvmMcpServer<P>: list_tools, call_tool, dispatch (JSON-RPC), build_tools
     native_mcp.rs          # NativeMcpServer: balanceOf, transfer for native currency
+    uniswap/
+      mod.rs               # UniswapMcpServer: tool list, dispatch, ServerHandler, INSTRUCTIONS
+      common.rs            # arg parsing, Trading API base URL, wait_for_receipt
+      permit2.rs           # Permit2 EIP-712 digest + vault-backed digest signing
+      trading.rs           # Trading API: quote, swap, supported_networks
+      lp.rs                # Liquidity API + on-chain V3 reads: get/create/decrease/claim
   vault/
     mod.rs
     sign_transaction.rs    # sign_transaction(): Orbitport KMS path + 1Claw path, oneclaw_bearer_token
@@ -72,6 +78,39 @@ cargo check                          # fast type-check without linking
 `db::DbPool::resolve_vault(agent_id)` (with in-memory cache):
 1. **Orbitport** — `orbitport_grant JOIN orbitport_vault WHERE agent_id = $1`. If found: build EIP-1559 tx, send digest to Orbitport KMS (`/kms/sign`), reassemble `r/s/yParity` from the 65-byte response.
 2. **1Claw** — `agent_ownership → user_id → vault_ownership WHERE provider='oneclaw' → vaultId` → `listGrants` → `signingKeyPath` → `secrets.get` → private key → sign locally with alloy `PrivateKeySigner`.
+
+## Uniswap MCP (`mcps/uniswap/`)
+
+Fixed route `/interface/uniswap/mcp`, not registry-backed — no ABI or address to cache, so it's
+rebuilt per request from just the authenticated `agent_id`.
+
+It wraps **two different Uniswap services**, which is the main thing to keep straight:
+
+- **Trading API** (`UNISWAP_API_URL`, default `trade-api.gateway.uniswap.org/v1`) — `quote`,
+  `swap`. Works on any chain in the `networks` table. `trading.rs` + `permit2.rs`.
+- **Liquidity API** (`UNISWAP_LP_API_URL`, default `liquidity.api.uniswap.org`) —
+  `get_v3_position`, `create_v3_position`, `decrease_v3_position`, `claim_v3_fees`. **Sepolia
+  (11155111) only, Uniswap V3 only.** `lp.rs`.
+
+Both use the same `UNISWAP_API_KEY`.
+
+Sepolia V3 addresses live in one `SEPOLIA_V3` const in `lp.rs`, verified on-chain. Note
+`0x3B5E3c5E595D85fbFBC2a42ECC091e183E76697C` is **not** the position manager (it's a library);
+the real one is `0x1238536071E1c677A632429e3655c799b22cDA52`. A test pins both.
+
+Conventions worth preserving when editing `lp.rs`:
+
+- **Only the documented LP API schema is implemented.** Unrecognised responses fail naming the
+  field, with a bounded excerpt — no fallback branches.
+- **Token pairs are never caller-supplied.** `create_v3_position` derives them from the pool
+  (`read_v3_pool`, which round-trips the pool through the factory); the others derive them from
+  the position NFT. Every LP tool checks `ownerOf` first.
+- **`/lp/create` is called twice** — `simulateTransaction: false` to size the position (allowances
+  may not exist yet), then again with `true` after approvals confirm, for a fresh deadline.
+- **`validate_api_transaction` before signing**, then `eth_call` simulation. Calldata is passed
+  through byte-for-byte, never rewritten.
+- Errors are contexted `stage=<position read|API request|approval|simulation|broadcast|receipt>`;
+  `with_approvals` appends already-broadcast approval hashes to later failures.
 
 ## Auth flow
 

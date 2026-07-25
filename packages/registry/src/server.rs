@@ -27,7 +27,7 @@ use crate::{
     mcps::{
         evm_mcp::{EvmMcpServer, build_tools},
         native_mcp::{NativeMcpServer, build_native_tools, chain_info},
-        uniswap_mcp::UniswapMcpServer,
+        uniswap::UniswapMcpServer,
     },
     registry::{McpEntry, McpMeta, Registry},
     sourcify::fetch_contract,
@@ -482,7 +482,7 @@ async fn handle_mcp(
 /// Fixed route for the chain-agnostic Uniswap MCP — not registry-backed. Unlike EVM contract
 /// and native-token MCPs, it has no ABI/address to fetch or cache (chainId is a per-tool-call
 /// argument instead, and rpc_url is resolved from the `networks` table by chainId — see
-/// mcps/uniswap_mcp.rs), so there's nothing to look up or lazily build: it's always available,
+/// mcps/uniswap/), so there's nothing to look up or lazily build: it's always available,
 /// built fresh per request from just the authenticated agent_id.
 async fn handle_uniswap_mcp(
     State(state): State<SharedState>,
