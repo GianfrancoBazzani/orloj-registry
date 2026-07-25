@@ -77,6 +77,7 @@ api_key = <api key placeholder>
 runtime_profile = "unbounded"
 model_provider = "custom.default"
 risk_profile = "yolo"
+mcp_bundles = ["remote"]
 
 [runtime_profiles]
 
@@ -93,3 +94,6 @@ show_in_response = false
 quickstart_completed = true
 
 [risk_profiles]
+
+[mcp_bundles.remote]
+servers = []
