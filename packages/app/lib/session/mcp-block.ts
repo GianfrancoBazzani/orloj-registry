@@ -55,6 +55,25 @@ const writeAtomic = async (target: string, contents: string): Promise<void> => {
   await rename(tmp, target);
 };
 
+// renderBlock owns `[mcp_bundles.remote]`, so nothing above the marker may declare it too —
+// that is a TOML duplicate key, and zeroclaw answers a malformed config by resetting the WHOLE
+// config to defaults for the run, which drops [agents.default] and fails session/new with
+// `Unknown agent default`. Every config dir provisioned while the template still carried its
+// own `servers = []` stub holds exactly that second copy, so strip it on the way past: those
+// dirs repair themselves on their next start and keep their transcripts and provider key,
+// instead of having to be deleted. Also the one guard against the stub coming back.
+const stripManagedBundle = (head: string): string => {
+  const kept: string[] = [];
+  let dropping = false;
+  for (const line of head.split("\n")) {
+    // Any table header ends the previous table, and `[[mcp.servers]]` counts — otherwise a
+    // stale bundle would swallow every line to the end of the head.
+    if (/^\s*\[/.test(line)) dropping = /^\s*\[mcp_bundles\.remote\]\s*$/.test(line);
+    if (!dropping) kept.push(line);
+  }
+  return kept.join("\n");
+};
+
 export const writeMcpSelection = async (
   dir: string,
   entries: McpServerEntry[],
@@ -63,7 +82,8 @@ export const writeMcpSelection = async (
   const idx = current.indexOf(MANAGED_MARKER);
   // Append-and-truncate, not parse-and-reserialize: everything a human wrote above the
   // marker keeps its bytes and its order, and there is no TOML dependency.
-  const head = idx === -1 ? current.replace(/\s*$/, "\n\n") : current.slice(0, idx);
+  const raw = idx === -1 ? current.replace(/\s*$/, "\n\n") : current.slice(0, idx);
+  const head = stripManagedBundle(raw);
   await writeAtomic(configPath(dir), `${head}${renderBlock(entries)}`);
 
   const selection: McpSelectionItem[] = entries.map((e) => ({
