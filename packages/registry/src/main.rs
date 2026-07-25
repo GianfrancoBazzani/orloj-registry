@@ -40,6 +40,8 @@ async fn main() -> anyhow::Result<()> {
 // TEMPORARY — seeds the `networks` table (used by uniswap_mcp's `swap` to resolve an rpc_url
 // when the caller omits one) with Ethereum Mainnet + Sepolia. Fill in real rpc_url values
 // below, then delete this function and its call site in main() once done.
+//
+// This is for the uniswap mcp for easier use for agents to make requests
 async fn seed_networks(db: &DbPool) -> anyhow::Result<()> {
     db.upsert_network(1, "Ethereum Mainnet", "https://rpc.flashbots.net", "ETH")
         .await?;

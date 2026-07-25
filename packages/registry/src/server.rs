@@ -65,7 +65,6 @@ pub struct RegisterNativeBody {
     rpc_url: Option<String>,
 }
 
-
 // ---------------------------------------------------------------------------
 // Route handlers
 // ---------------------------------------------------------------------------
@@ -467,10 +466,10 @@ async fn handle_mcp(
 /// Requires `Authorization: Bearer <token>`.
 ///
 /// Fixed route for the chain-agnostic Uniswap MCP — not registry-backed. Unlike EVM contract
-/// and native-token MCPs, it has no ABI/address/rpc_url to fetch or cache (chainId and, for
-/// `swap`, rpcUrl are per-tool-call arguments instead — see mcps/uniswap_mcp.rs), so there's
-/// nothing to look up or lazily build: it's always available, built fresh per request from
-/// just the authenticated agent_id.
+/// and native-token MCPs, it has no ABI/address to fetch or cache (chainId is a per-tool-call
+/// argument instead, and rpc_url is resolved from the `networks` table by chainId — see
+/// mcps/uniswap_mcp.rs), so there's nothing to look up or lazily build: it's always available,
+/// built fresh per request from just the authenticated agent_id.
 async fn handle_uniswap_mcp(
     State(state): State<SharedState>,
     headers: HeaderMap,

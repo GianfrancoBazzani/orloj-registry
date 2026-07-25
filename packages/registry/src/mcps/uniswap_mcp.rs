@@ -3,9 +3,9 @@
 //
 // Unlike EvmMcpServer/NativeMcpServer, this server is not bound to a single chain at
 // construction time: `chainId` is a required tool argument on every call so it's never
-// ambiguous which network is targeted. `swap` also needs an rpc_url to sign/broadcast —
-// pass `rpcUrl` explicitly, or omit it and it's looked up from the `networks` table by
-// chainId (db::DbPool::get_network). `supported_networks` lists what's registered there.
+// ambiguous which network is targeted. `swap` needs an rpc_url to sign/broadcast — always
+// resolved from the `networks` table by chainId (db::DbPool::get_network), never accepted
+// as a tool argument. `supported_networks` lists what's registered there.
 //
 // `quote` is a read-only call to Uniswap's /quote endpoint, priced for the authenticated
 // agent's own wallet (resolved via the vault, same as `swap` — no raw keys, no signing).
@@ -36,8 +36,11 @@
 // Env vars:
 //   UNISWAP_API_KEY  – Uniswap Trading API key (required)
 //   UNISWAP_API_URL  – base URL (default: https://trade-api.gateway.uniswap.org/v1)
-//   ONECLAW_API_KEY / ONECLAW_BASE_URL     – needed only if the agent's vault is 1Claw-backed
-//   ORBITPORT_API_URL                      – needed only if the agent's vault is Orbitport-backed
+//   ONECLAW_API_KEY / ONECLAW_BASE_URL                                   – needed only if the
+//     agent's vault is 1Claw-backed (ONECLAW_BASE_URL has a default; ONECLAW_API_KEY doesn't)
+//   ORBITPORT_CLIENT_ID / ORBITPORT_CLIENT_SECRET / ORBITPORT_API_URL    – needed only if the
+//     agent's vault is Orbitport-backed (via orbitport_access_token() in vault::sign_transaction;
+//     CLIENT_ID/CLIENT_SECRET have no defaults, API_URL does)
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -59,7 +62,7 @@ use rmcp::{
 use serde_json::{Map, Value, json};
 
 use crate::{
-    db::{DbPool, VaultInfo},
+    db::{DbPool, NetworkRow, VaultInfo},
     vault::sign_transaction::{
         SignTransactionParams, oneclaw_bearer_token, orbitport_access_token,
         resolve_agent_address, sign_transaction,
@@ -89,7 +92,6 @@ pub struct UniswapMcpServer {
     http: reqwest::Client,
     agent_id: Option<String>,
     db: Option<Arc<DbPool>>,
-    tools: Arc<Vec<Tool>>,
 }
 
 impl UniswapMcpServer {
@@ -98,8 +100,17 @@ impl UniswapMcpServer {
             http: reqwest::Client::new(),
             agent_id,
             db,
-            tools: Arc::new(build_uniswap_tools()),
         }
+    }
+
+    /// Builds the tool list fresh on every call, so `chainId`'s enum (see build_chain_id_prop)
+    /// always reflects the current `networks` table instead of a snapshot taken at construction.
+    async fn tools(&self) -> Vec<Tool> {
+        let networks = match &self.db {
+            Some(db) => db.list_networks().await.unwrap_or_default(),
+            _none => Vec::new(),
+        };
+        build_uniswap_tools(&networks)
     }
 }
 
@@ -107,11 +118,45 @@ impl UniswapMcpServer {
 // Tool list
 // ---------------------------------------------------------------------------
 
-pub fn build_uniswap_tools() -> Vec<Tool> {
-    let chain_id_prop = json!({
-        "type": "integer",
-        "description": "EVM chain ID for both the input and output token (e.g. 1 = Ethereum Mainnet, 137 = Polygon, 8453 = Base, 42161 = Arbitrum One). Required on every call so the swap is never ambiguous about which network it targets."
-    });
+/// `chainId` property schema. `type: "string"` (not "integer") is deliberate: MCP Inspector
+/// (and other client UIs) only render `enum` as a dropdown for string-typed properties — the
+/// `type` property (EXACT_INPUT/EXACT_OUTPUT) already relies on the same thing. Values still
+/// parse as chain IDs on our side regardless of whether a client sends a JSON string or number
+/// (see parse_chain_id_arg) — our own arg parsing doesn't enforce the enum either way, so a
+/// chainId outside the list still works if a client lets you send one.
+fn build_chain_id_prop(networks: &[NetworkRow]) -> Value {
+    if networks.is_empty() {
+        return json!({
+            "type": "string",
+            "description": "EVM chain ID (as a string, e.g. \"1\") for both the input and output token. Required on every call so the swap is never ambiguous about which network it targets."
+        });
+    }
+
+    let mut sorted: Vec<&NetworkRow> = networks.iter().collect();
+    sorted.sort_by_key(|n| n.chain_id);
+
+    let registered = sorted
+        .iter()
+        .map(|n| format!("{} = {}", n.chain_id, n.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    json!({
+        "type": "string",
+        "enum": sorted.iter().map(|n| n.chain_id.to_string()).collect::<Vec<_>>(),
+        "description": format!(
+            "EVM chain ID (as a string) for both the input and output token. Required on every \
+             call so the swap is never ambiguous about which network it targets. Registered \
+             networks — `swap` needs its chainId to be one of these, since that's how it \
+             resolves an RPC endpoint: {registered} (call `supported_networks` for the live \
+             list). `quote` isn't limited to these; any Uniswap-supported chainId works there \
+             too, since it never touches an RPC."
+        ),
+    })
+}
+
+pub fn build_uniswap_tools(networks: &[NetworkRow]) -> Vec<Tool> {
+    let chain_id_prop = build_chain_id_prop(networks);
     let token_in_prop = json!({
         "type": "string",
         "description": "Input token address (0x-prefixed 20-byte hex) on `chainId`. Use 0x0000000000000000000000000000000000000000 for the chain's native currency (ETH, MATIC, BNB, ...)."
@@ -164,17 +209,10 @@ pub fn build_uniswap_tools() -> Vec<Tool> {
 
     let swap = Tool::new(
         "swap".to_string(),
-        "Execute a Uniswap swap on behalf of the authenticated agent — fully automatic, no separate approval call needed. Resolves the agent's own wallet, gets a quote, transparently handles both Permit2 layers if required (on-chain ERC-20→Permit2 approval, signed off-chain via the vault if the token needs it — waits for it to confirm; then the per-swap Permit2 EIP-712 signature, also signed via the vault), then signs and broadcasts the swap transaction.".to_string(),
+        "Execute a Uniswap swap on behalf of the authenticated agent — fully automatic, no separate approval call needed. The RPC endpoint is resolved from `chainId` via the `networks` table (see supported_networks), so only registered chains work here. Resolves the agent's own wallet, gets a quote, transparently handles both Permit2 layers if required (on-chain ERC-20→Permit2 approval, signed off-chain via the vault if the token needs it — waits for it to confirm; then the per-swap Permit2 EIP-712 signature, also signed via the vault), then signs and broadcasts the swap transaction.".to_string(),
         {
             let mut props = Map::new();
             props.insert("chainId".to_string(), chain_id_prop);
-            props.insert(
-                "rpcUrl".to_string(),
-                json!({
-                    "type": "string",
-                    "description": "HTTPS or WSS RPC endpoint for `chainId`, used to sign and broadcast the swap (and, if needed, the Permit2 approval) transaction. Optional — if omitted, looked up from the `networks` table by chainId (call `supported_networks` to see what's registered). Required if that chain isn't registered there."
-                }),
-            );
             props.insert("tokenIn".to_string(), token_in_prop);
             props.insert("tokenOut".to_string(), token_out_prop);
             props.insert("amount".to_string(), amount_prop);
@@ -205,7 +243,7 @@ pub fn build_uniswap_tools() -> Vec<Tool> {
 
     let supported_networks = Tool::new(
         "supported_networks".to_string(),
-        "List the chainIds this registry has a network config for (name + chainId), so an agent can check what's available before calling `swap` without an explicit rpcUrl.".to_string(),
+        "List the chainIds this registry has a network config for (name + chainId). `swap` only works on these — its rpc_url is always resolved from this table, never passed as an argument.".to_string(),
         {
             let mut schema = Map::new();
             schema.insert("type".to_string(), Value::String("object".to_string()));
@@ -230,6 +268,17 @@ fn parse_flexible_u256(s: &str) -> Result<U256> {
     match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
         Some(hex) => U256::from_str_radix(hex, 16).context("invalid hex value in transaction"),
         _none => U256::from_str_radix(s, 10).context("invalid decimal value in transaction"),
+    }
+}
+
+/// Reads `chainId` as either a JSON string (what the tool schema now advertises, so enum
+/// dropdowns render in clients like MCP Inspector) or a JSON number (still accepted, in case
+/// a client sends one despite the schema).
+fn parse_chain_id_arg(args: &Map<String, Value>) -> Option<u64> {
+    match args.get("chainId") {
+        Some(Value::String(s)) => s.parse().ok(),
+        Some(v) => v.as_u64(),
+        _none => None,
     }
 }
 
@@ -714,10 +763,8 @@ impl UniswapMcpServer {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("quote requires a database connection"))?;
 
-        let chain_id = args
-            .get("chainId")
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| anyhow::anyhow!("missing 'chainId' argument"))?;
+        let chain_id = parse_chain_id_arg(args)
+            .ok_or_else(|| anyhow::anyhow!("missing or invalid 'chainId' argument"))?;
         let token_in = args
             .get("tokenIn")
             .and_then(|v| v.as_str())
@@ -752,8 +799,8 @@ impl UniswapMcpServer {
         Ok(quote.to_string())
     }
 
-    /// Lists the `networks` table's rows as { chainId, name } pairs — the chains `swap`
-    /// can resolve an rpcUrl for automatically, without the caller passing one.
+    /// Lists the `networks` table's rows as { chainId, name } pairs — the only chains
+    /// `swap` can act on, since it always resolves rpc_url from this table by chainId.
     async fn handle_supported_networks(&self) -> Result<String> {
         let db = self
             .db
@@ -780,27 +827,21 @@ impl UniswapMcpServer {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("swap requires a database connection"))?;
 
-        let chain_id = args
-            .get("chainId")
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| anyhow::anyhow!("missing 'chainId' argument"))?;
+        let chain_id = parse_chain_id_arg(args)
+            .ok_or_else(|| anyhow::anyhow!("missing or invalid 'chainId' argument"))?;
 
-        // rpcUrl is optional — fall back to the `networks` directory by chainId when omitted.
-        let rpc_url: String = match args.get("rpcUrl").and_then(|v| v.as_str()) {
-            Some(url) => url.to_string(),
-            _none => db
-                .get_network(chain_id)
-                .await
-                .context("looking up network config failed")?
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "no 'rpcUrl' argument and no network registered for chainId {chain_id} \
-                         — pass rpcUrl explicitly, or check `supported_networks` for what's \
-                         already registered"
-                    )
-                })?
-                .rpc_url,
-        };
+        // rpc_url is always resolved from the `networks` table by chainId — not a tool argument.
+        let rpc_url = db
+            .get_network(chain_id)
+            .await
+            .context("looking up network config failed")?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no network registered for chainId {chain_id} — check `supported_networks` \
+                     for what's currently registered"
+                )
+            })?
+            .rpc_url;
         let rpc_url = rpc_url.as_str();
 
         let token_in = args
@@ -953,12 +994,12 @@ impl UniswapMcpServer {
                         "name": "uniswap-mcp",
                         "version": "1.0.0",
                     },
-                    "instructions": "Chain-agnostic Uniswap swaps. Every call takes an explicit chainId so token addresses are never ambiguous across networks. quote and swap act on the authenticated agent's own wallet, resolved automatically from its vault — you never supply a wallet/swapper address. supported_networks() lists the chainIds with a registered rpc_url (name + chainId). quote(chainId, tokenIn, tokenOut, amount, type?, slippageTolerance?) returns pricing and routing with no side effects. swap(chainId, tokenIn, tokenOut, amount, rpcUrl?, type?, slippageTolerance?) fetches a quote, transparently handles Permit2 approval/signing if needed, and signs + broadcasts the swap automatically — you do not provide private keys or manage nonces/gas yourself. rpcUrl is optional if the chain is already registered (see supported_networks).",
+                    "instructions": "Chain-agnostic Uniswap swaps. Every call takes an explicit chainId so token addresses are never ambiguous across networks. quote and swap act on the authenticated agent's own wallet, resolved automatically from its vault — you never supply a wallet/swapper address. supported_networks() lists the chainIds registered with an rpc_url (name + chainId) — swap only works on these. quote(chainId, tokenIn, tokenOut, amount, type?, slippageTolerance?) returns pricing and routing for any Uniswap-supported chain, with no side effects. swap(chainId, tokenIn, tokenOut, amount, type?, slippageTolerance?) resolves rpc_url from chainId automatically, fetches a quote, transparently handles Permit2 approval/signing if needed, and signs + broadcasts the swap — you do not provide private keys, an rpc_url, or manage nonces/gas yourself.",
                 }),
             ),
             "notifications/initialized" | "notifications/cancelled" => Value::Null,
             "ping" => json_rpc_ok(id, json!({})),
-            "tools/list" => json_rpc_ok(id, json!({ "tools": &*self.tools })),
+            "tools/list" => json_rpc_ok(id, json!({ "tools": self.tools().await })),
             "tools/call" => {
                 let tool_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
                 let args: Map<String, Value> = params
@@ -1015,12 +1056,15 @@ impl ServerHandler for UniswapMcpServer {
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             instructions: Some(
                 "Chain-agnostic Uniswap swaps. Every call takes an explicit chainId so token \
-                 addresses are never ambiguous across networks. Both tools act on the \
+                 addresses are never ambiguous across networks. quote and swap act on the \
                  authenticated agent's own wallet, resolved automatically from its vault — you \
-                 never supply a wallet/swapper address. quote(...) returns pricing and routing \
-                 with no side effects. swap(...) fetches a quote, transparently handles Permit2 \
-                 approval/signing if needed, and signs + broadcasts the swap automatically — you \
-                 do not provide private keys or manage nonces/gas yourself."
+                 never supply a wallet/swapper address. supported_networks() lists the chainIds \
+                 registered with an rpc_url (name + chainId) — swap only works on these. \
+                 quote(...) returns pricing and routing for any Uniswap-supported chain, with no \
+                 side effects. swap(...) resolves rpc_url from chainId automatically, fetches a \
+                 quote, transparently handles Permit2 approval/signing if needed, and signs + \
+                 broadcasts the swap — you do not provide private keys, an rpc_url, or manage \
+                 nonces/gas yourself."
                     .to_string(),
             ),
             ..Default::default()
@@ -1033,7 +1077,7 @@ impl ServerHandler for UniswapMcpServer {
         _ctx: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
         Ok(ListToolsResult {
-            tools: self.tools.as_ref().clone(),
+            tools: self.tools().await,
             ..Default::default()
         })
     }
