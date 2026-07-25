@@ -1068,8 +1068,31 @@ pub(super) fn build_uniswap_lp_tools() -> Vec<Tool> {
                     "tickLower",
                     json!({
                         "type": "integer",
-                        "description": "Lower tick of the position's price range. Must be less than \
-                                        tickUpper and a multiple of the pool's tick spacing."
+                        "description": "Lower tick of the position's price range. Ticks are a \
+                                        LOG-SCALE price coordinate, not a linear offset or a \
+                                        percentage: raw price (token1's smallest unit per token0's \
+                                        smallest unit) = 1.0001^tick. This is unrelated to the \
+                                        tokens' human decimals, so small integers like 1000-2000 do \
+                                        NOT mean 'near the current price' — for most real pools the \
+                                        current tick is a large number (tens or hundreds of \
+                                        thousands, positive or negative). Must be less than \
+                                        tickUpper and an exact multiple of the pool's tick spacing \
+                                        (standard V3 fee tiers: 1 for 0.01% fee, 10 for 0.05%, 60 \
+                                        for 0.3%, 200 for 1% — confirm against the pool itself, \
+                                        since nonstandard tiers exist). \
+                                        CRITICAL: this tool has no way to tell you the pool's \
+                                        current tick, so you must determine it yourself before \
+                                        picking bounds — eth_call the pool's slot0() (returns \
+                                        sqrtPriceX96 and tick as its first two return values) or \
+                                        tickLower/tickUpper of an existing position via \
+                                        get_v3_position. A range that does not bracket the current \
+                                        tick silently creates a one-sided position (all of one \
+                                        token, none of the other): if the current tick is above \
+                                        tickUpper the position needs zero token0, if it's below \
+                                        tickLower it needs zero token1 — supplying \
+                                        independentTokenAddress as the zero side is a mismatch that \
+                                        will fail simulation with an unhelpful bare revert rather \
+                                        than a clear error."
                     }),
                 ),
                 (
@@ -1077,7 +1100,11 @@ pub(super) fn build_uniswap_lp_tools() -> Vec<Tool> {
                     json!({
                         "type": "integer",
                         "description": "Upper tick of the position's price range. Must be greater \
-                                        than tickLower and a multiple of the pool's tick spacing."
+                                        than tickLower and a multiple of the pool's tick spacing. \
+                                        See tickLower's description — ticks are log-scale \
+                                        (price = 1.0001^tick) and this range must bracket the \
+                                        pool's actual current tick, which you need to look up \
+                                        on-chain (pool.slot0()) before calling this tool."
                     }),
                 ),
                 ("slippageTolerance", slippage_prop()),
