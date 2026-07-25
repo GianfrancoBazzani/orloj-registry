@@ -5,9 +5,10 @@ package:
   version: v0.1.0
   description: |
     Onchain market sentiment source data. Decodes Uniswap V3 Swap events from the
-    dominant WETH/USDC (0.05%) and WBTC/USDC (0.30%) mainnet pools, labels each swap
-    BUY or SELL from the sign of its USDC leg, and sinks one row per swap to Postgres.
-    Aggregation is done in SQL downstream, not here — see README.md.
+    dominant WETH/USDC (0.05%) mainnet pool and labels each swap BUY or SELL from the
+    sign of its USDC leg. Aggregation happens downstream, not here: the feeling MCP
+    runs map_swaps over a bounded recent range and aggregates in-process. The db_out
+    module and schema.sql serve the optional Postgres sink path — see README.md.
 
 imports:
   # Only the DatabaseChanges protodefs. Do NOT also import substreams-sink-sql
