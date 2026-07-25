@@ -1,8 +1,28 @@
+import {
+  assignMcpToAgent,
+  isValidMcpName,
+  listMcpsForAgent,
+  unassignMcpFromAgent,
+} from "@/lib/agent-mcps";
+import { fetchMcps } from "@/lib/registry-mcps";
 import { readMcpSelection } from "@/lib/session/mcp-block";
 import { MAX_MCPS } from "@/lib/session/mcp-servers";
 import { createSession, sessionForAgent } from "@/lib/session/registry";
 import { authorizeAgent, errorResponse } from "@/lib/session/route-helpers";
 import { agentDir, configDirExists } from "@/lib/session/zeroclaw-config";
+
+async function readMcpName(request: Request): Promise<string | Response> {
+  const body = (await request.json().catch(() => null)) as
+    | { mcpName?: unknown }
+    | null;
+  if (
+    typeof body?.mcpName !== "string" ||
+    !isValidMcpName(body.mcpName)
+  ) {
+    return Response.json({ error: "Invalid mcpName" }, { status: 400 });
+  }
+  return body.mcpName;
+}
 
 export async function GET(
   _request: Request,
@@ -12,11 +32,19 @@ export async function GET(
   const authorized = await authorizeAgent(id);
   if (authorized instanceof Response) return authorized;
 
-  // Never creates the dir: `configured: false` is what makes the page show the wizard.
-  if (!(await configDirExists(id))) {
-    return Response.json({ configured: false, mcps: [] });
-  }
-  return Response.json({ configured: true, mcps: await readMcpSelection(agentDir(id)) });
+  // Two different sets, and the chat needs both. `mcps` is what the live config.toml grants —
+  // never creates the dir, because `configured: false` is what makes the page show the wizard.
+  // `assigned` is the marketplace binding the registry authorizes against, so the wizard can
+  // start from what the user already assigned instead of an empty list.
+  const configured = await configDirExists(id);
+  const [mcps, assigned] = await Promise.all([
+    configured ? readMcpSelection(agentDir(id)) : Promise.resolve([]),
+    listMcpsForAgent(id),
+  ]);
+  return Response.json(
+    { configured, mcps, assigned },
+    { headers: { "Cache-Control": "private, no-store" } },
+  );
 }
 
 export async function PUT(
@@ -62,4 +90,42 @@ export async function PUT(
   } catch (err) {
     return errorResponse(err);
   }
+}
+
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params;
+  const authorized = await authorizeAgent(id);
+  if (authorized instanceof Response) return authorized;
+  const mcpName = await readMcpName(request);
+  if (mcpName instanceof Response) return mcpName;
+
+  const registry = await fetchMcps();
+  if (registry.length === 0) {
+    return Response.json(
+      { error: "MCP registry is unavailable" },
+      { status: 503 },
+    );
+  }
+  if (!registry.some((mcp) => mcp.id === mcpName)) {
+    return Response.json({ error: "MCP not found" }, { status: 404 });
+  }
+
+  await assignMcpToAgent(id, mcpName);
+  return Response.json({ ok: true, mcpName }, { status: 201 });
+}
+
+export async function DELETE(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params;
+  const authorized = await authorizeAgent(id);
+  if (authorized instanceof Response) return authorized;
+  const mcpName = await readMcpName(request);
+  if (mcpName instanceof Response) return mcpName;
+  await unassignMcpFromAgent(id, mcpName);
+  return Response.json({ ok: true, mcpName });
 }

@@ -38,10 +38,11 @@ pub struct ContractRow {
     pub rpc_url: Option<String>,
 }
 
-/// Lightweight row returned by `list_contracts_meta` — no ABI.
+/// Row returned by `list_contracts_meta`.
 pub struct ContractMetaRow {
     pub chain_id: u64,
     pub address: String,
+    pub abi: Value,
     pub contract_name: String,
     pub implementation: Option<String>,
     pub rpc_url: Option<String>,
@@ -293,6 +294,23 @@ impl DbPool {
             Ok(None)
         }
     }
+
+    /// Check whether an authenticated agent may use a specific registry MCP.
+    pub async fn agent_has_mcp(&self, agent_id: &str, mcp_name: &str) -> Result<bool> {
+        let row = sqlx::query(
+            "SELECT 1 \
+               FROM agent_mcp_binding \
+              WHERE agent_id = $1 AND mcp_name = $2 \
+              LIMIT 1",
+        )
+        .bind(agent_id)
+        .bind(mcp_name)
+        .fetch_optional(&self.pool)
+        .await
+        .context("agent_mcp_binding lookup failed")?;
+
+        Ok(row.is_some())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -360,11 +378,10 @@ impl DbPool {
         }))
     }
 
-    /// List all registered contracts from the database (no ABI — lightweight).
-    /// Used by GET /mcp to enumerate available MCPs without loading their ABIs.
+    /// List registered contracts with the ABI needed to derive marketplace metadata.
     pub async fn list_contracts_meta(&self) -> Result<Vec<ContractMetaRow>> {
         let rows = sqlx::query(
-            "SELECT chain_id, address, contract_name, implementation, rpc_url \
+            "SELECT chain_id, address, abi, contract_name, implementation, rpc_url \
                FROM registered_contracts",
         )
         .fetch_all(&self.pool)
@@ -376,6 +393,7 @@ impl DbPool {
                 Ok(ContractMetaRow {
                     chain_id: r.try_get::<i32, _>("chain_id")? as u64,
                     address: r.try_get("address")?,
+                    abi: r.try_get("abi")?,
                     contract_name: r.try_get("contract_name")?,
                     implementation: r.try_get("implementation")?,
                     rpc_url: r.try_get("rpc_url")?,

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { bindMcpsToAgent } from "@/lib/agent-mcps";
 import { getActiveTokenForAgent } from "@/lib/mcp-tokens";
 import { ZeroClawAcpSession } from "./acp-client";
 import { writeMcpSelection, type McpSelectionItem } from "./mcp-block";
@@ -139,6 +140,16 @@ const doCreate = async (opts: {
   // must not leave a dir behind — that would strand the agent as configured-with-no-MCPs,
   // hiding the wizard for good and silently ignoring the next start's selection.
   const entries = await resolveMcpServers(mcpNames, token);
+
+  // Before anything connects: the registry answers /interface/:name/mcp with 403
+  // mcp_not_assigned unless the agent is bound to that MCP, and with acp_enable_mcp the
+  // bundle's tools are initialized during session/new — so an unbound name would fail the
+  // start, not just the first tool call. Names are already registry-validated by
+  // resolveMcpServers.
+  await bindMcpsToAgent(
+    agentId,
+    entries.map((e) => e.mcpName),
+  );
 
   const { dir, created } = await provisionConfigDir(agentId);
   // session/new rejects a cwd that does not exist yet, and zeroclaw only creates the

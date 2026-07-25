@@ -30,11 +30,27 @@ interface RegistryMcp {
   address: string | false;
   implementation: string | null | false;
   contractName: string;
-  version: string;
-  toolCount: number;
+  description?: string;
+  platform?: string;
+  toolCount?: number;
+  tokens?: string[];
+  interactionType?: string;
   nativeToken?: boolean;
   symbol?: string;
   decimals?: number;
+}
+
+function interactionType(
+  value: string | undefined,
+): Mcp["interactionType"] {
+  if (value === "transactional" || value === "mixed") return value;
+  return "read-only";
+}
+
+function safeText(value: unknown, max: number, fallback = ""): string {
+  if (typeof value !== "string") return fallback;
+  const clean = value.replace(/[\u0000-\u001f\u007f-\u009f]/gu, "").trim();
+  return clean.slice(0, max) || fallback;
 }
 
 function chainLabel(chainId: number | null): string {
@@ -44,17 +60,35 @@ function chainLabel(chainId: number | null): string {
 
 function mapToMcp(item: RegistryMcp, registryUrl: string): Mcp {
   const chainId = item.chainId ?? MULTICHAIN_ID;
+  const chain = chainLabel(item.chainId);
+  const tokens = Array.isArray(item.tokens)
+    ? [
+        ...new Set(
+          item.tokens
+            .slice(0, 8)
+            .map((token) => safeText(token, 32))
+            .filter(Boolean),
+        ),
+      ]
+    : item.nativeToken && item.symbol
+      ? [item.symbol]
+      : [];
   return {
     id: item.name,
-    name: item.contractName,
+    name: safeText(item.contractName, 80, "Unnamed MCP"),
     author: typeof item.address === "string" ? item.address : item.name,
-    summary: "",
-    chain: chainLabel(item.chainId),
+    summary:
+      safeText(item.description, 280) ||
+      `Typed blockchain tools for ${safeText(item.contractName, 80, "this contract")} on ${chain}.`,
+    chain,
     chainId,
+    platform: safeText(item.platform, 48, chain),
+    tokens,
+    interactionType: interactionType(item.interactionType),
     contract: typeof item.address === "string" ? item.address : "",
     mcpUrl: `${registryUrl}${item.url}`,
     tags: item.nativeToken ? ["Native Token"] : [],
-    interfaces: item.toolCount,
+    interfaces: Number.isFinite(item.toolCount) ? item.toolCount ?? 0 : 0,
     callsLast24h: 0,
     audited: false,
     audits: [],

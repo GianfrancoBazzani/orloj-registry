@@ -111,7 +111,14 @@ export function SessionView({
     bootstrapped.current = true;
     let live = true;
     fetch(`/api/agents/${agentId}/mcps`)
-      .then((r) => r.json() as Promise<{ configured?: boolean; mcps?: McpSelectionItem[] }>)
+      .then(
+        (r) =>
+          r.json() as Promise<{
+            configured?: boolean;
+            mcps?: McpSelectionItem[];
+            assigned?: string[];
+          }>,
+      )
       .then((d) => {
         if (!live) return;
         if (d.configured) {
@@ -119,6 +126,9 @@ export function SessionView({
           setSelection((d.mcps ?? []).map((m) => m.mcpName));
           void start(undefined);
         } else {
+          // First run starts from what the user already assigned in the registry, so the
+          // marketplace assignment means something here instead of an empty wizard.
+          setSelection(d.assigned ?? []);
           setPhase("wizard");
         }
       })

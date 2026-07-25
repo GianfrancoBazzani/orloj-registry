@@ -43,7 +43,8 @@ export const Landing = () => {
                 marginBottom: 22,
               }}
             >
-              <Pill tone="verdigris">{t("landing.eyebrow")}</Pill>
+              <Pill tone="verdigris">{t("landing.ethLisbonBadge")}</Pill>
+              <Pill tone="brass">{t("landing.ethPragueBadge")}</Pill>
             </div>
             <h1
               className="display"

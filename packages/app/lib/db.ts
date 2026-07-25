@@ -85,6 +85,28 @@ const ensureSchema = async (pool: Pool): Promise<void> => {
       ON agent_ownership(user_id)
   `);
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS agent_mcp_binding (
+      agent_id  TEXT NOT NULL REFERENCES agent_ownership(agent_id) ON DELETE CASCADE,
+      mcp_name TEXT NOT NULL,
+      bound_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (agent_id, mcp_name)
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS agent_mcp_binding_mcp_idx
+      ON agent_mcp_binding(mcp_name)
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS agent_app_branding (
+      agent_id    TEXT PRIMARY KEY REFERENCES agent_ownership(agent_id) ON DELETE CASCADE,
+      app_name    TEXT,
+      icon_png    BYTEA,
+      icon_width  INTEGER,
+      icon_height INTEGER,
+      updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS mcp_api_key (
       id           TEXT PRIMARY KEY,
       agent_id     TEXT NOT NULL REFERENCES agent_ownership(agent_id) ON DELETE CASCADE,
@@ -128,6 +150,15 @@ const ensureSchema = async (pool: Pool): Promise<void> => {
       bound_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       PRIMARY KEY (user_id, mcp_name)
     )
+  `);
+  // Preserve access for pre-agent-scoped bindings during the rollout. Future
+  // assignments are written only to agent_mcp_binding.
+  await pool.query(`
+    INSERT INTO agent_mcp_binding (agent_id, mcp_name)
+    SELECT ownership.agent_id, binding.mcp_name
+      FROM agent_ownership ownership
+      JOIN user_mcp_binding binding ON binding.user_id = ownership.user_id
+    ON CONFLICT (agent_id, mcp_name) DO NOTHING
   `);
 };
 

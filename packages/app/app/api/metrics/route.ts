@@ -51,7 +51,10 @@ export async function GET() {
       [userId],
     ),
     pool.query<{ mcp_name: string }>(
-      `SELECT mcp_name FROM user_mcp_binding WHERE user_id = $1`,
+      `SELECT DISTINCT amb.mcp_name
+         FROM agent_mcp_binding amb
+         JOIN agent_ownership ao ON ao.agent_id = amb.agent_id
+        WHERE ao.user_id = $1`,
       [userId],
     ),
     pool.query<ToolCallRow>(
