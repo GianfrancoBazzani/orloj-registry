@@ -112,20 +112,57 @@ Every liquidity tool refuses to act on a position NFT the agent's wallet does no
 
 | Tool | Arguments | Effect |
 |---|---|---|
-| `get_v3_position` | `chainId`, `nftTokenId` | **Read-only.** Returns pool, token pair, fee tier, tick range, liquidity and uncollected fees. Pure on-chain reads — no Uniswap API call, so this works with only an RPC endpoint. |
+| `get_v3_position` | `chainId`, `nftTokenId` | **Read-only.** Returns pool, token pair, fee tier, tick range, liquidity and `tokensOwed0`/`tokensOwed1`. Pure on-chain reads — no Uniswap API call, so this works with only an RPC endpoint. See the caveat on `tokensOwed` below. |
 | `create_v3_position` | `chainId`, `poolAddress`, `independentTokenAddress`, `independentTokenAmount`, `tickLower`, `tickUpper`, `slippageTolerance?` | Opens a position in an **existing** pool (it cannot create pools). Runs any required approvals first and waits for each. Returns the transaction hash and the minted NFT's token id. |
-| `decrease_v3_position` | `chainId`, `nftTokenId`, `liquidityPercentageToDecrease`, `slippageTolerance?` | Withdraws liquidity; `100` closes the position out. Does **not** open a replacement position and does not claim fees. |
-| `claim_v3_fees` | `chainId`, `nftTokenId` | Sweeps accrued trading fees, leaving liquidity untouched. |
+| `decrease_v3_position` | `chainId`, `nftTokenId`, `liquidityPercentageToDecrease`, `slippageTolerance?` | Withdraws liquidity; `100` closes the position out. **Also collects accrued fees** — see below. Does **not** open a replacement position. |
+| `claim_v3_fees` | `chainId`, `nftTokenId` | Takes accrued trading fees while leaving liquidity in place — for harvesting from a position you intend to keep open. |
 
 `decrease` and `claim` withdraw any ETH side as WETH.
+
+#### `decrease` collects fees too
+
+The transaction Uniswap returns for a decrease is a `multicall` of `decreaseLiquidity` followed by
+an uncapped `collect()` (`amount0Max`/`amount1Max` set to `uint128` max), so it sweeps the freed
+principal **and every fee owed** in one go. There is no need to call `claim_v3_fees` first to
+"collect fees before withdrawing", and calling it after a decrease will usually find nothing left.
+`claim_v3_fees` is for taking fees from a position you are *keeping*.
+
+**The returned amounts do not include those fees.** Uniswap reports the principal being withdrawn,
+not the fees swept alongside it, so the wallet can receive materially more than the reported
+figures. Verified against position #1 on Sepolia: a 25% decrease reported `token0: 0`, while
+`claim_fees` on the same position reported `token0: 12481004647056319871` — that token was
+collected, but does not appear in the decrease response at all.
+
+#### `tokensOwed0` / `tokensOwed1` are not live fee balances
+
+`get_v3_position` reports these straight from `positions()`, and they are easy to misread. They
+are a **cached** balance written the last time the position was touched on-chain — mint, increase,
+decrease or collect — and they exclude everything accrued since. For a position nobody has touched
+in a while they are stale, and frequently read zero while real fees are owed. Computing live
+claimable fees means reading the pool's and ticks' fee-growth accumulators, which these tools do
+not do.
 
 `create_v3_position` deliberately does **not** take `token0Address`/`token1Address`. It reads the
 pair off the pool and verifies the pool against the factory. Accepting both a pool and a token
 pair from the caller would let a client pair a genuine pool with unrelated token addresses and get
 approvals issued against the wrong assets.
 
-Before signing anything the Liquidity API returns, the transaction's `to`, `from`, `chainId` and
-non-empty calldata are checked and it is dry-run with `eth_call`. API calldata is never rewritten.
+### What is checked before anything is signed
+
+Every transaction the Liquidity API returns is validated and then dry-run with `eth_call` —
+including each approval, so a reverting one is caught before it costs gas and leaves the flow
+half-done. API calldata is never rewritten.
+
+- **Destination is pinned.** The `create`, `decrease` and `claim` transactions must be addressed
+  to the Sepolia `NonfungiblePositionManager`; any other destination is refused. Approvals are
+  exempt from the pin, since an approval's destination is legitimately the ERC-20 being approved.
+- **`from` must be the agent's own wallet**, and **`chainId` must be 11155111**.
+- **Calldata must be non-empty** — every LP operation is a contract call, so a bare value transfer
+  would be a silent loss.
+- **Token pairs are re-checked against chain state.** The pair the API reports must equal the pair
+  read on-chain — from the pool for `create`, from the position NFT for `decrease` and `claim`.
+  Those addresses decide which tokens get approved for spending and are reported back as the
+  settled result, so they are not taken on trust. Amounts must be plain decimal integers.
 
 Errors name the stage that failed — `position read`, `API request`, `approval`, `simulation`,
 `broadcast` or `receipt`. If approvals were already broadcast before a later failure, their

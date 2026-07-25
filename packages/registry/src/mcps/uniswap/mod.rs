@@ -66,7 +66,12 @@ UniswapV3Factory 0x0227628f3F023bb0B980b67D528571c95c6DaC1c and NonfungiblePosit
 0x1238536071E1c677A632429e3655c799b22cDA52. Every liquidity tool refuses to act on a position \
 NFT the agent's wallet does not own. \
 get_v3_position(chainId, nftTokenId) reads a position — pool, token pair, fee tier, tick range, \
-liquidity and uncollected fees. Read-only, on-chain only, no side effects. \
+liquidity, and tokensOwed0/tokensOwed1. Read-only, on-chain only, no side effects. Do not treat \
+tokensOwed0/1 as the position's current claimable fees: they are a cached balance written the \
+last time the position was touched on-chain (mint, increase, decrease or collect) and exclude \
+everything accrued since, so they are frequently stale and often zero while real fees are owed. \
+Live claimable fees would require reading pool and tick fee-growth accumulators, which no tool \
+here does. \
 create_v3_position(chainId, poolAddress, independentTokenAddress, independentTokenAmount, \
 tickLower, tickUpper, slippageTolerance?) opens a position in an EXISTING pool; it cannot create \
 a pool. Give one side of the pair and Uniswap derives the other. The pool's token0/token1 are \
@@ -74,9 +79,16 @@ read from the pool itself and verified against the factory, so you do not pass t
 required token approvals first, waits for each to confirm, then mints, and returns the \
 transaction hash plus the new position NFT's token id. \
 decrease_v3_position(chainId, nftTokenId, liquidityPercentageToDecrease, slippageTolerance?) \
-withdraws liquidity; pass 100 to close the position out. It does not open a replacement position \
-and does not claim fees. \
-claim_v3_fees(chainId, nftTokenId) sweeps accrued trading fees and leaves liquidity untouched. \
+withdraws liquidity; pass 100 to close the position out. On Uniswap V3 this ALSO collects the \
+position's accrued fees: the transaction is a multicall of decreaseLiquidity then an uncapped \
+collect(), so it sweeps the freed principal and every fee owed. Do not call claim_v3_fees first \
+to 'collect fees before withdrawing' — it is unnecessary, and calling it after a decrease will \
+usually find nothing left. Note that the token0/token1 amounts decrease returns are the PRINCIPAL \
+withdrawn and exclude the fees swept with it, so the wallet may receive materially more than the \
+reported figures, and a reported 0 does not mean none of that token arrived. decrease does not \
+open a replacement position. \
+claim_v3_fees(chainId, nftTokenId) takes fees while leaving liquidity in place — use it to \
+harvest from a position you intend to keep open. \
 Decrease and claim withdraw any ETH side as WETH. \
 \
 The agent's Sepolia vault must be funded with gas and with the tokens being deposited before any \
@@ -346,6 +358,30 @@ mod tests {
         assert!(instructions.contains("11155111"));
         // The verified position manager, so the instructions can't drift from the code.
         assert!(instructions.contains("0x1238536071E1c677A632429e3655c799b22cDA52"));
+    }
+
+    #[tokio::test]
+    async fn initialize_states_the_corrected_fee_semantics() {
+        // These two were wrong in an earlier revision, and both mislead an agent into a
+        // concretely bad action: treating a stale tokensOwed zero as "no fees to claim", or
+        // calling claim_v3_fees before a decrease in the belief that decrease leaves fees behind.
+        let result = offline_server()
+            .dispatch(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize"}))
+            .await;
+        let instructions = result["result"]["instructions"].as_str().unwrap();
+
+        assert!(
+            instructions.contains("cached balance"),
+            "instructions must not present tokensOwed as live claimable fees"
+        );
+        assert!(
+            instructions.contains("ALSO collects the"),
+            "instructions must state that decrease collects fees"
+        );
+        assert!(
+            !instructions.contains("does not claim fees"),
+            "the incorrect 'decrease does not claim fees' claim must not come back"
+        );
     }
 
     #[tokio::test]

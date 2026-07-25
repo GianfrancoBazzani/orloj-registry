@@ -477,7 +477,7 @@ fn build_lp_create_body(p: &CreateParams<'_>, simulate: bool) -> Value {
     body
 }
 
-fn build_check_approval_body(wallet: Address, lp_tokens: &[(Address, String)]) -> Value {
+fn build_check_approval_body(wallet: Address, lp_tokens: &[(Address, U256)]) -> Value {
     json!({
         "walletAddress": wallet.to_checksum(None),
         "chainId": SEPOLIA_V3.chain_id,
@@ -487,7 +487,7 @@ fn build_check_approval_body(wallet: Address, lp_tokens: &[(Address, String)]) -
             .iter()
             .map(|(token, amount)| json!({
                 "tokenAddress": token.to_checksum(None),
-                "amount": amount,
+                "amount": amount.to_string(),
             }))
             .collect::<Vec<_>>(),
         // Ask for permits as plain transactions so approvals go through the same
@@ -576,7 +576,12 @@ fn parse_approval_transactions(resp: &Value) -> Result<Vec<Value>> {
 }
 
 /// Reads a required `{ tokenAddress, amount }` pair out of an LP API response.
-fn parse_lp_token(resp: &Value, field: &str, path: &str) -> Result<(Address, String)> {
+///
+/// The amount is checked to be a plain decimal integer here rather than trusted as an opaque
+/// string, because it is both fed back into /lp/check_approval (where a malformed value could
+/// widen an approval) and returned to the caller as a settled figure. Zero is allowed: a range
+/// entirely on one side of the current price legitimately deposits only one of the two tokens.
+fn parse_lp_token(resp: &Value, field: &str, path: &str) -> Result<(Address, U256)> {
     let token = resp.get(field).ok_or_else(|| {
         anyhow::anyhow!(
             "uniswap {path} response has no '{field}': {}",
@@ -591,13 +596,44 @@ fn parse_lp_token(resp: &Value, field: &str, path: &str) -> Result<(Address, Str
         .parse()
         .with_context(|| format!("uniswap {path} {field}.tokenAddress is not an address"))?;
 
-    let amount = token
+    let raw = token
         .get("amount")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("uniswap {path} {field} has no 'amount'"))?
-        .to_string();
+        .ok_or_else(|| anyhow::anyhow!("uniswap {path} {field} has no 'amount'"))?;
+
+    anyhow::ensure!(
+        !raw.is_empty() && raw.bytes().all(|b| b.is_ascii_digit()),
+        "uniswap {path} {field}.amount is not a decimal integer: {raw:?}"
+    );
+
+    let amount = U256::from_str_radix(raw, 10)
+        .with_context(|| format!("uniswap {path} {field}.amount {raw:?} is out of range"))?;
 
     Ok((address, amount))
+}
+
+/// Checks that the token pair the API reported is the pair we already resolved on-chain.
+///
+/// Everything downstream keys off these addresses — they decide which tokens get approved for
+/// spending, and they are handed back to the caller as the settled result. Taking them on trust
+/// would mean an unexpected or swapped pair could route an approval at a token the agent never
+/// intended to spend, so the on-chain pair (from the pool, or from the position NFT) is the
+/// authority and the API response has to agree with it.
+fn ensure_pair_matches(
+    returned: (Address, Address),
+    expected: (Address, Address),
+    path: &str,
+) -> Result<()> {
+    anyhow::ensure!(
+        returned == expected,
+        "uniswap {path} returned token pair {:#x}/{:#x}, but the on-chain pair is {:#x}/{:#x} — \
+         refusing to act on a mismatched pair",
+        returned.0,
+        returned.1,
+        expected.0,
+        expected.1
+    );
+    Ok(())
 }
 
 fn require_field<'a>(resp: &'a Value, field: &str, path: &str) -> Result<&'a Value> {
@@ -609,8 +645,8 @@ fn require_field<'a>(resp: &'a Value, field: &str, path: &str) -> Result<&'a Val
     })
 }
 
-fn lp_token_json(token: &(Address, String)) -> Value {
-    json!({ "tokenAddress": token.0.to_checksum(None), "amount": token.1 })
+fn lp_token_json(token: &(Address, U256)) -> Value {
+    json!({ "tokenAddress": token.0.to_checksum(None), "amount": token.1.to_string() })
 }
 
 // ---------------------------------------------------------------------------
@@ -630,14 +666,21 @@ pub struct ValidatedTx {
 
 /// Structural checks on an API-provided transaction, run before it is simulated or signed.
 ///
-/// The `from` and `chainId` checks are the important ones: they are what stops a malformed or
-/// mismatched API response from being signed by the agent's vault on a chain or as an identity
-/// the caller never asked for. Empty calldata is rejected because every LP operation is a
-/// contract call — a bare value transfer to the position manager would be a silent loss.
+/// The `from` and `chainId` checks are what stop a malformed or mismatched API response from
+/// being signed by the agent's vault on a chain, or as an identity, the caller never asked for.
+/// Empty calldata is rejected because every LP operation is a contract call — a bare value
+/// transfer to the position manager would be a silent loss.
+///
+/// `expected_to` pins the destination. The create/decrease/claim transactions must all land on
+/// the Sepolia NonfungiblePositionManager, so anything else — a different contract, a different
+/// deployment, an EOA — is refused before it can be signed. It is `None` only for approvals,
+/// whose destination is legitimately the ERC-20 being approved rather than a fixed address;
+/// those are constrained by simulating them instead.
 fn validate_api_transaction(
     tx: &Value,
     expected_from: Address,
     expected_chain_id: u64,
+    expected_to: Option<Address>,
 ) -> Result<ValidatedTx> {
     let to: Address = tx
         .get("to")
@@ -645,6 +688,14 @@ fn validate_api_transaction(
         .ok_or_else(|| anyhow::anyhow!("transaction has no 'to'"))?
         .parse()
         .context("transaction 'to' is not a valid address")?;
+
+    if let Some(expected_to) = expected_to {
+        anyhow::ensure!(
+            to == expected_to,
+            "transaction targets {to:#x}, but this operation must go to the Sepolia \
+             NonfungiblePositionManager at {expected_to:#x} — refusing to sign"
+        );
+    }
 
     let from: Address = tx
         .get("from")
@@ -954,9 +1005,15 @@ pub(super) fn build_uniswap_lp_tools() -> Vec<Tool> {
     let get_v3_position = Tool::new(
         "get_v3_position".to_string(),
         "Read a Uniswap V3 liquidity position owned by the authenticated agent on Ethereum \
-         Sepolia. Returns the pool, token pair, fee tier, tick range, liquidity and uncollected \
-         fees. Read-only: pure on-chain reads, no Uniswap API call, no signing, no funds moved. \
-         Fails if the position NFT is not owned by the agent's own wallet."
+         Sepolia. Returns the pool, token pair, fee tier, tick range, liquidity, and the \
+         position's tokensOwed0/tokensOwed1. IMPORTANT: tokensOwed0/1 are NOT the position's \
+         current claimable fees. They are a cached balance written the last time the position \
+         was touched on-chain (mint, increase, decrease or collect), and do not include any fees \
+         accrued since — for an untouched position they are usually stale, and often zero even \
+         when real fees are owed. Computing live claimable fees requires reading pool and tick \
+         fee-growth accumulators, which this tool does not do. Read-only: pure on-chain reads, \
+         no Uniswap API call, no signing, no funds moved. Fails if the position NFT is not owned \
+         by the agent's own wallet."
             .to_string(),
         object_schema(
             vec![
@@ -1041,8 +1098,14 @@ pub(super) fn build_uniswap_lp_tools() -> Vec<Tool> {
         "Withdraw liquidity from a Uniswap V3 position owned by the authenticated agent on \
          Ethereum Sepolia. Fund-moving: simulates, signs and broadcasts automatically through \
          the agent's vault. Pass liquidityPercentageToDecrease=100 to close the position out \
-         entirely. Any ETH side is withdrawn as WETH. Does not open a replacement position and \
-         does not claim fees — use claim_v3_fees for those."
+         entirely. NOTE: on Uniswap V3 this also collects the position's accrued fees — the \
+         transaction is a multicall of decreaseLiquidity followed by collect() with no cap, so \
+         it sweeps the freed principal AND every fee owed. You do not need to call claim_v3_fees \
+         first, and calling it afterwards will typically find nothing left. Be careful with the \
+         returned token0/token1 amounts: Uniswap reports the principal being withdrawn, NOT the \
+         fees swept alongside it, so the wallet can receive materially more than these figures \
+         (an amount here may even read 0 while that token is in fact collected as fees). Any ETH \
+         side is withdrawn as WETH. Does not open a replacement position."
             .to_string(),
         object_schema(
             vec![
@@ -1067,9 +1130,10 @@ pub(super) fn build_uniswap_lp_tools() -> Vec<Tool> {
     let claim_v3_fees = Tool::new(
         "claim_v3_fees".to_string(),
         "Collect the trading fees accrued by a Uniswap V3 position owned by the authenticated \
-         agent on Ethereum Sepolia. Fund-moving: simulates, signs and broadcasts automatically \
-         through the agent's vault. Any ETH side is collected as WETH. Leaves the position's \
-         liquidity untouched — only the uncollected fees are swept."
+         agent on Ethereum Sepolia, without touching its liquidity. Fund-moving: simulates, \
+         signs and broadcasts automatically through the agent's vault. Any ETH side is collected \
+         as WETH. Use this to take fees while leaving the position open; it is not a prerequisite \
+         for decrease_v3_position, which already collects fees as part of withdrawing."
             .to_string(),
         object_schema(
             vec![
@@ -1224,11 +1288,20 @@ impl UniswapMcpServer {
         let want0 = parse_lp_token(&sizing, "token0", "/lp/create").context("stage=API request")?;
         let want1 = parse_lp_token(&sizing, "token1", "/lp/create").context("stage=API request")?;
 
+        // These amounts are about to become spending approvals, so the pair they name has to be
+        // the pair we read off the pool — not merely whatever the API replied with.
+        ensure_pair_matches(
+            (want0.0, want1.0),
+            (pool_tokens.token0, pool_tokens.token1),
+            "/lp/create",
+        )
+        .context("stage=API request")?;
+
         // Approvals, one at a time, each confirmed before the next is sent.
         let approval_resp = lp_post(
             &self.http,
             "/lp/check_approval",
-            &build_check_approval_body(s.wallet, &[want0.clone(), want1.clone()]),
+            &build_check_approval_body(s.wallet, &[want0, want1]),
         )
         .await
         .context("stage=API request")?;
@@ -1238,9 +1311,21 @@ impl UniswapMcpServer {
         for (i, approval) in approvals.iter().enumerate() {
             let step = format!("approval {}/{}", i + 1, approvals.len());
 
+            // No destination pin here: an approval's `to` is legitimately the ERC-20 being
+            // approved, which varies per pool.
             let validated = with_approvals(
-                validate_api_transaction(approval, s.wallet, SEPOLIA_V3.chain_id)
+                validate_api_transaction(approval, s.wallet, SEPOLIA_V3.chain_id, None)
                     .with_context(|| format!("stage=approval ({step})")),
+                &approval_hashes,
+            )?;
+
+            // Simulate before signing. An approval is a real state change that cannot be
+            // un-broadcast, and a reverting one would otherwise burn gas and leave the flow
+            // half-done — with the mint still doomed to fail for want of an allowance.
+            with_approvals(
+                simulate_tx(&s.provider, s.wallet, &validated)
+                    .await
+                    .with_context(|| format!("stage=simulation ({step})")),
                 &approval_hashes,
             )?;
 
@@ -1283,14 +1368,31 @@ impl UniswapMcpServer {
             &approval_hashes,
         )?;
 
+        // The refetch is a fresh response and gets the same treatment as the first — these are
+        // the amounts and addresses reported back to the caller as what was actually deposited.
+        with_approvals(
+            ensure_pair_matches(
+                (token0.0, token1.0),
+                (pool_tokens.token0, pool_tokens.token1),
+                "/lp/create",
+            )
+            .context("stage=API request"),
+            &approval_hashes,
+        )?;
+
         let create_tx = with_approvals(
             require_field(&created, "create", "/lp/create").context("stage=API request"),
             &approval_hashes,
         )?;
 
         let validated = with_approvals(
-            validate_api_transaction(create_tx, s.wallet, SEPOLIA_V3.chain_id)
-                .context("stage=simulation"),
+            validate_api_transaction(
+                create_tx,
+                s.wallet,
+                SEPOLIA_V3.chain_id,
+                Some(SEPOLIA_V3.position_manager),
+            )
+            .context("stage=simulation"),
             &approval_hashes,
         )?;
 
@@ -1372,6 +1474,15 @@ impl UniswapMcpServer {
             parse_lp_token(&resp, "token0", "/lp/decrease").context("stage=API request")?;
         let token1 =
             parse_lp_token(&resp, "token1", "/lp/decrease").context("stage=API request")?;
+        // The pair must be the one the position NFT actually holds. These amounts are reported
+        // back as what was withdrawn, so a mismatched pair would misstate where funds went.
+        ensure_pair_matches(
+            (token0.0, token1.0),
+            (position.token0, position.token1),
+            "/lp/decrease",
+        )
+        .context("stage=API request")?;
+
         let tx = require_field(&resp, "decrease", "/lp/decrease").context("stage=API request")?;
 
         let hash = s.execute(tx, "decrease").await?;
@@ -1392,8 +1503,8 @@ impl UniswapMcpServer {
 
         let s = self.lp_session("claim_v3_fees").await?;
 
-        // Read purely for the ownership check — /lp/claim_fees takes only the token id.
-        read_v3_position(&s.provider, nft_token_id, s.wallet)
+        // Checks ownership, and gives us the pair the reported fee amounts must belong to.
+        let position = read_v3_position(&s.provider, nft_token_id, s.wallet)
             .await
             .context("stage=position read")?;
 
@@ -1409,6 +1520,15 @@ impl UniswapMcpServer {
             parse_lp_token(&resp, "token0", "/lp/claim_fees").context("stage=API request")?;
         let token1 =
             parse_lp_token(&resp, "token1", "/lp/claim_fees").context("stage=API request")?;
+        // The fee amounts are returned to the caller as the tokens they collected, so the pair
+        // has to be the position's own.
+        ensure_pair_matches(
+            (token0.0, token1.0),
+            (position.token0, position.token1),
+            "/lp/claim_fees",
+        )
+        .context("stage=API request")?;
+
         let tx = require_field(&resp, "claim", "/lp/claim_fees").context("stage=API request")?;
 
         let hash = s.execute(tx, "fee claim").await?;
@@ -1429,8 +1549,13 @@ impl LpSession<'_> {
     /// `create_v3_position` runs these steps inline instead, because it has to thread already
     /// completed approval hashes into every possible failure.
     async fn execute(&self, tx: &Value, label: &str) -> Result<B256> {
-        let validated = validate_api_transaction(tx, self.wallet, SEPOLIA_V3.chain_id)
-            .context("stage=simulation")?;
+        let validated = validate_api_transaction(
+            tx,
+            self.wallet,
+            SEPOLIA_V3.chain_id,
+            Some(SEPOLIA_V3.position_manager),
+        )
+        .context("stage=simulation")?;
 
         simulate_tx(&self.provider, self.wallet, &validated)
             .await
@@ -1725,7 +1850,7 @@ mod tests {
 
     #[test]
     fn accepts_a_well_formed_transaction_without_touching_calldata() {
-        let v = validate_api_transaction(&valid_tx(), WALLET, SEPOLIA_V3.chain_id).unwrap();
+        let v = validate_api_transaction(&valid_tx(), WALLET, SEPOLIA_V3.chain_id, None).unwrap();
         assert_eq!(v.to, SEPOLIA_V3.position_manager);
         assert_eq!(v.value, U256::ZERO);
         assert_eq!(
@@ -1737,7 +1862,7 @@ mod tests {
 
     #[test]
     fn rejects_a_transaction_built_for_another_sender() {
-        let err = validate_api_transaction(&valid_tx(), OTHER, SEPOLIA_V3.chain_id)
+        let err = validate_api_transaction(&valid_tx(), OTHER, SEPOLIA_V3.chain_id, None)
             .expect_err("a from-mismatch must not be signed")
             .to_string();
         assert!(
@@ -1754,14 +1879,14 @@ mod tests {
             let mut tx = valid_tx();
             tx["chainId"] = wrong.clone();
             assert!(
-                validate_api_transaction(&tx, WALLET, SEPOLIA_V3.chain_id).is_err(),
+                validate_api_transaction(&tx, WALLET, SEPOLIA_V3.chain_id, None).is_err(),
                 "chainId {wrong} should be rejected"
             );
         }
         // ...and the matching string spelling is accepted.
         let mut tx = valid_tx();
         tx["chainId"] = json!("11155111");
-        assert!(validate_api_transaction(&tx, WALLET, SEPOLIA_V3.chain_id).is_ok());
+        assert!(validate_api_transaction(&tx, WALLET, SEPOLIA_V3.chain_id, None).is_ok());
     }
 
     #[test]
@@ -1769,7 +1894,7 @@ mod tests {
         for empty in [json!(""), json!("0x"), json!("0X")] {
             let mut tx = valid_tx();
             tx["data"] = empty.clone();
-            let err = validate_api_transaction(&tx, WALLET, SEPOLIA_V3.chain_id)
+            let err = validate_api_transaction(&tx, WALLET, SEPOLIA_V3.chain_id, None)
                 .expect_err("empty calldata must not be signed")
                 .to_string();
             assert!(err.contains("data"), "error should name 'data': {err}");
@@ -1777,7 +1902,7 @@ mod tests {
 
         let mut tx = valid_tx();
         tx.as_object_mut().unwrap().remove("data");
-        assert!(validate_api_transaction(&tx, WALLET, SEPOLIA_V3.chain_id).is_err());
+        assert!(validate_api_transaction(&tx, WALLET, SEPOLIA_V3.chain_id, None).is_err());
     }
 
     #[test]
@@ -1785,11 +1910,11 @@ mod tests {
         for field in ["to", "from"] {
             let mut missing = valid_tx();
             missing.as_object_mut().unwrap().remove(field);
-            assert!(validate_api_transaction(&missing, WALLET, SEPOLIA_V3.chain_id).is_err());
+            assert!(validate_api_transaction(&missing, WALLET, SEPOLIA_V3.chain_id, None).is_err());
 
             let mut garbage = valid_tx();
             garbage[field] = json!("not-an-address");
-            assert!(validate_api_transaction(&garbage, WALLET, SEPOLIA_V3.chain_id).is_err());
+            assert!(validate_api_transaction(&garbage, WALLET, SEPOLIA_V3.chain_id, None).is_err());
         }
     }
 
@@ -1810,7 +1935,7 @@ mod tests {
         for (input, expected) in cases {
             let mut tx = valid_tx();
             tx["value"] = input.clone();
-            let v = validate_api_transaction(&tx, WALLET, SEPOLIA_V3.chain_id)
+            let v = validate_api_transaction(&tx, WALLET, SEPOLIA_V3.chain_id, None)
                 .unwrap_or_else(|e| panic!("value {input} should parse: {e}"));
             assert_eq!(v.value, expected);
         }
@@ -1819,7 +1944,7 @@ mod tests {
         let mut tx = valid_tx();
         tx.as_object_mut().unwrap().remove("value");
         assert_eq!(
-            validate_api_transaction(&tx, WALLET, SEPOLIA_V3.chain_id)
+            validate_api_transaction(&tx, WALLET, SEPOLIA_V3.chain_id, None)
                 .unwrap()
                 .value,
             U256::ZERO
@@ -1827,7 +1952,134 @@ mod tests {
 
         let mut bad = valid_tx();
         bad["value"] = json!("not a number");
-        assert!(validate_api_transaction(&bad, WALLET, SEPOLIA_V3.chain_id).is_err());
+        assert!(validate_api_transaction(&bad, WALLET, SEPOLIA_V3.chain_id, None).is_err());
+    }
+
+    // ─── audit: destination pinning ──────────────────────────────────────────
+
+    #[test]
+    fn pins_write_transactions_to_the_position_manager() {
+        // valid_tx() is already addressed to the position manager.
+        assert!(
+            validate_api_transaction(
+                &valid_tx(),
+                WALLET,
+                SEPOLIA_V3.chain_id,
+                Some(SEPOLIA_V3.position_manager)
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn rejects_a_write_transaction_aimed_anywhere_else() {
+        // Every one of these is a plausible-looking destination that must still be refused:
+        // the factory, a pool, an ERC-20, the discredited library address, and an EOA.
+        let wrong_destinations = [
+            SEPOLIA_V3.factory,
+            address!("287b0e934ed0439e2a7b1d5f0fc25ea2c24b64f7"),
+            address!("fff9976782d46cc05630d1f6ebab18b2324d6b14"),
+            address!("3B5E3c5E595D85fbFBC2a42ECC091e183E76697C"),
+            WALLET,
+            Address::ZERO,
+        ];
+
+        for to in wrong_destinations {
+            let mut tx = valid_tx();
+            tx["to"] = json!(to.to_checksum(None));
+
+            let err = validate_api_transaction(
+                &tx,
+                WALLET,
+                SEPOLIA_V3.chain_id,
+                Some(SEPOLIA_V3.position_manager),
+            )
+            .expect_err("only the position manager may receive a create/decrease/claim")
+            .to_string();
+
+            assert!(
+                err.contains("NonfungiblePositionManager"),
+                "error should say where it had to go, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn approvals_are_not_destination_pinned() {
+        // An approval's destination is the ERC-20 being approved, which varies per pool, so the
+        // pin cannot apply to it. Approvals are constrained by simulation instead.
+        let mut tx = valid_tx();
+        tx["to"] = json!("0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14");
+        assert!(validate_api_transaction(&tx, WALLET, SEPOLIA_V3.chain_id, None).is_ok());
+    }
+
+    // ─── audit: token pair and amount validation ─────────────────────────────
+
+    const POOL_T0: Address = address!("1f9840a85d5af5bf1d1762f925bdaddc4201f984");
+    const POOL_T1: Address = address!("fff9976782d46cc05630d1f6ebab18b2324d6b14");
+
+    #[test]
+    fn accepts_a_pair_matching_the_on_chain_pair() {
+        assert!(ensure_pair_matches((POOL_T0, POOL_T1), (POOL_T0, POOL_T1), "/lp/create").is_ok());
+    }
+
+    #[test]
+    fn rejects_a_substituted_token_in_the_returned_pair() {
+        // The realistic hazard: a response naming a token the position/pool does not hold. These
+        // addresses drive the approvals, so accepting one would authorise spending the wrong
+        // asset.
+        let attacker = address!("00000000000000000000000000000000deadbeef");
+        for returned in [
+            (attacker, POOL_T1),
+            (POOL_T0, attacker),
+            (attacker, attacker),
+        ] {
+            let err = ensure_pair_matches(returned, (POOL_T0, POOL_T1), "/lp/create")
+                .expect_err("a mismatched pair must not be used")
+                .to_string();
+            assert!(
+                err.contains("on-chain pair"),
+                "error should contrast with the on-chain pair, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_a_swapped_pair_ordering() {
+        // token0/token1 ordering is consensus in V3 (sorted by address), so a flipped pair is a
+        // real mismatch, not a cosmetic one — it would mis-attribute both amounts.
+        assert!(ensure_pair_matches((POOL_T1, POOL_T0), (POOL_T0, POOL_T1), "/lp/create").is_err());
+    }
+
+    #[test]
+    fn rejects_non_decimal_api_amounts() {
+        // These amounts are fed into approval requests and returned as settled figures, so a
+        // hex or signed spelling must not be carried through as an opaque string.
+        for bad in [
+            json!("0x10"),
+            json!(""),
+            json!("-1"),
+            json!("1.5"),
+            json!("1e18"),
+            json!(100),
+        ] {
+            let resp = json!({"token0": {"tokenAddress": "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984", "amount": bad}});
+            assert!(
+                parse_lp_token(&resp, "token0", "/lp/create").is_err(),
+                "amount {bad} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_a_zero_api_amount() {
+        // A range entirely on one side of the current price legitimately deposits only one of
+        // the two tokens, so zero must not be treated as an error.
+        let resp = json!({"token0": {"tokenAddress": "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984", "amount": "0"}});
+        assert_eq!(
+            parse_lp_token(&resp, "token0", "/lp/create").unwrap().1,
+            U256::ZERO
+        );
     }
 
     // ─── minted NFT id ───────────────────────────────────────────────────────
@@ -1984,8 +2236,8 @@ mod tests {
         let body = build_check_approval_body(
             WALLET,
             &[
-                (pool.token0, "100".to_string()),
-                (pool.token1, "200".to_string()),
+                (pool.token0, U256::from(100)),
+                (pool.token1, U256::from(200)),
             ],
         );
 
@@ -2058,10 +2310,10 @@ mod tests {
 
         let (addr, amount) = parse_lp_token(&resp, "token0", "/lp/create").unwrap();
         assert_eq!(addr, address!("1f9840a85d5af5bf1d1762f925bdaddc4201f984"));
-        assert_eq!(amount, "100");
+        assert_eq!(amount, U256::from(100));
         assert_eq!(
             parse_lp_token(&resp, "token1", "/lp/create").unwrap().1,
-            "200"
+            U256::from(200)
         );
         assert_eq!(
             require_field(&resp, "create", "/lp/create").unwrap()["data"],
@@ -2237,7 +2489,7 @@ mod tests {
             parse_lp_token(&decrease, "token0", "/lp/decrease")
                 .unwrap()
                 .1,
-            "10"
+            U256::from(10)
         );
         assert!(require_field(&decrease, "decrease", "/lp/decrease").is_ok());
         // The create/claim field names must not be accepted on a decrease response.
@@ -2252,7 +2504,7 @@ mod tests {
             parse_lp_token(&claim, "token1", "/lp/claim_fees")
                 .unwrap()
                 .1,
-            "4"
+            U256::from(4)
         );
         assert!(require_field(&claim, "claim", "/lp/claim_fees").is_ok());
     }
@@ -2306,6 +2558,71 @@ mod tests {
                 "tickLower",
                 "tickUpper"
             ])
+        );
+    }
+
+    // ─── audit: corrected fee semantics in tool descriptions ─────────────────
+
+    fn description_of(name: &str) -> String {
+        build_uniswap_lp_tools()
+            .into_iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("{name} should be listed"))
+            .description
+            .clone()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[test]
+    fn get_v3_position_does_not_present_tokens_owed_as_live_fees() {
+        let d = description_of("get_v3_position");
+
+        // It must say the values are cached/stale, not simply "uncollected fees" — an agent
+        // reading a stale zero as "no fees owed" would skip a claim it should have made.
+        assert!(
+            d.contains("cached"),
+            "description should say tokensOwed is cached: {d}"
+        );
+        assert!(
+            d.contains("NOT the position's current claimable fees"),
+            "description should deny the live-fee reading: {d}"
+        );
+        assert!(
+            !d.contains("and uncollected fees"),
+            "the old 'liquidity and uncollected fees' phrasing is what misled: {d}"
+        );
+    }
+
+    #[test]
+    fn decrease_description_says_it_also_collects_fees() {
+        let d = description_of("decrease_v3_position");
+
+        // V3's decreaseLiquidity credits accrued fees to the position and the withdrawal sweeps
+        // them out, so the previous "does not claim fees" claim was simply wrong.
+        assert!(
+            d.contains("also collects the position's accrued fees"),
+            "description should state that decrease collects fees: {d}"
+        );
+        assert!(
+            !d.contains("does not claim fees"),
+            "the incorrect 'does not claim fees' claim must not come back: {d}"
+        );
+        // Verified against Sepolia position #1: a 25% decrease reported token0: 0 while the
+        // same position's claimable token0 was 1.2e19. The fees are collected but not reported,
+        // so an agent treating the returned amounts as the total received would under-count.
+        assert!(
+            d.contains("NOT the fees swept alongside it"),
+            "description must warn that returned amounts exclude the swept fees: {d}"
+        );
+    }
+
+    #[test]
+    fn claim_description_does_not_imply_it_is_needed_before_a_decrease() {
+        let d = description_of("claim_v3_fees");
+        assert!(
+            d.contains("not a prerequisite for decrease_v3_position"),
+            "description should tell the agent not to claim before decreasing: {d}"
         );
     }
 
