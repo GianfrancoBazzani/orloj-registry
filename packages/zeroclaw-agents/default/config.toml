@@ -69,11 +69,6 @@ max_tokens = 8192
 [providers.models.custom.default]
 model = "kimi-k2.7-code"
 uri = "https://router-api.0g.ai/v1"
-api_key = <api key placeholder>
-# into each provisioned agent config from ZEROCLAW_MODEL_API_KEY on every session start.
-# It must still be a quoted empty string — an unquoted placeholder is a TOML syntax error,
-# and zeroclaw answers a malformed config by resetting the WHOLE config to defaults for the
-# run, which drops [agents.default] and fails session/new with `Unknown agent default`.
 api_key = ""
 
 [agents]
