@@ -3687,6 +3687,194 @@ mod tests {
         );
     }
 
+    // ─── Stage A: live, read-only planning ───────────────────────────────────
+    //
+    // Ignored by default; run explicitly with a funded-wallet address, an RPC endpoint and an
+    // API key:
+    //
+    //   UNISWAP_API_KEY=... STAGE_A_WALLET=0x... \
+    //     cargo test stage_a -- --ignored --nocapture
+    //
+    // These call `plan_create_v3_position`, never `handle_create_v3_position`. That is the whole
+    // point: planning holds no vault, no signer and no DbPool, so no amount of misconfiguration
+    // here can broadcast a transaction. The guarantee is structural, not procedural.
+
+    fn stage_a_env() -> Option<(String, Address)> {
+        let key = std::env::var("UNISWAP_API_KEY").ok()?;
+        if key.is_empty() {
+            return None;
+        }
+        let wallet: Address = std::env::var("STAGE_A_WALLET").ok()?.parse().ok()?;
+        let rpc = std::env::var("STAGE_A_RPC_URL")
+            .unwrap_or_else(|_| "https://ethereum-sepolia-rpc.publicnode.com".to_string());
+        Some((rpc, wallet))
+    }
+
+    async fn stage_a_provider(rpc: &str) -> DynProvider {
+        ProviderBuilder::new()
+            .connect(rpc)
+            .await
+            .expect("stage A needs a reachable Sepolia RPC")
+            .erased()
+    }
+
+    #[tokio::test]
+    #[ignore = "live: needs UNISWAP_API_KEY and STAGE_A_WALLET"]
+    async fn stage_a_position_manager_supports_enumeration() {
+        let Some((rpc, wallet)) = stage_a_env() else {
+            return;
+        };
+        let provider = stage_a_provider(&rpc).await;
+
+        let balance = call_view(
+            &provider,
+            SEPOLIA_V3.position_manager,
+            abi_function(position_manager_abi(), "balanceOf").unwrap(),
+            &[DynSolValue::Address(wallet)],
+        )
+        .await
+        .expect("balanceOf must work — list_v3_positions depends on ERC-721 enumeration");
+        let balance = as_u256(out(&balance, 0, "balanceOf").unwrap(), "balanceOf").unwrap();
+        println!("[stage A] balanceOf({wallet:#x}) = {balance}");
+
+        if balance.is_zero() {
+            println!("[stage A] wallet holds no positions; tokenOfOwnerByIndex not exercised");
+            return;
+        }
+
+        let id = call_view(
+            &provider,
+            SEPOLIA_V3.position_manager,
+            abi_function(position_manager_abi(), "tokenOfOwnerByIndex").unwrap(),
+            &[
+                DynSolValue::Address(wallet),
+                DynSolValue::Uint(U256::ZERO, 256),
+            ],
+        )
+        .await
+        .expect("tokenOfOwnerByIndex must work on this deployment");
+        let id = as_u256(out(&id, 0, "tokenOfOwnerByIndex").unwrap(), "id").unwrap();
+        println!("[stage A] tokenOfOwnerByIndex({wallet:#x}, 0) = {id}");
+    }
+
+    #[tokio::test]
+    #[ignore = "live: needs UNISWAP_API_KEY and STAGE_A_WALLET"]
+    async fn stage_a_reads_real_pool_state() {
+        let Some((rpc, _wallet)) = stage_a_env() else {
+            return;
+        };
+        let provider = stage_a_provider(&rpc).await;
+
+        let pool = address!("287b0e934ed0439e2a7b1d5f0fc25ea2c24b64f7"); // UNI/WETH 0.3%
+        let state = read_v3_pool_state(&provider, pool)
+            .await
+            .expect("a canonical pool must verify against the factory");
+
+        println!(
+            "[stage A] pool {pool:#x}: token0={:#x} token1={:#x} fee={} tick={} spacing={} liq={}",
+            state.token0,
+            state.token1,
+            state.fee,
+            state.current_tick,
+            state.tick_spacing,
+            state.liquidity
+        );
+        assert!(state.tick_spacing > 0);
+
+        // The derived range must bracket the pool's real, live tick — not just a synthetic one.
+        let range = derive_tick_range(state.current_tick, state.tick_spacing, 1000).unwrap();
+        println!(
+            "[stage A] 1000bps range around {}: [{}, {}]",
+            state.current_tick, range.lower, range.upper
+        );
+        assert!(range.lower <= state.current_tick && state.current_tick <= range.upper);
+    }
+
+    #[tokio::test]
+    #[ignore = "live: needs UNISWAP_API_KEY and STAGE_A_WALLET"]
+    async fn stage_a_discovers_pools_by_fee_tier() {
+        let Some((rpc, _wallet)) = stage_a_env() else {
+            return;
+        };
+        let provider = stage_a_provider(&rpc).await;
+
+        let uni = address!("1f9840a85d5af5bf1d1762f925bdaddc4201f984");
+        let candidates = probe_standard_pools(&provider, SEPOLIA_V3.weth, uni)
+            .await
+            .expect("probing standard fee tiers should not error");
+
+        for c in &candidates {
+            println!(
+                "[stage A] fee {:>5}: {:#x} liquidity={}",
+                c.fee, c.address, c.liquidity
+            );
+        }
+        let chosen = choose_pool(&candidates).expect("WETH/UNI has at least one funded pool");
+        println!(
+            "[stage A] chose fee {} at {:#x}",
+            chosen.fee, chosen.address
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "live: needs UNISWAP_API_KEY and STAGE_A_WALLET"]
+    async fn stage_a_plans_a_position_without_signing() {
+        let Some((rpc, wallet)) = stage_a_env() else {
+            return;
+        };
+        let provider = stage_a_provider(&rpc).await;
+
+        let req = parse_create_request(&args(&[
+            ("tokenA", json!("ETH")),
+            (
+                "tokenB",
+                json!("0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984"),
+            ),
+            ("maxTokenAAmount", json!("0.01")),
+            ("maxTokenBAmount", json!("20")),
+            ("rangeWidthBps", json!(1000)),
+        ]))
+        .expect("request should parse");
+
+        let plan = plan_create_v3_position(&provider, &reqwest::Client::new(), wallet, &req)
+            .await
+            .expect("planning should succeed against a funded wallet");
+
+        let (a0, a1) = quote_amounts(&plan.quote, &plan.pool).unwrap();
+        println!(
+            "[stage A] pool={:#x} ({}) fee={} tick={} spacing={}",
+            plan.pool_address,
+            plan.selection_method,
+            plan.pool.fee,
+            plan.pool.current_tick,
+            plan.pool.tick_spacing
+        );
+        println!(
+            "[stage A] range=[{}, {}]",
+            plan.range.lower, plan.range.upper
+        );
+        println!(
+            "[stage A] effective caps: token0={} token1={}",
+            format_human_amount(plan.effective0, plan.decimals0),
+            format_human_amount(plan.effective1, plan.decimals1)
+        );
+        println!(
+            "[stage A] sized deposit: token0={} token1={} (independent side {:#x})",
+            format_human_amount(a0, plan.decimals0),
+            format_human_amount(a1, plan.decimals1),
+            plan.independent_token
+        );
+
+        assert!(
+            a0 <= plan.effective0 && a1 <= plan.effective1,
+            "quote must fit the budgets"
+        );
+        assert!(
+            plan.range.lower <= plan.pool.current_tick
+                && plan.pool.current_tick <= plan.range.upper
+        );
+    }
+
     // ─── completed-transaction reporting ─────────────────────────────────────
 
     #[test]
