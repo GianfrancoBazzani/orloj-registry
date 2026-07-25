@@ -78,6 +78,7 @@ runtime_profile = "unbounded"
 model_provider = "custom.default"
 risk_profile = "yolo"
 mcp_bundles = ["remote"]
+acp_enable_mcp = true
 
 [runtime_profiles]
 
