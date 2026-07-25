@@ -26,7 +26,7 @@ export const DEFAULT_CHAIN_ID = "11155111";
  * @property {string} aiApiKey
  * @property {string} aiModel
  * @property {AgentMode} agentMode
- * @property {string} nftTokenId
+ * @property {string | null} nftTokenId null when unset — resolve via list_v3_positions bootstrap
  * @property {string} chainId
  */
 
@@ -76,7 +76,11 @@ export function loadConfig(env = process.env) {
   const aiChatCompletionsUrl = requireString("AI_CHAT_COMPLETIONS_URL");
   const aiApiKey = requireString("AI_API_KEY");
   const aiModel = requireString("AI_MODEL");
-  const nftTokenId = requireString("NFT_TOKEN_ID");
+
+  const nftRaw =
+    typeof env.NFT_TOKEN_ID === "string" ? env.NFT_TOKEN_ID.trim() : "";
+  /** @type {string | null} */
+  const nftTokenId = nftRaw === "" ? null : nftRaw;
 
   const subgraphId =
     (typeof env.THE_GRAPH_SUBGRAPH_ID === "string" &&
@@ -106,7 +110,7 @@ export function loadConfig(env = process.env) {
     );
   }
 
-  if (!/^(0|[1-9]\d*)$/.test(nftTokenId)) {
+  if (nftTokenId !== null && !/^(0|[1-9]\d*)$/.test(nftTokenId)) {
     throw new Error(
       "NFT_TOKEN_ID must be a decimal integer string without leading zeros",
     );

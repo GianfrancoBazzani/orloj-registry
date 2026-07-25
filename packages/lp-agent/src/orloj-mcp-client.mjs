@@ -450,6 +450,27 @@ export async function claimV3Fees(client, { chainId, nftTokenId }) {
  * }} params
  */
 export async function decreaseV3Position(client, params) {
+  if (params.chainId !== DEFAULT_CHAIN_ID) {
+    throw new Error(
+      `decrease_v3_position only supports chainId ${DEFAULT_CHAIN_ID}`,
+    );
+  }
+  if (typeof params.nftTokenId !== "string" || !UNSIGNED_DECIMAL_RE.test(params.nftTokenId)) {
+    throw new Error(
+      "nftTokenId must be an unsigned decimal integer string without leading zeros",
+    );
+  }
+  if (
+    typeof params.liquidityPercentageToDecrease !== "number" ||
+    !Number.isInteger(params.liquidityPercentageToDecrease) ||
+    params.liquidityPercentageToDecrease < 1 ||
+    params.liquidityPercentageToDecrease > 100
+  ) {
+    throw new Error(
+      "liquidityPercentageToDecrease must be an integer between 1 and 100",
+    );
+  }
+
   /** @type {Record<string, unknown>} */
   const args = {
     chainId: params.chainId,
@@ -464,30 +485,138 @@ export async function decreaseV3Position(client, params) {
 }
 
 /**
+ * Managed create interface (PR #31). Not part of the autonomous manage loop.
+ *
  * @param {McpClientOptions} client
  * @param {{
  *   chainId: string,
- *   poolAddress: string,
- *   independentTokenAddress: string,
- *   independentTokenAmount: string,
- *   tickLower: number,
- *   tickUpper: number,
+ *   tokenA: string,
+ *   tokenB: string,
+ *   maxTokenAAmount: string,
+ *   maxTokenBAmount: string,
+ *   rangeWidthBps?: number,
+ *   poolAddress?: string,
  *   slippageTolerance?: number,
  * }} params
  */
 export async function createV3Position(client, params) {
+  if (params.chainId !== DEFAULT_CHAIN_ID) {
+    throw new Error(
+      `create_v3_position only supports chainId ${DEFAULT_CHAIN_ID}`,
+    );
+  }
+  if (typeof params.tokenA !== "string" || params.tokenA.trim() === "") {
+    throw new Error("create_v3_position requires non-empty string tokenA");
+  }
+  if (typeof params.tokenB !== "string" || params.tokenB.trim() === "") {
+    throw new Error("create_v3_position requires non-empty string tokenB");
+  }
+  if (typeof params.maxTokenAAmount !== "string" || params.maxTokenAAmount.trim() === "") {
+    throw new Error("create_v3_position requires non-empty string maxTokenAAmount");
+  }
+  if (typeof params.maxTokenBAmount !== "string" || params.maxTokenBAmount.trim() === "") {
+    throw new Error("create_v3_position requires non-empty string maxTokenBAmount");
+  }
+
   /** @type {Record<string, unknown>} */
   const args = {
     chainId: params.chainId,
-    poolAddress: params.poolAddress,
-    independentTokenAddress: params.independentTokenAddress,
-    independentTokenAmount: params.independentTokenAmount,
-    tickLower: params.tickLower,
-    tickUpper: params.tickUpper,
+    tokenA: params.tokenA,
+    tokenB: params.tokenB,
+    maxTokenAAmount: params.maxTokenAAmount,
+    maxTokenBAmount: params.maxTokenBAmount,
   };
+  if (params.rangeWidthBps !== undefined) args.rangeWidthBps = params.rangeWidthBps;
+  if (params.poolAddress !== undefined) args.poolAddress = params.poolAddress;
   if (params.slippageTolerance !== undefined) {
     args.slippageTolerance = params.slippageTolerance;
   }
   const result = await callMcpTool(client, "create_v3_position", args);
   return result.data ?? result.text;
+}
+
+/**
+ * Read-only pool state (token pair, fee, tick, liquidity). Not used in the manage loop.
+ * @param {McpClientOptions} client
+ * @param {{ chainId: string, poolAddress: string }} params
+ */
+export async function getV3PoolState(client, { chainId, poolAddress }) {
+  if (chainId !== DEFAULT_CHAIN_ID) {
+    throw new Error(`get_v3_pool_state only supports chainId ${DEFAULT_CHAIN_ID}`);
+  }
+  if (typeof poolAddress !== "string" || !ADDRESS_RE.test(poolAddress)) {
+    throw new Error("poolAddress must be a 20-byte 0x-prefixed address");
+  }
+  const result = await callMcpTool(client, "get_v3_pool_state", {
+    chainId,
+    poolAddress,
+  });
+  return result.data ?? result.text;
+}
+
+/**
+ * List wallet-owned V3 positions (bootstrap / discovery when NFT_TOKEN_ID is unset).
+ * @param {McpClientOptions} client
+ * @param {{ chainId: string }} params
+ * @returns {Promise<{
+ *   chainId: string,
+ *   walletAddress: string,
+ *   count: number,
+ *   totalOwned: number,
+ *   truncated: boolean,
+ *   positions: Array<{ nftTokenId: string, poolAddress: string, [key: string]: unknown }>,
+ * }>}
+ */
+export async function listV3Positions(client, { chainId }) {
+  if (chainId !== DEFAULT_CHAIN_ID) {
+    throw new Error(`list_v3_positions only supports chainId ${DEFAULT_CHAIN_ID}`);
+  }
+  const result = await callMcpTool(client, "list_v3_positions", { chainId });
+  const data = result.data;
+  if (data === null || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error("list_v3_positions response must be a JSON object");
+  }
+  const positions = /** @type {Record<string, unknown>} */ (data).positions;
+  if (!Array.isArray(positions)) {
+    throw new Error("list_v3_positions.positions must be an array");
+  }
+  return /** @type {any} */ (data);
+}
+
+/**
+ * Resolve which NFT to manage: env NFT_TOKEN_ID, or exactly one listed position.
+ * @param {McpClientOptions} client
+ * @param {{ chainId: string, nftTokenId: string | null }} config
+ * @param {{ listPositions?: typeof listV3Positions }} [deps]
+ * @returns {Promise<{ nftTokenId: string, source: "env" | "list_v3_positions" }>}
+ */
+export async function resolveManagedNftTokenId(client, config, deps = {}) {
+  if (typeof config.nftTokenId === "string" && config.nftTokenId !== "") {
+    if (!UNSIGNED_DECIMAL_RE.test(config.nftTokenId)) {
+      throw new Error(
+        "NFT_TOKEN_ID must be a decimal integer string without leading zeros",
+      );
+    }
+    return { nftTokenId: config.nftTokenId, source: "env" };
+  }
+
+  const listFn = deps.listPositions ?? listV3Positions;
+  const listed = await listFn(client, { chainId: config.chainId });
+  const positions = listed.positions ?? [];
+  if (positions.length === 0) {
+    throw new Error(
+      "NFT_TOKEN_ID is unset and list_v3_positions returned no positions — set NFT_TOKEN_ID or open a position first",
+    );
+  }
+  if (positions.length !== 1 || listed.truncated === true) {
+    throw new Error(
+      `NFT_TOKEN_ID is unset but wallet owns ${listed.totalOwned ?? positions.length} position(s)` +
+        `${listed.truncated ? " (list truncated)" : ""} — set NFT_TOKEN_ID explicitly`,
+    );
+  }
+  const id = positions[0]?.nftTokenId;
+  if (typeof id !== "string" || !UNSIGNED_DECIMAL_RE.test(id)) {
+    throw new Error("list_v3_positions[0].nftTokenId is missing or malformed");
+  }
+  return { nftTokenId: id, source: "list_v3_positions" };
 }

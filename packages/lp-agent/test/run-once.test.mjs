@@ -209,34 +209,102 @@ describe("run-once pipeline", () => {
     assert.equal(trace.execution.proposedCall.toolName, "decrease_v3_position");
   });
 
-  it("execute mode marks REDUCE proposed write pending (no real MCP write)", async () => {
-    const trace = await runOnce({
-      config: { ...CONFIG, agentMode: "execute" },
-      getPosition: async () => POSITION,
-      fetchMarket: async () => MARKET,
-      extractFeaturesFn: () => FEATURES,
-      requestDecisionFn: async () => reduceDecision(),
-    });
-    assert.equal(trace.execution.status, "pending");
-    assert.equal(trace.execution.kind, "proposed_write");
-    assert.match(trace.execution.message, /not enabled/);
-    assert.equal(trace.execution.wouldCall.toolName, "decrease_v3_position");
-  });
-
-  it("execute mode HOLD reports held/no_write — never pending", async () => {
+  it("execute mode HOLD reports held/no_write and never calls MCP write", async () => {
+    let decreaseCalls = 0;
     const trace = await runOnce({
       config: { ...CONFIG, agentMode: "execute" },
       getPosition: async () => POSITION,
       fetchMarket: async () => MARKET,
       extractFeaturesFn: () => FEATURES,
       requestDecisionFn: async () => holdDecision(),
+      decreasePosition: async () => {
+        decreaseCalls += 1;
+        throw new Error("should not decrease on HOLD");
+      },
     });
+    assert.equal(trace.phase, 2);
     assert.equal(trace.execution.status, "held");
     assert.equal(trace.execution.kind, "no_write");
-    assert.equal(trace.execution.wouldCall, null);
-    assert.equal(trace.execution.proposedCall, null);
+    assert.equal(trace.execution.called, null);
+    assert.equal(trace.execution.mcpResponse, null);
     assert.notEqual(trace.execution.status, "pending");
-    assert.match(trace.execution.message, /nothing pending/i);
+    assert.equal(decreaseCalls, 0);
+    assert.match(trace.execution.message, /nothing executed/i);
+  });
+
+  it("execute mode REDUCE calls decrease_v3_position exactly once with plan args", async () => {
+    const calls = [];
+    const mcpPayload = { txHash: "0xabc", amount0: "1", amount1: "2" };
+    const trace = await runOnce({
+      config: { ...CONFIG, agentMode: "execute" },
+      getPosition: async () => POSITION,
+      fetchMarket: async () => MARKET,
+      extractFeaturesFn: () => FEATURES,
+      requestDecisionFn: async () => reduceDecision(),
+      decreasePosition: async (_client, params) => {
+        calls.push(params);
+        return mcpPayload;
+      },
+    });
+    assert.equal(trace.phase, 2);
+    assert.equal(trace.execution.status, "executed");
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0], {
+      chainId: "11155111",
+      nftTokenId: "7",
+      liquidityPercentageToDecrease: 40,
+    });
+    assert.deepEqual(trace.execution.called, {
+      toolName: "decrease_v3_position",
+      arguments: {
+        chainId: "11155111",
+        nftTokenId: "7",
+        liquidityPercentageToDecrease: 40,
+      },
+    });
+    assert.deepEqual(trace.execution.mcpResponse, mcpPayload);
+  });
+
+  it("execute mode surfaces MCP failure and does not downgrade to observe", async () => {
+    await assert.rejects(
+      () =>
+        runOnce({
+          config: { ...CONFIG, agentMode: "execute" },
+          getPosition: async () => POSITION,
+          fetchMarket: async () => MARKET,
+          extractFeaturesFn: () => FEATURES,
+          requestDecisionFn: async () => reduceDecision(),
+          decreasePosition: async () => {
+            throw new Error("MCP tool error: insufficient liquidity");
+          },
+        }),
+      (err) => {
+        assert.match(String(err.message), /execute decrease_v3_position failed/);
+        assert.match(String(err.message), /insufficient liquidity/);
+        assert.equal(/** @type {any} */ (err).execution?.status, "failed");
+        assert.equal(/** @type {any} */ (err).execution?.mode, "execute");
+        assert.notEqual(/** @type {any} */ (err).execution?.status, "observe");
+        return true;
+      },
+    );
+  });
+
+  it("observe mode REDUCE never calls decreasePosition", async () => {
+    let decreaseCalls = 0;
+    const trace = await runOnce({
+      config: CONFIG,
+      getPosition: async () => POSITION,
+      fetchMarket: async () => MARKET,
+      extractFeaturesFn: () => FEATURES,
+      requestDecisionFn: async () => reduceDecision(),
+      decreasePosition: async () => {
+        decreaseCalls += 1;
+        return {};
+      },
+    });
+    assert.equal(trace.phase, 1);
+    assert.equal(trace.execution.status, "observe");
+    assert.equal(decreaseCalls, 0);
   });
 
   it("fails closed when pairContextFromMarket is null", async () => {

@@ -13,6 +13,10 @@ import {
   getV3Position,
   claimV3Fees,
   decreaseV3Position,
+  createV3Position,
+  getV3PoolState,
+  listV3Positions,
+  resolveManagedNftTokenId,
   validateGetV3Position,
   redactSecrets,
 } from "../src/orloj-mcp-client.mjs";
@@ -81,8 +85,15 @@ describe("config", () => {
     }
     assert.match(message, /Missing required environment variables/);
     assert.match(message, /THE_GRAPH_API_KEY/);
-    assert.match(message, /NFT_TOKEN_ID/);
+    assert.match(message, /AI_API_KEY/);
+    assert.doesNotMatch(message, /NFT_TOKEN_ID/); // optional — bootstrap via list_v3_positions
     assert.doesNotMatch(message, /super-secret-key/);
+  });
+
+  it("allows omitting NFT_TOKEN_ID (bootstrap via list_v3_positions)", () => {
+    const { NFT_TOKEN_ID: _omit, ...env } = validEnv;
+    const cfg = loadConfig(env);
+    assert.equal(cfg.nftTokenId, null);
   });
 
   it("rejects invalid AGENT_MODE", () => {
@@ -365,6 +376,140 @@ describe("mcp-response", () => {
     assert.equal(calls[0].params.name, "claim_v3_fees");
     assert.equal(calls[1].params.name, "decrease_v3_position");
     assert.equal(calls[1].params.arguments.liquidityPercentageToDecrease, 25);
+  });
+
+  it("create_v3_position uses managed bootstrap args (tokenA/B + max amounts)", async () => {
+    let body;
+    const fetchImpl = async (_url, init) => {
+      body = JSON.parse(String(init?.body));
+      return new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            content: [{ type: "text", text: JSON.stringify({ nftTokenId: "9" }) }],
+            isError: false,
+          },
+        }),
+        { status: 200 },
+      );
+    };
+    await createV3Position(
+      { url: "http://mcp.test/mcp", apiKey: "k", fetchImpl },
+      {
+        chainId: "11155111",
+        tokenA: "ETH",
+        tokenB: "0x0000000000000000000000000000000000000001",
+        maxTokenAAmount: "0.01",
+        maxTokenBAmount: "20",
+        rangeWidthBps: 1000,
+      },
+    );
+    assert.equal(body.params.name, "create_v3_position");
+    assert.deepEqual(body.params.arguments, {
+      chainId: "11155111",
+      tokenA: "ETH",
+      tokenB: "0x0000000000000000000000000000000000000001",
+      maxTokenAAmount: "0.01",
+      maxTokenBAmount: "20",
+      rangeWidthBps: 1000,
+    });
+    assert.equal(body.params.arguments.independentTokenAddress, undefined);
+    assert.equal(body.params.arguments.tickLower, undefined);
+  });
+
+  it("list_v3_positions and resolveManagedNftTokenId bootstrap a single NFT", async () => {
+    const fetchImpl = async () =>
+      new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  chainId: "11155111",
+                  walletAddress: ADDR.wallet,
+                  count: 1,
+                  totalOwned: 1,
+                  truncated: false,
+                  positions: [{ nftTokenId: "42", poolAddress: ADDR.pool }],
+                }),
+              },
+            ],
+            isError: false,
+          },
+        }),
+        { status: 200 },
+      );
+    const client = { url: "http://mcp.test/mcp", apiKey: "k", fetchImpl };
+    const listed = await listV3Positions(client, { chainId: "11155111" });
+    assert.equal(listed.count, 1);
+    const resolved = await resolveManagedNftTokenId(client, {
+      chainId: "11155111",
+      nftTokenId: null,
+    });
+    assert.deepEqual(resolved, { nftTokenId: "42", source: "list_v3_positions" });
+    assert.deepEqual(
+      await resolveManagedNftTokenId(client, {
+        chainId: "11155111",
+        nftTokenId: "7",
+      }),
+      { nftTokenId: "7", source: "env" },
+    );
+  });
+
+  it("resolveManagedNftTokenId fails closed when multiple positions and NFT unset", async () => {
+    await assert.rejects(
+      () =>
+        resolveManagedNftTokenId(
+          {
+            url: "http://mcp.test/mcp",
+            apiKey: "k",
+            fetchImpl: async () => {
+              throw new Error("unused");
+            },
+          },
+          { chainId: "11155111", nftTokenId: null },
+          {
+            listPositions: async () => ({
+              count: 2,
+              totalOwned: 2,
+              truncated: false,
+              positions: [{ nftTokenId: "1" }, { nftTokenId: "2" }],
+            }),
+          },
+        ),
+      /set NFT_TOKEN_ID explicitly/,
+    );
+  });
+
+  it("get_v3_pool_state posts poolAddress", async () => {
+    let body;
+    await getV3PoolState(
+      {
+        url: "http://mcp.test/mcp",
+        apiKey: "k",
+        fetchImpl: async (_url, init) => {
+          body = JSON.parse(String(init?.body));
+          return new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              result: {
+                content: [{ type: "text", text: JSON.stringify({ tick: "1" }) }],
+                isError: false,
+              },
+            }),
+            { status: 200 },
+          );
+        },
+      },
+      { chainId: "11155111", poolAddress: ADDR.pool },
+    );
+    assert.equal(body.params.name, "get_v3_pool_state");
+    assert.equal(body.params.arguments.poolAddress, ADDR.pool);
   });
 
   it("fail closed: timeout during fetch", async () => {

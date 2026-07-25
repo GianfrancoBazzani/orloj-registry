@@ -1,17 +1,25 @@
 /**
- * Single-run LP agent pipeline (Phase 1: observe / dry-run).
+ * Single-run LP agent pipeline.
+ *
+ * Phase 1 observe: dry-run audit trace (no MCP write).
+ * Phase 2 execute: HOLD never writes; REDUCE calls decrease_v3_position exactly once.
  *
  * Invariants:
  * - pairContextFromMarket(market) must be non-null (ids, symbols, decimals, fee tier).
  * - Pair is validated against features.position before requestDecision.
  * - Never falls back to address-only pair context.
- * - HOLD → no write; REDUCE → hardcoded decrease_v3_position proposal only.
- * - AGENT_MODE=execute still does not perform real MCP writes in Phase 1 (pending only).
+ * - HOLD → no write; REDUCE → hardcoded decrease_v3_position only.
+ * - Execute MCP failures fail closed (never silently downgraded to observe).
  */
 
 import { pathToFileURL } from "node:url";
 import { loadConfig } from "./config.mjs";
-import { getV3Position } from "./orloj-mcp-client.mjs";
+import {
+  getV3Position,
+  decreaseV3Position,
+  resolveManagedNftTokenId,
+  redactSecrets,
+} from "./orloj-mcp-client.mjs";
 import { fetchPoolMarketContext } from "./graph-client.mjs";
 import { extractFeatures } from "./features.mjs";
 import {
@@ -32,10 +40,12 @@ import { planAction } from "./action-planner.mjs";
  * @property {(client: object, input: object) => Promise<object>} [requestDecisionFn]
  * @property {(decision: object, context: object) => object} [planActionFn]
  * @property {(market: object) => object | null} [pairFromMarketFn]
+ * @property {(client: object, config: object, deps?: object) => Promise<{ nftTokenId: string, source: string }>} [resolveNftFn]
+ * @property {(client: object, params: object) => Promise<unknown>} [decreasePosition]
  */
 
 /**
- * Run one observe/propose cycle and return an audit trace (no secrets).
+ * Run one observe/propose/(optional execute) cycle and return an audit trace (no secrets).
  * @param {RunOnceDeps} [deps]
  */
 export async function runOnce(deps = {}) {
@@ -47,6 +57,8 @@ export async function runOnce(deps = {}) {
   const requestDecisionFn = deps.requestDecisionFn ?? requestDecision;
   const planActionFn = deps.planActionFn ?? planAction;
   const pairFromMarketFn = deps.pairFromMarketFn ?? pairContextFromMarket;
+  const resolveNftFn = deps.resolveNftFn ?? resolveManagedNftTokenId;
+  const decreasePosition = deps.decreasePosition ?? decreaseV3Position;
 
   const mcpClient = {
     url: config.orlojMcpUrl,
@@ -66,9 +78,15 @@ export async function runOnce(deps = {}) {
     fetchImpl,
   };
 
-  const position = await getPosition(mcpClient, {
+  const resolvedNft = await resolveNftFn(mcpClient, {
     chainId: config.chainId,
     nftTokenId: config.nftTokenId,
+  });
+  const nftTokenId = resolvedNft.nftTokenId;
+
+  const position = await getPosition(mcpClient, {
+    chainId: config.chainId,
+    nftTokenId,
   });
 
   const market = await fetchMarket(graphClient, {
@@ -76,7 +94,7 @@ export async function runOnce(deps = {}) {
   });
 
   const features = extractFeaturesFn(position, market, {
-    expectedNftTokenId: config.nftTokenId,
+    expectedNftTokenId: nftTokenId,
   });
 
   // Fail closed: never silently fall back to address-only pair context.
@@ -94,27 +112,54 @@ export async function runOnce(deps = {}) {
   /** @type {Record<string, unknown>} */
   let execution;
   if (plan.kind === "no_write" || plan.mcpCall === null) {
-    // HOLD: never "pending" — even in execute mode.
+    // HOLD: never write — even in execute mode.
     execution = {
       status: config.agentMode === "execute" ? "held" : "observe",
       kind: "no_write",
       mode: config.agentMode,
       message:
         config.agentMode === "execute"
-          ? "HOLD — no write planned; nothing pending"
+          ? "HOLD — no write planned; nothing executed"
           : "Dry-run complete — HOLD; no MCP write performed",
       proposedCall: null,
       wouldCall: null,
+      called: null,
+      mcpResponse: null,
     };
   } else if (config.agentMode === "execute") {
-    // Only a non-null REDUCE MCP proposal is pending.
+    // Phase 2: actually call decrease_v3_position exactly once with plan args.
+    let mcpResponse;
+    try {
+      mcpResponse = await decreasePosition(mcpClient, {
+        chainId: plan.mcpCall.arguments.chainId,
+        nftTokenId: plan.mcpCall.arguments.nftTokenId,
+        liquidityPercentageToDecrease:
+          plan.mcpCall.arguments.liquidityPercentageToDecrease,
+      });
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      const message = redactSecrets(raw, config.orlojMcpApiKey);
+      // Fail closed — do not downgrade to observe.
+      const failure = new Error(`execute decrease_v3_position failed: ${message}`);
+      /** @type {any} */ (failure).execution = {
+        status: "failed",
+        kind: "proposed_write",
+        mode: "execute",
+        message: `MCP write failed: ${message}`,
+        called: plan.mcpCall,
+        mcpResponse: null,
+        error: message,
+      };
+      throw failure;
+    }
+
     execution = {
-      status: "pending",
+      status: "executed",
       kind: "proposed_write",
       mode: "execute",
-      message:
-        "Phase 1: proposed MCP call is pending — real on-chain writes are not enabled yet",
-      wouldCall: plan.mcpCall,
+      message: "decrease_v3_position executed via Orloj MCP",
+      called: plan.mcpCall,
+      mcpResponse,
     };
   } else {
     execution = {
@@ -123,13 +168,21 @@ export async function runOnce(deps = {}) {
       mode: "observe",
       message: "Dry-run complete — no MCP write performed",
       proposedCall: plan.mcpCall,
+      called: null,
+      mcpResponse: null,
     };
   }
 
-  const trace = {
+  const phase = config.agentMode === "execute" ? 2 : 1;
+
+  return {
     status: "ok",
-    phase: 1,
+    phase,
     agentMode: config.agentMode,
+    nftResolution: {
+      nftTokenId,
+      source: resolvedNft.source,
+    },
     position: {
       nftTokenId: position.nftTokenId,
       chainId: position.chainId,
@@ -172,8 +225,6 @@ export async function runOnce(deps = {}) {
     plan,
     execution,
   };
-
-  return trace;
 }
 
 async function main() {
@@ -182,13 +233,16 @@ async function main() {
     console.log(JSON.stringify(trace, null, 2));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(
-      JSON.stringify({
-        status: "error",
-        phase: 1,
-        message,
-      }),
-    );
+    /** @type {Record<string, unknown>} */
+    const payload = {
+      status: "error",
+      phase: 2,
+      message,
+    };
+    if (err && typeof err === "object" && "execution" in err) {
+      payload.execution = /** @type {any} */ (err).execution;
+    }
+    console.error(JSON.stringify(payload));
     process.exitCode = 1;
   }
 }

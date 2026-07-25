@@ -45,6 +45,9 @@ describe("lp-agent scaffold", () => {
     assert.match(readme, /pairContextFromMarket/);
     assert.match(readme, /decrease_v3_position/);
     assert.match(readme, /execution\.status=held/);
-    assert.match(readme, /Phase 1 audit stop/);
+    assert.match(readme, /Phase 2/);
+    assert.match(readme, /maxTokenAAmount/);
+    assert.match(readme, /list_v3_positions/);
+    assert.match(readme, /Audit stop before live write/);
   });
 });
