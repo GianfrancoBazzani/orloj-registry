@@ -67,7 +67,7 @@ keep_recent = 4
 max_tokens = 8192
 
 [providers.models.custom.default]
-model = "deepseek-v4-flash"
+model = "kimi-k2.7-code"
 uri = "https://router-api.0g.ai/v1"
 api_key = <api key placeholder>
 
