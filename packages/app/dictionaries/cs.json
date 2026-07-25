@@ -161,24 +161,22 @@
     "signInTitle": "Aplikace agenta je soukromá",
     "signInBody": "Přihlaste se pro otevření agenta a jeho přiřazených blockchainových nástrojů.",
     "signIn": "Přihlásit se",
-    "eyebrow": "Aplikace agenta Orloj",
-    "openApp": "Otevřít aplikaci",
     "install": "Nainstalovat aplikaci",
-    "installed": "Nainstalováno",
-    "installFallback": "Pokud to prohlížeč podporuje, zvolte v nabídce Nainstalovat aplikaci nebo Přidat na plochu.",
+    "installTitle": "Nainstalovat tuto aplikaci",
+    "installIntro": "Obě pole jsou volitelná. Ponechte je beze změny a aplikace se nainstaluje s názvem agenta a znakem Orloj.",
+    "appName": "Název aplikace",
+    "appIcon": "Ikona aplikace",
+    "iconHint": "Čtvercové PNG 192–1024 px, nejvýše 1 MiB.",
+    "resetIcon": "Použít ikonu Orloj",
+    "cancel": "Zrušit",
+    "saveAndInstall": "Uložit a nainstalovat",
+    "saving": "Ukládání…",
+    "installing": "Instalace…",
+    "saveFailed": "Vzhled se nepodařilo uložit",
+    "installFallback": "Váš prohlížeč instaluje z vlastní nabídky: zvolte Nainstalovat aplikaci nebo Sdílet → Přidat na plochu.",
     "chatMount": "Smlouva integrace chatu · v1",
     "chatReady": "Připraveno pro komponentu chatbotu",
-    "chatReadyBody": "Tento chráněný bod zpřístupňuje pouze MCP kontext přiřazený agentovi. Budoucí chat načte přihlašovací údaje na serveru.",
-    "assignedMcps": "Přiřazené MCP",
-    "noMcps": "Zatím nejsou přiřazena žádná MCP. Přidejte je z registru.",
-    "branding": "Vzhled aplikace",
-    "appName": "Vlastní název aplikace",
-    "appIcon": "Vlastní ikona PNG",
-    "iconHint": "Čtvercové PNG 192–1024 px, nejvýše 1 MiB. Rám Orloj zůstane viditelný.",
-    "saveFailed": "Vzhled se nepodařilo uložit",
-    "saving": "Ukládání…",
-    "save": "Uložit před instalací",
-    "resetIcon": "Obnovit ikonu"
+    "chatReadyBody": "Tento chráněný bod zpřístupňuje pouze MCP kontext přiřazený agentovi. Budoucí chat načte přihlašovací údaje na serveru."
   },
   "profile": {
     "signInPrompt": "Přihlaste se pro přístup k profilu.",
@@ -295,6 +293,9 @@
     "errorStart": "Sezení se nepodařilo spustit.",
     "errorRuntime": "Chat s agentem není na tomto hostiteli dostupný.",
     "errorNoKey": "Tento agent ještě nemá API klíč — udělte mu jej na kartě Agenti.",
-    "errorRegistry": "Registr je nedostupný, takže nelze vypsat žádné MCP."
+    "errorRegistry": "Registr je nedostupný, takže nelze vypsat žádné MCP.",
+    "mcpsDropped": "{n} MCP tohoto agenta už v registru není a bylo odebráno z jeho nástrojů.",
+    "mcpsAllGone": "Žádné MCP tohoto agenta už v registru není. Vyberte ta, která má používat, a pokračujte.",
+    "mcpsDroppedDismiss": "Rozumím"
   }
 }

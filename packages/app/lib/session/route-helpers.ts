@@ -2,7 +2,7 @@ import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
 import { assertAgentOwner } from "@/lib/agent-ownership";
 import { NoActiveTokenError } from "@/lib/session/registry";
-import { RegistryUnreachableError, UnknownMcpError } from "@/lib/session/mcp-servers";
+import { RegistryUnreachableError, SelectionUnresolvableError } from "@/lib/session/mcp-servers";
 import {
   agentDir,
   InvalidAgentIdError,
@@ -33,8 +33,18 @@ export const authorizeAgent = async (
 };
 
 export const errorResponse = (err: unknown): Response => {
-  if (err instanceof UnknownMcpError) {
-    return Response.json({ error: `Unknown MCP: ${err.mcpName}` }, { status: 400 });
+  // 422 rather than the 409s below: the client has to act on this one specifically — send
+  // the user back to the picker — so it branches on `code`, and no other session response
+  // uses this status.
+  if (err instanceof SelectionUnresolvableError) {
+    return Response.json(
+      {
+        error: "None of the selected MCPs are in the registry",
+        code: "selection_unresolvable",
+        dropped: err.dropped,
+      },
+      { status: 422 },
+    );
   }
   if (err instanceof NoActiveTokenError) {
     return Response.json({ error: "Agent has no active API key" }, { status: 409 });

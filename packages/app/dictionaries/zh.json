@@ -161,24 +161,22 @@
     "signInTitle": "您的智能体应用是私有的",
     "signInBody": "登录后打开此智能体及其已分配的区块链工具。",
     "signIn": "登录",
-    "eyebrow": "Orloj 智能体应用",
-    "openApp": "打开应用",
     "install": "安装应用",
-    "installed": "已安装",
-    "installFallback": "如果浏览器支持，请打开菜单并选择“安装应用”或“添加到主屏幕”。",
+    "installTitle": "安装此应用",
+    "installIntro": "两个字段均为可选。保持原样即可使用智能体名称和 Orloj 标志安装。",
+    "appName": "应用名称",
+    "appIcon": "应用图标",
+    "iconHint": "正方形 PNG，192–1024 像素，不超过 1 MiB。",
+    "resetIcon": "使用 Orloj 图标",
+    "cancel": "取消",
+    "saveAndInstall": "保存并安装",
+    "saving": "正在保存…",
+    "installing": "正在安装…",
+    "saveFailed": "无法保存应用标识",
+    "installFallback": "您的浏览器需从自身菜单安装：请选择“安装应用”或“分享 → 添加到主屏幕”。",
     "chatMount": "聊天集成契约 · v1",
     "chatReady": "已为聊天机器人组件准备就绪",
-    "chatReadyBody": "此受保护挂载点仅公开该智能体已分配的 MCP 上下文。未来的聊天运行时将在服务器端解析凭据。",
-    "assignedMcps": "已分配的 MCP",
-    "noMcps": "尚未分配 MCP。请从注册表添加。",
-    "branding": "应用标识",
-    "appName": "自定义应用名称",
-    "appIcon": "自定义 PNG 图标",
-    "iconHint": "正方形 PNG，192–1024 像素，不超过 1 MiB。Orloj 边框会保留。",
-    "saveFailed": "无法保存应用标识",
-    "saving": "正在保存…",
-    "save": "安装前保存",
-    "resetIcon": "重置图标"
+    "chatReadyBody": "此受保护挂载点仅公开该智能体已分配的 MCP 上下文。未来的聊天运行时将在服务器端解析凭据。"
   },
   "profile": {
     "signInPrompt": "登录以访问您的个人资料。",
@@ -295,6 +293,9 @@
     "errorStart": "无法启动会话。",
     "errorRuntime": "此主机上无法使用代理聊天。",
     "errorNoKey": "此代理还没有 API 密钥 —— 请在「代理」标签页中授予。",
-    "errorRegistry": "注册表无法访问，因此无法列出任何 MCP。"
+    "errorRegistry": "注册表无法访问，因此无法列出任何 MCP。",
+    "mcpsDropped": "该代理有 {n} 个 MCP 已不在注册表中，已从其工具中移除。",
+    "mcpsAllGone": "该代理的 MCP 均已不在注册表中。请选择它应使用的 MCP 以继续。",
+    "mcpsDroppedDismiss": "知道了"
   }
 }

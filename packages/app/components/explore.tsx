@@ -445,7 +445,17 @@ const MCPCard = ({
             flex: 1,
           }}
         >
-          <div className="display" style={{ fontSize: 18, color: "var(--ink)" }}>
+          <div
+            className="display"
+            title={m.name}
+            style={{
+              fontSize: 18,
+              color: "var(--ink)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
             {m.name}
           </div>
           <div
@@ -462,7 +472,7 @@ const MCPCard = ({
             {m.contract ? SHORT_ADDR(m.contract) : m.author}
           </div>
         </div>
-        <div style={{ flex: "0 0 auto" }}>
+        <div style={{ flex: "0 1 auto", minWidth: 0, maxWidth: "45%" }}>
           <button
             type="button"
             onClick={(e) => {
@@ -471,6 +481,8 @@ const MCPCard = ({
             }}
             className="smallcaps"
             style={{
+              display: "block",
+              maxWidth: "100%",
               padding: "4px 8px",
               borderRadius: 999,
               background: "var(--parchment-2)",
@@ -481,6 +493,9 @@ const MCPCard = ({
               fontWeight: 500,
               letterSpacing: "0.1em",
               cursor: "pointer",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
             }}
             title={t("explore.filterByPlatform", { platform: m.platform })}
           >

@@ -1,5 +1,8 @@
 import "server-only";
 
+import { open } from "node:fs/promises";
+import { join } from "node:path";
+
 import { getPool } from "@/lib/db";
 
 const MAX_APP_NAME = 40;
@@ -13,6 +16,14 @@ const UNSAFE_NAME_CHARS =
   /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u;
 const UNSAFE_NAME_CHARS_GLOBAL =
   /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/gu;
+
+// The Orloj mark is what an agent app installs with until its owner uploads something else.
+export const DEFAULT_ICON_SRC = "/logo.png";
+const DEFAULT_ICON_PATH = ["public", "logo.png"];
+// Only reached if the file cannot be read; the manifest still needs a size, and a wrong one is
+// better than an entry Chrome discards outright.
+const DEFAULT_ICON_FALLBACK_SIZES = "504x495";
+let defaultIconSizesCache: Promise<string> | null = null;
 
 export interface AgentBranding {
   appName: string | null;
@@ -94,6 +105,35 @@ export function validatePng(bytes: Buffer, contentType: string): ValidatedPng {
     throw new Error("Animated PNG icons are not allowed");
   }
   return { bytes, width, height };
+}
+
+async function readDefaultIconSizes(): Promise<string> {
+  const handle = await open(join(process.cwd(), ...DEFAULT_ICON_PATH), "r");
+  try {
+    const header = Buffer.alloc(24);
+    const { bytesRead } = await handle.read(header, 0, 24, 0);
+    if (
+      bytesRead < 24 ||
+      !header.subarray(0, 8).equals(PNG_SIGNATURE) ||
+      header.subarray(12, 16).toString("ascii") !== "IHDR"
+    ) {
+      throw new Error("Default icon is not a PNG");
+    }
+    return `${header.readUInt32BE(16)}x${header.readUInt32BE(20)}`;
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Measures the shipped logo rather than hardcoding its size, so replacing the file cannot leave
+ * the manifest declaring dimensions the browser then rejects. Read once per process.
+ */
+export function defaultIconSizes(): Promise<string> {
+  defaultIconSizesCache ??= readDefaultIconSizes().catch(
+    () => DEFAULT_ICON_FALLBACK_SIZES,
+  );
+  return defaultIconSizesCache;
 }
 
 export async function getAgentBranding(agentId: string): Promise<AgentBranding> {

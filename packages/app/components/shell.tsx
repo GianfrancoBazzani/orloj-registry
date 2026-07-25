@@ -22,9 +22,8 @@ export const Shell = ({ children }: { children: React.ReactNode }) => {
   // pathname is "/{locale}/{segment}" — segment is index 2
   const segment = pathname.split("/")[2] ?? "";
   const route = ROUTE_KEYS[segment] ?? "home";
-  // "session", not "agents": the agent app is the chat at /{locale}/session/{id} — the URL the
-  // installed PWA launches, which must not carry site chrome. /{locale}/agents/{id} is only the
-  // app's branding page, and keeps the nav like any other settings screen.
+  // The agent app is the chat at /{locale}/session/{id} — the URL the installed PWA launches,
+  // which must not carry site chrome.
   const isAgentApp = segment === "session";
 
   const navigate = (r: string) => {

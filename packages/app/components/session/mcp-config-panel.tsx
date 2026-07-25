@@ -11,6 +11,8 @@ export type ApplyResult = {
   acpSessionId: string;
   resumed: boolean;
   mcps: McpSelectionItem[];
+  // Picked names the registry no longer publishes; pruned from the applied selection.
+  dropped?: string[];
 };
 
 export function McpConfigPanel({
@@ -39,16 +41,20 @@ export function McpConfigPanel({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ mcpNames: selection }),
       });
-      const payload = (await res.json()) as ApplyResult & { error?: string };
+      const payload = (await res.json()) as ApplyResult & { error?: string; code?: string };
       if (!res.ok) {
         setError(
-          res.status === 503
-            ? t("session.errorRuntime")
-            : res.status === 409
-              ? t("session.errorNoKey")
-              : res.status === 502
-                ? t("session.errorRegistry")
-                : (payload.error ?? t("session.errorStart")),
+          // Everything picked has since left the registry — reachable here because the
+          // catalog the picker rendered can go stale while the panel is open.
+          payload.code === "selection_unresolvable"
+            ? t("session.mcpsAllGone")
+            : res.status === 503
+              ? t("session.errorRuntime")
+              : res.status === 409
+                ? t("session.errorNoKey")
+                : res.status === 502
+                  ? t("session.errorRegistry")
+                  : (payload.error ?? t("session.errorStart")),
         );
         return;
       }

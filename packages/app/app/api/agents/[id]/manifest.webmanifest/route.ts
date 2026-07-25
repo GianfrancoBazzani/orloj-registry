@@ -3,7 +3,9 @@ import { auth } from "@/lib/auth";
 import { getOneclawClient } from "@/lib/oneclaw";
 import { assertAgentOwner } from "@/lib/agent-ownership";
 import {
+  DEFAULT_ICON_SRC,
   defaultAppDescription,
+  defaultIconSizes,
   getAgentBranding,
   manifestAppName,
 } from "@/lib/agent-branding";
@@ -42,13 +44,31 @@ export async function GET(
   const name = manifestAppName(agent.name, branding.appName);
   const shortBase = name.replace(/ · Orloj$/u, "");
   const shortName = `${shortBase.slice(0, 14)} · Orloj`;
-  // The installed app opens the chat itself. `/{locale}/session/{id}` is the agent app URL —
-  // `/{locale}/agents/{id}` is only its branding surface, and launching there would put a
-  // settings page behind the home-screen icon. `scope` has to contain `start_url`, and it is
-  // also what makes the session page (not this one) the page that can offer the install.
+  // The installed app opens the chat itself: `/{locale}/session/{id}` is the agent app URL, and
+  // `scope` has to contain `start_url`. That scope is also what makes the session page the only
+  // page a browser will offer the install from.
   const appUrl = `/${locale}/session/${encodeURIComponent(id)}`;
   const startUrl = `${appUrl}?source=pwa`;
-  const iconBase = `/api/agents/${encodeURIComponent(id)}/icon`;
+  // Uploads are validated square, so a circular mask is safe on them. The shipped Orloj mark is
+  // not square — masking it would clip the rim — so it ships as `any` at its measured size.
+  const icons =
+    branding.iconPng && branding.iconWidth && branding.iconHeight
+      ? [
+          {
+            src: `/api/agents/${encodeURIComponent(id)}/icon`,
+            sizes: `${branding.iconWidth}x${branding.iconHeight}`,
+            type: "image/png",
+            purpose: "any maskable",
+          },
+        ]
+      : [
+          {
+            src: DEFAULT_ICON_SRC,
+            sizes: await defaultIconSizes(),
+            type: "image/png",
+            purpose: "any",
+          },
+        ];
 
   return Response.json(
     {
@@ -62,20 +82,7 @@ export async function GET(
       background_color: "#f1e9d4",
       theme_color: "#1a1612",
       prefer_related_applications: false,
-      icons: [
-        {
-          src: `${iconBase}/192`,
-          sizes: "192x192",
-          type: "image/png",
-          purpose: "any maskable",
-        },
-        {
-          src: `${iconBase}/512`,
-          sizes: "512x512",
-          type: "image/png",
-          purpose: "any maskable",
-        },
-      ],
+      icons,
     },
     {
       headers: {

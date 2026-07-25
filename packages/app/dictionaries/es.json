@@ -161,24 +161,22 @@
     "signInTitle": "La app de su agente es privada",
     "signInBody": "Inicie sesión para abrir este agente y sus herramientas blockchain asignadas.",
     "signIn": "Iniciar sesión",
-    "eyebrow": "App de agente Orloj",
-    "openApp": "Abrir app",
     "install": "Instalar app",
-    "installed": "Instalada",
-    "installFallback": "Si su navegador lo admite, abra su menú y elija Instalar app o Añadir a pantalla de inicio.",
+    "installTitle": "Instalar esta app",
+    "installIntro": "Ambos campos son opcionales. Déjelos como están para instalar con el nombre del agente y la marca Orloj.",
+    "appName": "Nombre de la app",
+    "appIcon": "Icono de la app",
+    "iconHint": "PNG cuadrado de 192–1024 px y hasta 1 MiB.",
+    "resetIcon": "Usar el icono de Orloj",
+    "cancel": "Cancelar",
+    "saveAndInstall": "Guardar e instalar",
+    "saving": "Guardando…",
+    "installing": "Instalando…",
+    "saveFailed": "No se pudo guardar la identidad",
+    "installFallback": "Su navegador instala desde su propio menú: elija Instalar app o Compartir → Añadir a pantalla de inicio.",
     "chatMount": "Contrato de integración del chat · v1",
     "chatReady": "Listo para el componente de chatbot",
-    "chatReadyBody": "Este punto protegido expone solo el contexto MCP asignado a este agente. El futuro chat resolverá las credenciales en el servidor.",
-    "assignedMcps": "MCPs asignados",
-    "noMcps": "Todavía no hay MCPs asignados. Añada uno desde el registro.",
-    "branding": "Identidad de la app",
-    "appName": "Nombre personalizado",
-    "appIcon": "Icono PNG personalizado",
-    "iconHint": "PNG cuadrado de 192–1024 px y hasta 1 MiB. El marco de Orloj permanece visible.",
-    "saveFailed": "No se pudo guardar la identidad",
-    "saving": "Guardando…",
-    "save": "Guardar antes de instalar",
-    "resetIcon": "Restablecer icono"
+    "chatReadyBody": "Este punto protegido expone solo el contexto MCP asignado a este agente. El futuro chat resolverá las credenciales en el servidor."
   },
   "profile": {
     "signInPrompt": "Inicie sesión para acceder a su perfil.",
@@ -295,6 +293,9 @@
     "errorStart": "No se pudo iniciar la sesión.",
     "errorRuntime": "El chat con agentes no está disponible en este host.",
     "errorNoKey": "Este agente aún no tiene clave de API — concédele una en la pestaña Agentes.",
-    "errorRegistry": "El registro no está accesible, así que no se pueden listar los MCP."
+    "errorRegistry": "El registro no está accesible, así que no se pueden listar los MCP.",
+    "mcpsDropped": "{n} MCP de este agente ya no están en el registro y se quitaron de sus herramientas.",
+    "mcpsAllGone": "Ninguno de los MCP de este agente sigue en el registro. Elige los que debe usar para continuar.",
+    "mcpsDroppedDismiss": "Entendido"
   }
 }

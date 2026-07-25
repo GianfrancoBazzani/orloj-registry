@@ -161,24 +161,22 @@
     "signInTitle": "Ihre Agenten-App ist privat",
     "signInBody": "Melden Sie sich an, um diesen Agenten und seine Blockchain-Tools zu öffnen.",
     "signIn": "Anmelden",
-    "eyebrow": "Orloj Agenten-App",
-    "openApp": "App öffnen",
     "install": "App installieren",
-    "installed": "Installiert",
-    "installFallback": "Falls unterstützt, öffnen Sie das Browsermenü und wählen Sie App installieren oder Zum Startbildschirm.",
+    "installTitle": "Diese App installieren",
+    "installIntro": "Beide Felder sind optional. Unverändert gelassen, installiert die App mit dem Namen des Agenten und dem Orloj-Zeichen.",
+    "appName": "App-Name",
+    "appIcon": "App-Symbol",
+    "iconHint": "Quadratisches PNG, 192–1024 px, bis 1 MiB.",
+    "resetIcon": "Orloj-Symbol verwenden",
+    "cancel": "Abbrechen",
+    "saveAndInstall": "Speichern & installieren",
+    "saving": "Wird gespeichert…",
+    "installing": "Wird installiert…",
+    "saveFailed": "Identität konnte nicht gespeichert werden",
+    "installFallback": "Ihr Browser installiert über sein eigenes Menü: wählen Sie App installieren oder Teilen → Zum Startbildschirm.",
     "chatMount": "Chat-Integrationsvertrag · v1",
     "chatReady": "Bereit für die Chatbot-Komponente",
-    "chatReadyBody": "Dieser geschützte Bereich liefert nur den MCP-Kontext dieses Agenten. Der künftige Chat löst Zugangsdaten serverseitig auf.",
-    "assignedMcps": "Zugewiesene MCPs",
-    "noMcps": "Noch keine MCPs zugewiesen. Fügen Sie eines aus dem Verzeichnis hinzu.",
-    "branding": "App-Identität",
-    "appName": "Eigener App-Name",
-    "appIcon": "Eigenes PNG-Symbol",
-    "iconHint": "Quadratisches PNG, 192–1024 px, bis 1 MiB. Der Orloj-Rahmen bleibt sichtbar.",
-    "saveFailed": "Identität konnte nicht gespeichert werden",
-    "saving": "Wird gespeichert…",
-    "save": "Vor Installation speichern",
-    "resetIcon": "Symbol zurücksetzen"
+    "chatReadyBody": "Dieser geschützte Bereich liefert nur den MCP-Kontext dieses Agenten. Der künftige Chat löst Zugangsdaten serverseitig auf."
   },
   "profile": {
     "signInPrompt": "Melden Sie sich an, um auf Ihr Profil zuzugreifen.",
@@ -295,6 +293,9 @@
     "errorStart": "Die Sitzung konnte nicht gestartet werden.",
     "errorRuntime": "Agenten-Chat ist auf diesem Host nicht verfügbar.",
     "errorNoKey": "Dieser Agent hat noch keinen API-Schlüssel — gewähren Sie einen im Tab Agenten.",
-    "errorRegistry": "Die Registry ist nicht erreichbar, daher können keine MCPs aufgelistet werden."
+    "errorRegistry": "Die Registry ist nicht erreichbar, daher können keine MCPs aufgelistet werden.",
+    "mcpsDropped": "{n} MCPs dieses Agenten sind nicht mehr in der Registry und wurden aus seinen Tools entfernt.",
+    "mcpsAllGone": "Keines der MCPs dieses Agenten ist noch in der Registry. Wähle die aus, die er nutzen soll, um weiterzumachen.",
+    "mcpsDroppedDismiss": "Verstanden"
   }
 }

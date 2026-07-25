@@ -161,24 +161,22 @@
     "signInTitle": "L’application de votre agent est privée",
     "signInBody": "Connectez-vous pour ouvrir cet agent et ses outils blockchain assignés.",
     "signIn": "Se connecter",
-    "eyebrow": "Application d’agent Orloj",
-    "openApp": "Ouvrir l’app",
     "install": "Installer l’app",
-    "installed": "Installée",
-    "installFallback": "Si votre navigateur le permet, ouvrez son menu puis choisissez Installer l’app ou Ajouter à l’écran d’accueil.",
+    "installTitle": "Installer cette application",
+    "installIntro": "Les deux champs sont facultatifs. Laissez-les tels quels pour installer avec le nom de l’agent et la marque Orloj.",
+    "appName": "Nom de l’application",
+    "appIcon": "Icône de l’application",
+    "iconHint": "PNG carré de 192–1024 px, jusqu’à 1 Mio.",
+    "resetIcon": "Utiliser l’icône Orloj",
+    "cancel": "Annuler",
+    "saveAndInstall": "Enregistrer et installer",
+    "saving": "Enregistrement…",
+    "installing": "Installation…",
+    "saveFailed": "Impossible d’enregistrer l’identité",
+    "installFallback": "Votre navigateur installe depuis son propre menu : choisissez Installer l’app ou Partager → Ajouter à l’écran d’accueil.",
     "chatMount": "Contrat d’intégration du chat · v1",
     "chatReady": "Prêt pour le composant chatbot",
-    "chatReadyBody": "Ce point protégé expose uniquement le contexte MCP assigné à cet agent. Le futur chat résoudra les identifiants côté serveur.",
-    "assignedMcps": "MCP assignés",
-    "noMcps": "Aucun MCP n’est encore assigné. Ajoutez-en un depuis le registre.",
-    "branding": "Identité de l’application",
-    "appName": "Nom personnalisé",
-    "appIcon": "Icône PNG personnalisée",
-    "iconHint": "PNG carré de 192–1024 px, jusqu’à 1 Mio. Le cadre Orloj reste visible.",
-    "saveFailed": "Impossible d’enregistrer l’identité",
-    "saving": "Enregistrement…",
-    "save": "Enregistrer avant installation",
-    "resetIcon": "Réinitialiser l’icône"
+    "chatReadyBody": "Ce point protégé expose uniquement le contexte MCP assigné à cet agent. Le futur chat résoudra les identifiants côté serveur."
   },
   "profile": {
     "signInPrompt": "Connectez-vous pour accéder à votre profil.",
@@ -295,6 +293,9 @@
     "errorStart": "Impossible de démarrer la session.",
     "errorRuntime": "Le chat avec les agents n'est pas disponible sur cet hôte.",
     "errorNoKey": "Cet agent n'a pas encore de clé API — accordez-lui-en une dans l'onglet Agents.",
-    "errorRegistry": "Le registre est inaccessible, aucun MCP ne peut être listé."
+    "errorRegistry": "Le registre est inaccessible, aucun MCP ne peut être listé.",
+    "mcpsDropped": "{n} MCP de cet agent ne sont plus dans le registre et ont été retirés de ses outils.",
+    "mcpsAllGone": "Aucun MCP de cet agent n'est encore dans le registre. Choisissez ceux qu'il doit utiliser pour continuer.",
+    "mcpsDroppedDismiss": "Compris"
   }
 }

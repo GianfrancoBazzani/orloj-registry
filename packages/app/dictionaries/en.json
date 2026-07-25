@@ -161,24 +161,22 @@
     "signInTitle": "Your agent app is private",
     "signInBody": "Sign in to open this agent and its assigned blockchain tools.",
     "signIn": "Sign in",
-    "eyebrow": "Orloj agent app",
-    "openApp": "Open app",
     "install": "Install app",
-    "installed": "Installed",
-    "installFallback": "If installation is supported, use your browser menu and choose Install app or Add to Home Screen.",
+    "installTitle": "Install this app",
+    "installIntro": "Both fields are optional. Leave them as they are to install with the agent's name and the Orloj mark.",
+    "appName": "App name",
+    "appIcon": "App icon",
+    "iconHint": "Square PNG, 192–1024px, up to 1 MiB.",
+    "resetIcon": "Use the Orloj icon",
+    "cancel": "Cancel",
+    "saveAndInstall": "Save & install",
+    "saving": "Saving…",
+    "installing": "Installing…",
+    "saveFailed": "Could not save branding",
+    "installFallback": "Your browser installs from its own menu: choose Install app, or Share → Add to Home Screen.",
     "chatMount": "Chat integration contract · v1",
     "chatReady": "Ready for the chatbot component",
-    "chatReadyBody": "This protected mount exposes only this agent’s assigned MCP context. The future chat runtime resolves bearer credentials server-side.",
-    "assignedMcps": "Assigned MCPs",
-    "noMcps": "No MCPs are assigned yet. Add one from the registry.",
-    "branding": "App branding",
-    "appName": "Custom app name",
-    "appIcon": "Custom PNG icon",
-    "iconHint": "Square PNG, 192–1024px, up to 1 MiB. Orloj framing remains visible.",
-    "saveFailed": "Could not save branding",
-    "saving": "Saving…",
-    "save": "Save before install",
-    "resetIcon": "Reset icon"
+    "chatReadyBody": "This protected mount exposes only this agent’s assigned MCP context. The future chat runtime resolves bearer credentials server-side."
   },
   "profile": {
     "signInPrompt": "Sign in to access your profile.",
@@ -295,6 +293,9 @@
     "errorStart": "Could not start the session.",
     "errorRuntime": "Agent chat is unavailable on this host.",
     "errorNoKey": "This agent has no API key yet — grant one from the Agents tab.",
-    "errorRegistry": "The registry is unreachable, so no MCPs can be listed."
+    "errorRegistry": "The registry is unreachable, so no MCPs can be listed.",
+    "mcpsDropped": "{n} of this agent's MCPs are no longer in the registry and were removed from its tools.",
+    "mcpsAllGone": "None of this agent's MCPs are in the registry any more. Pick the ones it should use to carry on.",
+    "mcpsDroppedDismiss": "Got it"
   }
 }

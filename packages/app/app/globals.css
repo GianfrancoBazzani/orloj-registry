@@ -216,7 +216,6 @@ body {
   /* Detail drawer: full width */
   .detail-drawer { width: 100% !important; }
   .detail-metrics { grid-template-columns: 1fr !important; }
-  .agent-app-grid { grid-template-columns: 1fr !important; }
 
   /* Register form: stack form + sidebar; collapse address/chain row */
   .register-grid { grid-template-columns: 1fr !important; gap: 20px !important; }

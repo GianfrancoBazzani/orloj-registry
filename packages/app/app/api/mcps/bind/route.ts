@@ -1,8 +1,11 @@
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
+import { isValidMcpName } from "@/lib/agent-mcps";
 import { getPool } from "@/lib/db";
 
-const MCP_NAME_RE = /^(?:native_token_chain_id_\d+|\d+-0x[a-fA-F0-9]{40})$/;
+// Shared with agent_mcp_binding rather than kept local: this route had its own copy pinned to
+// the pre-Rust registry's `<chainId>-<address>` names, so it rejected every name the current
+// registry mints and the bind after a successful /register silently 400'd.
 
 async function readMcpName(request: Request): Promise<string | Response> {
   let body: unknown;
@@ -15,7 +18,7 @@ async function readMcpName(request: Request): Promise<string | Response> {
     return Response.json({ error: "Invalid body" }, { status: 400 });
   }
   const { mcpName } = body as Record<string, unknown>;
-  if (typeof mcpName !== "string" || !MCP_NAME_RE.test(mcpName)) {
+  if (typeof mcpName !== "string" || !isValidMcpName(mcpName)) {
     return Response.json({ error: "Invalid mcpName" }, { status: 400 });
   }
   return mcpName;

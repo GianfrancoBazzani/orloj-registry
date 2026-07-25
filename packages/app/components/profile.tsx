@@ -15,7 +15,6 @@ import {
   Select,
   GearIcon,
   OrlojMark,
-  Tag,
 } from "./ornaments";
 import {
   MCP_REGISTRY,
@@ -2427,22 +2426,6 @@ const Agents = ({
                     No key granted yet.
                   </div>
                 )}
-                <div
-                  style={{
-                    display: "flex",
-                    gap: 6,
-                    flexWrap: "wrap",
-                    marginTop: 8,
-                  }}
-                >
-                  {a.mcps.length > 0 ? (
-                    a.mcps.map((mcp) => <Tag key={mcp}>{mcp}</Tag>)
-                  ) : (
-                    <span style={{ fontSize: 12, color: "var(--ink-soft)" }}>
-                      {t("agentApp.noMcps")}
-                    </span>
-                  )}
-                </div>
               </div>
               <div
                 style={{

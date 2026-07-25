@@ -76,7 +76,8 @@ const mcpName = flag("--with-mcp");
 if (mcpName) {
   const token = process.env.MCP_TOKEN;
   if (!token) throw new Error("--with-mcp needs MCP_TOKEN set to a live mcpk_live_* token");
-  const entries = await resolveMcpServers([mcpName], token);
+  const { entries, dropped } = await resolveMcpServers([mcpName], token);
+  if (dropped.length > 0) console.log("[dropped]", JSON.stringify(dropped));
   console.log("[block]", JSON.stringify(entries.map((e) => ({ ...e, bearerToken: "***" }))));
   await writeMcpSelection(dir, entries);
 } else {

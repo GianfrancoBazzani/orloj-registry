@@ -34,6 +34,10 @@ export type CreateResult = {
   acpSessionId: string;
   resumed: boolean;
   mcps: McpSelectionItem[];
+  // Names the requested selection asked for that the registry no longer publishes. The
+  // session started without them and the stored selection has been rewritten without them,
+  // so this is the only chance to tell the user they are gone.
+  dropped: string[];
 };
 
 type Store = {
@@ -136,10 +140,11 @@ const doCreate = async (opts: {
   if (!token) throw new NoActiveTokenError(agentId);
 
   // Resolved BEFORE anything is created on disk. The config dir's existence is the
-  // "configured" flag, so a start that fails on an unknown name or an unreachable registry
-  // must not leave a dir behind — that would strand the agent as configured-with-no-MCPs,
-  // hiding the wizard for good and silently ignoring the next start's selection.
-  const entries = await resolveMcpServers(mcpNames, token);
+  // "configured" flag, so a start that fails on a fully stale selection or an unreachable
+  // registry must not leave a dir behind — that would strand the agent as
+  // configured-with-no-MCPs, hiding the wizard for good and silently ignoring the next
+  // start's selection.
+  const { entries, dropped } = await resolveMcpServers(mcpNames, token);
 
   // Before anything connects: the registry answers /interface/:name/mcp with 403
   // mcp_not_assigned unless the agent is bound to that MCP, and with acp_enable_mcp the
@@ -159,7 +164,9 @@ const doCreate = async (opts: {
   // Starting a session replaces any live one for this agent (a non-goal: concurrency).
   killByAgent(agentId);
   // Rewritten on every start even when the selection has not changed: the token is written
-  // into config.toml, so rotating an agent's key stales its dir.
+  // into config.toml, so rotating an agent's key stales its dir. Writing only the resolved
+  // entries is also what retires a stale name for good — the next read of the sidecar no
+  // longer carries it.
   const mcps = await writeMcpSelection(dir, entries);
   if (created) await patchAcpEnableMcp(dir);
 
@@ -199,6 +206,7 @@ const doCreate = async (opts: {
     acpSessionId: acpId,
     resumed: Boolean(acpSessionId) && acpId === acpSessionId,
     mcps,
+    dropped,
   };
 };
 

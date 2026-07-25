@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use alloy::{
     network::Ethereum,
@@ -24,130 +24,53 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 pub struct ChainInfo {
-    pub name: &'static str,
+    pub name: Cow<'static, str>,
     pub symbol: &'static str,
 }
 
 /// Look up chain name and native currency symbol by chain ID.
-/// Falls back to ("Unknown Chain", "ETH") for unrecognised chain IDs.
+/// Unrecognised chain IDs fall back to ("Chain <id>", "ETH") — the numeric ID is more
+/// useful than a generic label, since it is what identifies the network to the caller.
 pub fn chain_info(chain_id: u64) -> ChainInfo {
-    match chain_id {
-        1 => ChainInfo {
-            name: "Ethereum Mainnet",
-            symbol: "ETH",
-        },
-        10 => ChainInfo {
-            name: "OP Mainnet",
-            symbol: "ETH",
-        },
-        56 => ChainInfo {
-            name: "BNB Smart Chain",
-            symbol: "BNB",
-        },
-        66 => ChainInfo {
-            name: "OKC",
-            symbol: "OKT",
-        },
-        100 => ChainInfo {
-            name: "Gnosis",
-            symbol: "xDAI",
-        },
-        128 => ChainInfo {
-            name: "Huobi ECO Chain",
-            symbol: "HT",
-        },
-        137 => ChainInfo {
-            name: "Polygon",
-            symbol: "POL",
-        },
-        250 => ChainInfo {
-            name: "Fantom Opera",
-            symbol: "FTM",
-        },
-        255 => ChainInfo {
-            name: "Kroma",
-            symbol: "ETH",
-        },
-        321 => ChainInfo {
-            name: "KCC",
-            symbol: "KCS",
-        },
-        324 => ChainInfo {
-            name: "zkSync Era",
-            symbol: "ETH",
-        },
-        1088 => ChainInfo {
-            name: "Metis Andromeda",
-            symbol: "METIS",
-        },
-        1101 => ChainInfo {
-            name: "Polygon zkEVM",
-            symbol: "ETH",
-        },
-        1116 => ChainInfo {
-            name: "Core",
-            symbol: "CORE",
-        },
-        1284 => ChainInfo {
-            name: "Moonbeam",
-            symbol: "GLMR",
-        },
-        1285 => ChainInfo {
-            name: "Moonriver",
-            symbol: "MOVR",
-        },
-        2222 => ChainInfo {
-            name: "Kava",
-            symbol: "KAVA",
-        },
-        8453 => ChainInfo {
-            name: "Base",
-            symbol: "ETH",
-        },
-        34443 => ChainInfo {
-            name: "Mode",
-            symbol: "ETH",
-        },
-        42161 => ChainInfo {
-            name: "Arbitrum One",
-            symbol: "ETH",
-        },
-        42220 => ChainInfo {
-            name: "Celo",
-            symbol: "CELO",
-        },
-        43114 => ChainInfo {
-            name: "Avalanche C-Chain",
-            symbol: "AVAX",
-        },
-        59144 => ChainInfo {
-            name: "Linea",
-            symbol: "ETH",
-        },
-        60808 => ChainInfo {
-            name: "BOB",
-            symbol: "ETH",
-        },
-        81457 => ChainInfo {
-            name: "Blast",
-            symbol: "ETH",
-        },
-        534352 => ChainInfo {
-            name: "Scroll",
-            symbol: "ETH",
-        },
-        7777777 => ChainInfo {
-            name: "Zora",
-            symbol: "ETH",
-        },
-        1666600000 => ChainInfo {
-            name: "Harmony One",
-            symbol: "ONE",
-        },
-        _ => ChainInfo {
-            name: "Unknown Chain",
-            symbol: "ETH",
-        },
+    let (name, symbol) = match chain_id {
+        1 => ("Ethereum Mainnet", "ETH"),
+        10 => ("OP Mainnet", "ETH"),
+        56 => ("BNB Smart Chain", "BNB"),
+        66 => ("OKC", "OKT"),
+        100 => ("Gnosis", "xDAI"),
+        128 => ("Huobi ECO Chain", "HT"),
+        137 => ("Polygon", "POL"),
+        250 => ("Fantom Opera", "FTM"),
+        255 => ("Kroma", "ETH"),
+        321 => ("KCC", "KCS"),
+        324 => ("zkSync Era", "ETH"),
+        1088 => ("Metis Andromeda", "METIS"),
+        1101 => ("Polygon zkEVM", "ETH"),
+        1116 => ("Core", "CORE"),
+        1284 => ("Moonbeam", "GLMR"),
+        1285 => ("Moonriver", "MOVR"),
+        2222 => ("Kava", "KAVA"),
+        8453 => ("Base", "ETH"),
+        34443 => ("Mode", "ETH"),
+        42161 => ("Arbitrum One", "ETH"),
+        42220 => ("Celo", "CELO"),
+        43114 => ("Avalanche C-Chain", "AVAX"),
+        59144 => ("Linea", "ETH"),
+        60808 => ("BOB", "ETH"),
+        81457 => ("Blast", "ETH"),
+        534352 => ("Scroll", "ETH"),
+        7777777 => ("Zora", "ETH"),
+        1666600000 => ("Harmony One", "ONE"),
+        _ => {
+            return ChainInfo {
+                name: Cow::Owned(format!("Chain {chain_id}")),
+                symbol: "ETH",
+            };
+        }
+    };
+    ChainInfo {
+        name: Cow::Borrowed(name),
+        symbol,
     }
 }
 
@@ -164,7 +87,7 @@ pub struct NativeMcpConfig {
 
 pub struct NativeMcpServer<P> {
     chain_id: u64,
-    chain_name: &'static str,
+    chain_name: Cow<'static, str>,
     symbol: &'static str,
     rpc_url: String,
     provider: Arc<P>,
@@ -200,7 +123,7 @@ impl<P> Clone for NativeMcpServer<P> {
     fn clone(&self) -> Self {
         Self {
             chain_id: self.chain_id,
-            chain_name: self.chain_name,
+            chain_name: self.chain_name.clone(),
             symbol: self.symbol,
             rpc_url: self.rpc_url.clone(),
             provider: Arc::clone(&self.provider),

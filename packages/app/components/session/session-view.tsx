@@ -16,7 +16,11 @@ type StartResponse = {
   acpSessionId: string;
   resumed: boolean;
   mcps: McpSelectionItem[];
+  // Selected MCPs the registry no longer publishes. On success they were pruned and the
+  // session started without them; on a 422 nothing was left to start.
+  dropped?: string[];
   error?: string;
+  code?: string;
 };
 
 // Same mapping in both start paths, so an unreachable registry or a keyless agent reads the
@@ -31,6 +35,61 @@ const messageForStatus = (
   if (status === 502) return t("session.errorRegistry");
   return fallback ?? t("session.errorStart");
 };
+
+// Says which MCPs vanished from the registry. `allGone` is the wizard's variant, where the
+// selection pruned to nothing and there is no session to speak of yet; otherwise the session
+// is running and this is dismissable.
+function DroppedNotice({
+  names,
+  allGone,
+  onDismiss,
+}: {
+  names: string[];
+  allGone?: boolean;
+  onDismiss?: () => void;
+}) {
+  const t = useT();
+  if (names.length === 0) return null;
+  return (
+    <div
+      style={{
+        border: "1px solid rgba(138,53,38,0.28)",
+        background: "rgba(138,53,38,0.07)",
+        padding: 12,
+        fontSize: 12.5,
+        color: "var(--ink)",
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 10,
+        marginBottom: allGone ? 16 : 0,
+      }}
+    >
+      <div style={{ flex: 1 }}>
+        <div>
+          {allGone
+            ? t("session.mcpsAllGone")
+            : t("session.mcpsDropped", { n: names.length })}
+        </div>
+        <div
+          style={{
+            fontFamily: "var(--mono, ui-monospace, monospace)",
+            fontSize: 11.5,
+            color: "var(--ink-soft)",
+            marginTop: 6,
+            wordBreak: "break-all",
+          }}
+        >
+          {names.join(", ")}
+        </div>
+      </div>
+      {onDismiss ? (
+        <Btn size="sm" kind="ghost" onClick={onDismiss}>
+          {t("session.mcpsDroppedDismiss")}
+        </Btn>
+      ) : null}
+    </div>
+  );
+}
 
 export function SessionView({
   agentId,
@@ -53,12 +112,50 @@ export function SessionView({
   const [divider, setDivider] = useState(false);
   const [turnBusy, setTurnBusy] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
+  const [dropped, setDropped] = useState<string[]>([]);
+  // The stored selection resolved to nothing, so the wizard is standing in for a broken
+  // configured agent rather than a first run. POST /api/session would keep reading that same
+  // dead selection, so the re-pick has to go through PUT /api/agents/[id]/mcps.
+  const [repick, setRepick] = useState(false);
   const [ending, setEnding] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
   // Filled by ChatBox while it is mounted; the seam Reset uses to empty the thread without
   // remounting it.
   const clearChat = useRef<(() => void) | null>(null);
+
+  // Shared by both start paths so a session begun by the wizard, by an automatic resume or by
+  // a post-failure re-pick lands in exactly the same state.
+  const enterChat = useCallback(
+    (payload: StartResponse, storedMessages: UIMessage[]) => {
+      setSessionId(payload.sessionId);
+      setMcps(payload.mcps);
+      setSelection(payload.mcps.map((m) => m.mcpName));
+      setDropped(payload.dropped ?? []);
+      setRepick(false);
+      setRestored(storedMessages);
+      // Honest about a session that aged out or a wiped dir: without the divider the UI
+      // shows history the agent cannot see, and the user finds out by being contradicted.
+      setDivider(!payload.resumed && storedMessages.length > 0);
+      writeTranscript(userId, agentId, {
+        acpSessionId: payload.acpSessionId,
+        messages: storedMessages,
+      });
+      setPhase("chat");
+    },
+    [agentId, userId],
+  );
+
+  // Every selected MCP is gone from the registry. Not an error the user can retry out of —
+  // strip the dead names and put them back in the picker, which is the only thing that can
+  // move them forward.
+  const toRepick = useCallback((gone: string[]) => {
+    setSelection((prev) => prev.filter((n) => !gone.includes(n)));
+    setDropped(gone);
+    setRepick(true);
+    setError(null);
+    setPhase("wizard");
+  }, []);
 
   const start = useCallback(
     async (mcpNames: string[] | undefined) => {
@@ -80,28 +177,55 @@ export function SessionView({
         });
         const payload = (await res.json()) as StartResponse;
         if (!res.ok) {
+          if (payload.code === "selection_unresolvable") {
+            toRepick(payload.dropped ?? []);
+            return;
+          }
           setError(messageForStatus(res.status, payload.error, t));
           setPhase("error");
           return;
         }
-        setSessionId(payload.sessionId);
-        setMcps(payload.mcps);
-        setSelection(payload.mcps.map((m) => m.mcpName));
-        setRestored(stored.messages);
-        // Honest about a session that aged out or a wiped dir: without the divider the UI
-        // shows history the agent cannot see, and the user finds out by being contradicted.
-        setDivider(!payload.resumed && stored.messages.length > 0);
-        writeTranscript(userId, agentId, {
-          acpSessionId: payload.acpSessionId,
-          messages: stored.messages,
-        });
-        setPhase("chat");
+        enterChat(payload, stored.messages);
       } catch {
         setError(t("session.errorStart"));
         setPhase("error");
       }
     },
-    [agentId, userId, mcps.length, t],
+    [agentId, userId, mcps.length, t, enterChat, toRepick],
+  );
+
+  // The re-pick path. PUT is the endpoint that accepts a new selection for an agent that is
+  // already configured — POST /api/session deliberately lets the stored selection win, which
+  // is exactly what cannot be honoured here.
+  const applyRepick = useCallback(
+    async (mcpNames: string[]) => {
+      const stored = readTranscript(userId, agentId);
+      setPendingCount(mcpNames.length);
+      setPhase("starting");
+      setError(null);
+      try {
+        const res = await fetch(`/api/agents/${agentId}/mcps`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ mcpNames }),
+        });
+        const payload = (await res.json()) as StartResponse;
+        if (!res.ok) {
+          if (payload.code === "selection_unresolvable") {
+            toRepick(payload.dropped ?? []);
+            return;
+          }
+          setError(messageForStatus(res.status, payload.error, t));
+          setPhase("error");
+          return;
+        }
+        enterChat(payload, stored.messages);
+      } catch {
+        setError(t("session.errorStart"));
+        setPhase("error");
+      }
+    },
+    [agentId, userId, t, enterChat, toRepick],
   );
 
   // Mount: is this agent configured yet? No sync setState in the effect body.
@@ -156,6 +280,7 @@ export function SessionView({
       setSessionId(result.sessionId);
       setMcps(result.mcps);
       setSelection(result.mcps.map((m) => m.mcpName));
+      setDropped(result.dropped ?? []);
       setDivider(!result.resumed);
       const stored = readTranscript(userId, agentId);
       writeTranscript(userId, agentId, {
@@ -240,12 +365,16 @@ export function SessionView({
 
       {phase === "wizard" ? (
         <div style={{ border: "1px solid var(--line)", padding: 20 }}>
+          {repick ? <DroppedNotice names={dropped} allGone /> : null}
           <McpPicker
             selected={selection}
             onChange={setSelection}
             title={t("session.wizardTitle")}
             subtitle={t("session.wizardSubtitle")}
-            action={{ label: t("session.wizardStart"), onClick: () => void start(selection) }}
+            action={{
+              label: t("session.wizardStart"),
+              onClick: () => void (repick ? applyRepick(selection) : start(selection)),
+            }}
           />
         </div>
       ) : null}
@@ -293,6 +422,9 @@ export function SessionView({
           clearRef={clearChat}
           header={
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {/* The session started without these, and the stored selection was rewritten
+                  without them, so this is the only moment the user can be told. */}
+              <DroppedNotice names={dropped} onDismiss={() => setDropped([])} />
               <McpConfigPanel
                 agentId={agentId}
                 mcps={mcps}

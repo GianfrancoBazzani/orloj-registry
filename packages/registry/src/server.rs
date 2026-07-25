@@ -121,7 +121,7 @@ async fn list_mcp(State(state): State<SharedState>) -> Response {
 
             let info = chain_info(row.chain_id);
             let (description, tool_count, tokens, interaction_type) =
-                marketplace_metadata(&row, info.name);
+                marketplace_metadata(&row, &info.name);
             json!({
                 "name": name,
                 "chainId": row.chain_id,
