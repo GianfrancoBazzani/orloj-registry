@@ -86,6 +86,7 @@ impl UniswapMcpServer {
             "swap" => self.handle_swap(args).await,
             "supported_networks" => self.handle_supported_networks().await,
             "get_v3_position" => self.handle_get_v3_position(args).await,
+            "create_v3_position" => self.handle_create_v3_position(args).await,
             other => Err(anyhow::anyhow!("unknown tool: {other}")),
         }
     }

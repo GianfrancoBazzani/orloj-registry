@@ -17,7 +17,7 @@ use std::sync::OnceLock;
 use alloy::{
     dyn_abi::{DynSolValue, FunctionExt, JsonAbiExt},
     json_abi::{Function, JsonAbi},
-    primitives::{Address, U256, address},
+    primitives::{Address, B256, Bytes, Log as PrimitiveLog, U256, address, b256},
     providers::{DynProvider, Provider, ProviderBuilder},
     rpc::types::TransactionRequest,
 };
@@ -26,7 +26,11 @@ use rmcp::model::*;
 use serde_json::{Map, Value, json};
 
 use super::UniswapMcpServer;
-use crate::vault::sign_transaction::resolve_agent_address;
+use super::common::{parse_flexible_u256, wait_for_receipt};
+use crate::{
+    db::DbPool,
+    vault::sign_transaction::{SignTransactionParams, resolve_agent_address, sign_transaction},
+};
 
 // ---------------------------------------------------------------------------
 // Sepolia V3 deployment
@@ -88,6 +92,15 @@ const FACTORY_ABI: &str = r#"[
    "outputs":[{"name":"pool","type":"address"}]}
 ]"#;
 
+const POOL_ABI: &str = r#"[
+  {"name":"token0","type":"function","stateMutability":"view","inputs":[],
+   "outputs":[{"name":"","type":"address"}]},
+  {"name":"token1","type":"function","stateMutability":"view","inputs":[],
+   "outputs":[{"name":"","type":"address"}]},
+  {"name":"fee","type":"function","stateMutability":"view","inputs":[],
+   "outputs":[{"name":"","type":"uint24"}]}
+]"#;
+
 fn parse_abi(src: &str, what: &str) -> JsonAbi {
     serde_json::from_str(src).unwrap_or_else(|e| panic!("built-in {what} ABI is malformed: {e}"))
 }
@@ -100,6 +113,11 @@ fn position_manager_abi() -> &'static JsonAbi {
 fn factory_abi() -> &'static JsonAbi {
     static ABI: OnceLock<JsonAbi> = OnceLock::new();
     ABI.get_or_init(|| parse_abi(FACTORY_ABI, "UniswapV3Factory"))
+}
+
+fn pool_abi() -> &'static JsonAbi {
+    static ABI: OnceLock<JsonAbi> = OnceLock::new();
+    ABI.get_or_init(|| parse_abi(POOL_ABI, "UniswapV3Pool"))
 }
 
 fn abi_function<'a>(abi: &'a JsonAbi, name: &str) -> Result<&'a Function> {
@@ -281,6 +299,413 @@ async fn get_pool(
     as_address(out(&outs, 0, "getPool.pool")?, "getPool.pool")
 }
 
+/// A V3 pool's token pair, read from the pool itself and verified against the factory.
+pub struct V3Pool {
+    pub token0: Address,
+    pub token1: Address,
+}
+
+/// Reads a pool's own token pair and fee tier, then proves the address really is a V3 pool from
+/// the canonical Sepolia factory by round-tripping it through `getPool`.
+///
+/// This is what lets `create_v3_position` drop `token0Address`/`token1Address` from its tool
+/// arguments: the caller supplies only a pool, and the token pair it will be asked to approve
+/// spending on is derived from that pool rather than asserted alongside it. Taking both from the
+/// caller would let a model pair a real pool with unrelated token addresses and get approvals
+/// issued for the wrong assets. An arbitrary contract that merely answers token0()/token1()/fee()
+/// fails the factory round-trip.
+async fn read_v3_pool(provider: &impl Provider, pool: Address) -> Result<V3Pool> {
+    let abi = pool_abi();
+
+    let t0 = call_view(provider, pool, abi_function(abi, "token0")?, &[])
+        .await
+        .with_context(|| format!("{pool:#x} does not answer token0() — not a Uniswap V3 pool"))?;
+    let t1 = call_view(provider, pool, abi_function(abi, "token1")?, &[]).await?;
+    let f = call_view(provider, pool, abi_function(abi, "fee")?, &[]).await?;
+
+    let token0 = as_address(out(&t0, 0, "pool.token0")?, "pool.token0")?;
+    let token1 = as_address(out(&t1, 0, "pool.token1")?, "pool.token1")?;
+    let fee = as_u32(out(&f, 0, "pool.fee")?, "pool.fee")?;
+
+    let canonical = get_pool(provider, token0, token1, fee).await?;
+    anyhow::ensure!(
+        canonical == pool,
+        "{pool:#x} is not a canonical Uniswap V3 pool on Sepolia — the factory maps \
+         {token0:#x}/{token1:#x} at fee tier {fee} to {canonical:#x}"
+    );
+
+    Ok(V3Pool { token0, token1 })
+}
+
+/// ERC-721 `Transfer(address indexed from, address indexed to, uint256 indexed tokenId)`.
+const ERC721_TRANSFER_TOPIC: B256 =
+    b256!("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef");
+
+/// Finds the id of the position NFT minted to `owner` in a create transaction's logs.
+///
+/// A mint is a Transfer from the zero address. Both the emitting contract and the recipient are
+/// matched so that an unrelated ERC-721 touched by the same transaction cannot be mistaken for
+/// the position — which would report a token id the agent does not own.
+///
+/// Takes `alloy::primitives::Log` rather than the RPC log type purely so tests can build one
+/// with `Log::new_unchecked` instead of assembling block metadata.
+fn parse_minted_token_id(
+    logs: &[PrimitiveLog],
+    position_manager: Address,
+    owner: Address,
+) -> Result<U256> {
+    let minted = logs.iter().find(|log| {
+        log.address == position_manager
+            && log.topics().first() == Some(&ERC721_TRANSFER_TOPIC)
+            && log.topics().get(1).is_some_and(|t| t.is_zero())
+            && log
+                .topics()
+                .get(2)
+                .is_some_and(|t| Address::from_word(*t) == owner)
+            && log.topics().len() == 4
+    });
+
+    let log = minted.ok_or_else(|| {
+        anyhow::anyhow!(
+            "no position-NFT mint found in the create transaction's logs: expected an ERC-721 \
+             Transfer from the zero address to {owner:#x} emitted by {position_manager:#x}"
+        )
+    })?;
+
+    Ok(U256::from_be_bytes(log.topics()[3].0))
+}
+
+// ---------------------------------------------------------------------------
+// Liquidity API client
+//
+// A different service from the Trading API `trading` uses, with its own base URL, but the same
+// UNISWAP_API_KEY. Request bodies are built by pure functions so the wire format is pinned by
+// unit tests rather than only discovered against the live API.
+//
+// Only the currently documented schema is implemented. If a response does not match, these
+// parsers fail loudly with a bounded excerpt rather than falling back to a guess — a silent
+// mis-parse here would mean signing a transaction we did not correctly understand.
+// ---------------------------------------------------------------------------
+
+fn lp_api_base() -> String {
+    std::env::var("UNISWAP_LP_API_URL")
+        .unwrap_or_else(|_| "https://liquidity.api.uniswap.org".to_string())
+}
+
+/// Response bodies land in error messages; cap them so a large or hostile payload can't flood
+/// the tool output. The API key is only ever sent in a header, so it is never in this text.
+fn excerpt(body: &str) -> String {
+    const MAX: usize = 600;
+    if body.chars().count() <= MAX {
+        return body.to_string();
+    }
+    let head: String = body.chars().take(MAX).collect();
+    format!("{head}… (truncated)")
+}
+
+async fn lp_post(http: &reqwest::Client, path: &str, body: &Value) -> Result<Value> {
+    let api_key = std::env::var("UNISWAP_API_KEY").context("UNISWAP_API_KEY not set")?;
+
+    let resp = http
+        .post(format!("{}{path}", lp_api_base()))
+        .header("x-api-key", api_key)
+        .header("Accept", "application/json")
+        .json(body)
+        .send()
+        .await
+        .with_context(|| format!("uniswap {path} request failed"))?;
+
+    let status = resp.status();
+    let text = resp
+        .text()
+        .await
+        .with_context(|| format!("reading uniswap {path} response body failed"))?;
+
+    anyhow::ensure!(
+        status.is_success(),
+        "uniswap {path} returned {status}: {}",
+        excerpt(&text)
+    );
+
+    serde_json::from_str(&text)
+        .with_context(|| format!("uniswap {path} response is not JSON: {}", excerpt(&text)))
+}
+
+/// POST /lp/create body for a position in an *existing* pool.
+///
+/// `simulate` is false for the pre-approval call that only exists to learn the dependent token
+/// amount — the wallet may not hold the allowances yet, so server-side simulation would fail for
+/// a reason that says nothing about whether the position is valid. It is true for the refetch
+/// after approvals confirm, when a simulation failure is real signal.
+fn build_lp_create_body(
+    wallet: Address,
+    pool: Address,
+    pool_tokens: &V3Pool,
+    independent_token: Address,
+    independent_amount: &str,
+    tick_lower: i32,
+    tick_upper: i32,
+    slippage: Option<f64>,
+    simulate: bool,
+) -> Value {
+    let mut body = json!({
+        "walletAddress": wallet.to_checksum(None),
+        "chainId": SEPOLIA_V3.chain_id,
+        "protocol": "V3",
+        "existingPool": {
+            "token0Address": pool_tokens.token0.to_checksum(None),
+            "token1Address": pool_tokens.token1.to_checksum(None),
+            "poolReference": pool.to_checksum(None),
+        },
+        "independentToken": {
+            "tokenAddress": independent_token.to_checksum(None),
+            "amount": independent_amount,
+        },
+        "tickBounds": {
+            "tickLower": tick_lower,
+            "tickUpper": tick_upper,
+        },
+        "simulateTransaction": simulate,
+    });
+    if let Some(s) = slippage {
+        body["slippageTolerance"] = json!(s);
+    }
+    body
+}
+
+fn build_check_approval_body(wallet: Address, lp_tokens: &[(Address, String)]) -> Value {
+    json!({
+        "walletAddress": wallet.to_checksum(None),
+        "chainId": SEPOLIA_V3.chain_id,
+        "protocol": "V3",
+        "action": "CREATE",
+        "lpTokens": lp_tokens
+            .iter()
+            .map(|(token, amount)| json!({
+                "tokenAddress": token.to_checksum(None),
+                "amount": amount,
+            }))
+            .collect::<Vec<_>>(),
+        // Ask for permits as plain transactions so approvals go through the same
+        // vault-sign-and-broadcast path as everything else, instead of needing a second
+        // off-chain EIP-712 signing route.
+        "generatePermitAsTransaction": true,
+        "simulateTransaction": true,
+    })
+}
+
+/// Pulls the approval transactions out of a /lp/check_approval response.
+///
+/// Documented shape: `{ transactions: [{ transaction, cancelApproval, action, gasFee }] }`.
+/// An empty array is the normal "already approved" case. Anything else is an error naming the
+/// field, not a fallback — guessing at an undocumented shape risks signing the wrong calldata.
+fn parse_approval_transactions(resp: &Value) -> Result<Vec<Value>> {
+    let transactions = resp
+        .get("transactions")
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "uniswap /lp/check_approval response has no 'transactions' field: {}",
+                excerpt(&resp.to_string())
+            )
+        })?
+        .as_array()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "uniswap /lp/check_approval 'transactions' is not an array: {}",
+                excerpt(&resp.to_string())
+            )
+        })?;
+
+    transactions
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| {
+            entry
+                .get("transaction")
+                .filter(|t| !t.is_null())
+                .cloned()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "uniswap /lp/check_approval transactions[{i}] has no 'transaction': {}",
+                        excerpt(&entry.to_string())
+                    )
+                })
+        })
+        .collect()
+}
+
+/// Reads a required `{ tokenAddress, amount }` pair out of an LP API response.
+fn parse_lp_token(resp: &Value, field: &str, path: &str) -> Result<(Address, String)> {
+    let token = resp.get(field).ok_or_else(|| {
+        anyhow::anyhow!(
+            "uniswap {path} response has no '{field}': {}",
+            excerpt(&resp.to_string())
+        )
+    })?;
+
+    let address: Address = token
+        .get("tokenAddress")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("uniswap {path} {field} has no 'tokenAddress'"))?
+        .parse()
+        .with_context(|| format!("uniswap {path} {field}.tokenAddress is not an address"))?;
+
+    let amount = token
+        .get("amount")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("uniswap {path} {field} has no 'amount'"))?
+        .to_string();
+
+    Ok((address, amount))
+}
+
+fn require_field<'a>(resp: &'a Value, field: &str, path: &str) -> Result<&'a Value> {
+    resp.get(field).filter(|v| !v.is_null()).ok_or_else(|| {
+        anyhow::anyhow!(
+            "uniswap {path} response has no '{field}' transaction: {}",
+            excerpt(&resp.to_string())
+        )
+    })
+}
+
+fn lp_token_json(token: &(Address, String)) -> Value {
+    json!({ "tokenAddress": token.0.to_checksum(None), "amount": token.1 })
+}
+
+// ---------------------------------------------------------------------------
+// Transaction validation
+// ---------------------------------------------------------------------------
+
+/// A transaction from the Liquidity API that has passed every structural check.
+///
+/// `data` is carried through byte-for-byte. Nothing here rewrites API calldata — the checks
+/// either pass it along unchanged or refuse to sign it.
+#[derive(Debug)]
+pub struct ValidatedTx {
+    pub to: Address,
+    pub data: Bytes,
+    pub value: U256,
+}
+
+/// Structural checks on an API-provided transaction, run before it is simulated or signed.
+///
+/// The `from` and `chainId` checks are the important ones: they are what stops a malformed or
+/// mismatched API response from being signed by the agent's vault on a chain or as an identity
+/// the caller never asked for. Empty calldata is rejected because every LP operation is a
+/// contract call — a bare value transfer to the position manager would be a silent loss.
+fn validate_api_transaction(
+    tx: &Value,
+    expected_from: Address,
+    expected_chain_id: u64,
+) -> Result<ValidatedTx> {
+    let to: Address = tx
+        .get("to")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("transaction has no 'to'"))?
+        .parse()
+        .context("transaction 'to' is not a valid address")?;
+
+    let from: Address = tx
+        .get("from")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("transaction has no 'from'"))?
+        .parse()
+        .context("transaction 'from' is not a valid address")?;
+
+    anyhow::ensure!(
+        from == expected_from,
+        "transaction 'from' is {from:#x} but this agent's wallet is {expected_from:#x} — \
+         refusing to sign a transaction built for a different sender"
+    );
+
+    let chain_id = match tx.get("chainId") {
+        Some(Value::Number(n)) => n.as_u64(),
+        Some(Value::String(s)) => s.parse().ok(),
+        _ => None,
+    }
+    .ok_or_else(|| anyhow::anyhow!("transaction has no usable 'chainId'"))?;
+
+    anyhow::ensure!(
+        chain_id == expected_chain_id,
+        "transaction targets chainId {chain_id} but this tool only operates on \
+         {expected_chain_id} — refusing to sign"
+    );
+
+    let data_str = tx
+        .get("data")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("transaction has no 'data'"))?;
+
+    anyhow::ensure!(
+        !data_str.is_empty() && data_str != "0x" && data_str != "0X",
+        "transaction 'data' is empty — every liquidity operation is a contract call, so empty \
+         calldata would move value without invoking anything"
+    );
+
+    let data: Bytes = data_str.parse().context("transaction 'data' is not hex")?;
+
+    let value = match tx.get("value") {
+        None | Some(Value::Null) => U256::ZERO,
+        Some(Value::String(s)) => {
+            parse_flexible_u256(s).context("transaction 'value' is invalid")?
+        }
+        Some(Value::Number(n)) => U256::from(
+            n.as_u64()
+                .ok_or_else(|| anyhow::anyhow!("transaction 'value' is not a valid integer"))?,
+        ),
+        Some(other) => anyhow::bail!("transaction 'value' is not a valid integer: {other}"),
+    };
+
+    Ok(ValidatedTx { to, data, value })
+}
+
+/// Dry-runs a validated transaction with eth_call before it is signed, so a revert costs
+/// nothing. `from` is set so the simulation sees the agent's own balances and allowances.
+async fn simulate_tx(provider: &impl Provider, from: Address, tx: &ValidatedTx) -> Result<()> {
+    provider
+        .call(
+            TransactionRequest::default()
+                .from(from)
+                .to(tx.to)
+                .value(tx.value)
+                .input(tx.data.clone().into()),
+        )
+        .await
+        .map(|_| ())
+        .context("eth_call simulation reverted — not broadcasting")
+}
+
+/// Signs a validated transaction through the agent's vault and broadcasts it.
+async fn sign_and_broadcast(
+    db: &DbPool,
+    agent_id: &str,
+    rpc_url: &str,
+    provider: &impl Provider,
+    tx: &ValidatedTx,
+) -> Result<B256> {
+    let signed = sign_transaction(
+        db,
+        SignTransactionParams {
+            agent_id: agent_id.to_string(),
+            chain_id: SEPOLIA_V3.chain_id,
+            rpc_url: rpc_url.to_string(),
+            to: tx.to,
+            value: tx.value,
+            data: tx.data.clone(),
+            nonce: None,
+        },
+    )
+    .await
+    .context("signing transaction failed")?;
+
+    let pending = provider
+        .send_raw_transaction(&signed)
+        .await
+        .context("eth_sendRawTransaction failed")?;
+
+    Ok(*pending.tx_hash())
+}
+
 // ---------------------------------------------------------------------------
 // Argument parsing / validation
 // ---------------------------------------------------------------------------
@@ -319,6 +744,86 @@ fn parse_nft_token_id(args: &Map<String, Value>) -> Result<U256> {
     );
 
     U256::from_str_radix(&s, 10).with_context(|| format!("'nftTokenId' {s:?} is out of range"))
+}
+
+fn parse_address_arg(args: &Map<String, Value>, key: &str) -> Result<Address> {
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing '{key}' argument"))?
+        .parse()
+        .with_context(|| format!("'{key}' is not a valid 0x-prefixed 20-byte address"))
+}
+
+/// A smallest-unit token amount: strictly decimal and non-zero.
+fn parse_amount_arg(args: &Map<String, Value>, key: &str) -> Result<String> {
+    let s = args
+        .get(key)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing '{key}' argument (decimal string, smallest unit)"))?
+        .to_string();
+
+    anyhow::ensure!(
+        !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()),
+        "'{key}' must be a decimal string in the token's smallest unit, got {s:?}"
+    );
+
+    let amount =
+        U256::from_str_radix(&s, 10).with_context(|| format!("'{key}' {s:?} is out of range"))?;
+    anyhow::ensure!(!amount.is_zero(), "'{key}' must be greater than zero");
+
+    Ok(s)
+}
+
+fn parse_tick_arg(args: &Map<String, Value>, key: &str) -> Result<i32> {
+    let v = args
+        .get(key)
+        .ok_or_else(|| anyhow::anyhow!("missing '{key}' argument"))?;
+
+    let tick = match v {
+        Value::Number(n) => n.as_i64(),
+        // Accepted because MCP clients that render everything as text tend to send ticks as
+        // strings; the value still has to be a plain integer.
+        Value::String(s) => s.parse::<i64>().ok(),
+        _ => None,
+    }
+    .ok_or_else(|| anyhow::anyhow!("'{key}' must be an integer tick, got {v}"))?;
+
+    i32::try_from(tick).with_context(|| format!("'{key}' {tick} is outside the int24 tick range"))
+}
+
+/// Optional slippage tolerance in percent. Rejected rather than clamped if nonsensical, since
+/// this is the bound on how much worse than quoted a fill may be.
+fn parse_slippage_arg(args: &Map<String, Value>) -> Result<Option<f64>> {
+    let Some(v) = args.get("slippageTolerance").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+
+    let pct = v.as_f64().ok_or_else(|| {
+        anyhow::anyhow!("'slippageTolerance' must be a number of percent, got {v}")
+    })?;
+
+    anyhow::ensure!(
+        pct.is_finite() && pct > 0.0 && pct <= 100.0,
+        "'slippageTolerance' must be a percentage greater than 0 and at most 100, got {pct}"
+    );
+
+    Ok(Some(pct))
+}
+
+/// Appends any already-broadcast approval hashes to an error.
+///
+/// Approvals are real on-chain state changes. If the flow dies after some of them land, the
+/// caller has to know which ones actually happened — otherwise a retry looks like it is starting
+/// from scratch when it isn't.
+fn with_approvals<T>(result: Result<T>, approval_hashes: &[String]) -> Result<T> {
+    match result {
+        Ok(v) => Ok(v),
+        Err(e) if approval_hashes.is_empty() => Err(e),
+        Err(e) => Err(anyhow::anyhow!(
+            "{e:#} (completed approval transactions: {})",
+            approval_hashes.join(", ")
+        )),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -366,8 +871,16 @@ fn object_schema(props: Vec<(&str, Value)>, required: &[&str]) -> Map<String, Va
     schema
 }
 
+fn slippage_prop() -> Value {
+    json!({
+        "type": "number",
+        "description": "Maximum acceptable slippage in percent (e.g. 0.5 for 0.5%). Optional — \
+                        Uniswap applies its own default if omitted."
+    })
+}
+
 pub(super) fn build_uniswap_lp_tools() -> Vec<Tool> {
-    vec![Tool::new(
+    let get_v3_position = Tool::new(
         "get_v3_position".to_string(),
         "Read a Uniswap V3 liquidity position owned by the authenticated agent on Ethereum \
          Sepolia. Returns the pool, token pair, fee tier, tick range, liquidity and uncollected \
@@ -381,7 +894,78 @@ pub(super) fn build_uniswap_lp_tools() -> Vec<Tool> {
             ],
             &["chainId", "nftTokenId"],
         ),
-    )]
+    );
+
+    let create_v3_position = Tool::new(
+        "create_v3_position".to_string(),
+        "Open a new Uniswap V3 liquidity position in an EXISTING pool on Ethereum Sepolia, on \
+         behalf of the authenticated agent. Fully automatic and fund-moving: it derives the \
+         pool's token pair on-chain, sizes the position, issues and confirms any required token \
+         approvals, then simulates, signs and broadcasts the mint through the agent's vault — \
+         you never supply a wallet address, private key or rpc_url. Does not create new pools. \
+         You give one side of the position (independentTokenAmount) and Uniswap derives the \
+         other. Returns the transaction hash and the new position NFT's token id."
+            .to_string(),
+        object_schema(
+            vec![
+                ("chainId", sepolia_chain_id_prop()),
+                (
+                    "poolAddress",
+                    json!({
+                        "type": "string",
+                        "description": "Address of an existing Uniswap V3 pool on Sepolia. The pool's \
+                                        token0, token1 and fee tier are read from the pool itself and \
+                                        verified against the V3 factory, so you do not pass them."
+                    }),
+                ),
+                (
+                    "independentTokenAddress",
+                    json!({
+                        "type": "string",
+                        "description": "Which side of the pair you are specifying an amount for. Must \
+                                        be the pool's token0 or token1; the other side's amount is \
+                                        derived by Uniswap from the price range."
+                    }),
+                ),
+                (
+                    "independentTokenAmount",
+                    json!({
+                        "type": "string",
+                        "description": "Amount of independentTokenAddress to deposit, in that token's \
+                                        smallest unit, as a decimal string (e.g. wei for an \
+                                        18-decimal token). Must be greater than zero."
+                    }),
+                ),
+                (
+                    "tickLower",
+                    json!({
+                        "type": "integer",
+                        "description": "Lower tick of the position's price range. Must be less than \
+                                        tickUpper and a multiple of the pool's tick spacing."
+                    }),
+                ),
+                (
+                    "tickUpper",
+                    json!({
+                        "type": "integer",
+                        "description": "Upper tick of the position's price range. Must be greater \
+                                        than tickLower and a multiple of the pool's tick spacing."
+                    }),
+                ),
+                ("slippageTolerance", slippage_prop()),
+            ],
+            &[
+                "chainId",
+                "poolAddress",
+                "independentTokenAddress",
+                "independentTokenAmount",
+                "tickLower",
+                "tickUpper",
+            ],
+        ),
+    );
+
+    vec![get_v3_position, create_v3_position]
 }
 
 // ---------------------------------------------------------------------------
@@ -389,17 +973,25 @@ pub(super) fn build_uniswap_lp_tools() -> Vec<Tool> {
 // ---------------------------------------------------------------------------
 
 impl UniswapMcpServer {
-    /// Resolves the authenticated agent's wallet and a Sepolia RPC provider. Every LP tool
-    /// starts here; neither the wallet nor the rpc_url is ever a tool argument.
-    async fn lp_context(&self, tool: &str) -> Result<(Address, DynProvider)> {
+    /// The authenticated agent and its database handle, or a clear error saying which is
+    /// missing. Split from `lp_context` so callers that need to sign can hold these borrows
+    /// across await points.
+    fn lp_agent(&self, tool: &str) -> Result<(&str, &DbPool)> {
         let agent_id = self
             .agent_id
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("{tool} requires an authenticated agent"))?;
         let db = self
             .db
-            .as_ref()
+            .as_deref()
             .ok_or_else(|| anyhow::anyhow!("{tool} requires a database connection"))?;
+        Ok((agent_id, db))
+    }
+
+    /// Resolves the authenticated agent's wallet, a Sepolia RPC provider and the rpc_url behind
+    /// it. Every LP tool starts here; neither the wallet nor the rpc_url is ever a tool argument.
+    async fn lp_context(&self, tool: &str) -> Result<(Address, DynProvider, String)> {
+        let (agent_id, db) = self.lp_agent(tool)?;
 
         let wallet = resolve_agent_address(db, agent_id)
             .await
@@ -423,14 +1015,14 @@ impl UniswapMcpServer {
             .await
             .context("rpc connect failed")?;
 
-        Ok((wallet, provider.erased()))
+        Ok((wallet, provider.erased(), rpc_url))
     }
 
     pub(super) async fn handle_get_v3_position(&self, args: &Map<String, Value>) -> Result<String> {
         require_sepolia(args)?;
         let nft_token_id = parse_nft_token_id(args)?;
 
-        let (wallet, provider) = self.lp_context("get_v3_position").await?;
+        let (wallet, provider, _rpc_url) = self.lp_context("get_v3_position").await?;
 
         let pos = read_v3_position(&provider, nft_token_id, wallet)
             .await
@@ -449,6 +1041,181 @@ impl UniswapMcpServer {
             "liquidity": pos.liquidity.to_string(),
             "tokensOwed0": pos.tokens_owed0.to_string(),
             "tokensOwed1": pos.tokens_owed1.to_string(),
+        })
+        .to_string())
+    }
+
+    /// Opens a position in an existing V3 pool.
+    ///
+    /// The sequence is: read the pool → size the position → approve → re-price → simulate →
+    /// broadcast. Each `stage=` context marks which of those failed, and any approval that has
+    /// already landed on-chain is reported alongside the error.
+    pub(super) async fn handle_create_v3_position(
+        &self,
+        args: &Map<String, Value>,
+    ) -> Result<String> {
+        require_sepolia(args)?;
+        let pool_address = parse_address_arg(args, "poolAddress")?;
+        let independent_token = parse_address_arg(args, "independentTokenAddress")?;
+        let independent_amount = parse_amount_arg(args, "independentTokenAmount")?;
+        let tick_lower = parse_tick_arg(args, "tickLower")?;
+        let tick_upper = parse_tick_arg(args, "tickUpper")?;
+        let slippage = parse_slippage_arg(args)?;
+
+        anyhow::ensure!(
+            tick_lower < tick_upper,
+            "tickLower ({tick_lower}) must be strictly less than tickUpper ({tick_upper})"
+        );
+
+        let (agent_id, db) = self.lp_agent("create_v3_position")?;
+        let (wallet, provider, rpc_url) = self.lp_context("create_v3_position").await?;
+
+        // The token pair comes from the pool, never from the caller — see read_v3_pool.
+        let pool_tokens = read_v3_pool(&provider, pool_address)
+            .await
+            .context("stage=position read")?;
+
+        anyhow::ensure!(
+            independent_token == pool_tokens.token0 || independent_token == pool_tokens.token1,
+            "independentTokenAddress {independent_token:#x} is not in pool {pool_address:#x}, \
+             whose tokens are {:#x} and {:#x}",
+            pool_tokens.token0,
+            pool_tokens.token1
+        );
+
+        let create_body = |simulate: bool| {
+            build_lp_create_body(
+                wallet,
+                pool_address,
+                &pool_tokens,
+                independent_token,
+                &independent_amount,
+                tick_lower,
+                tick_upper,
+                slippage,
+                simulate,
+            )
+        };
+
+        // Pass 1 — sizing only. Simulation is off: allowances may not exist yet, and a
+        // simulation failure for that reason would say nothing about the position itself.
+        let sizing = lp_post(&self.http, "/lp/create", &create_body(false))
+            .await
+            .context("stage=API request")?;
+        let want0 = parse_lp_token(&sizing, "token0", "/lp/create").context("stage=API request")?;
+        let want1 = parse_lp_token(&sizing, "token1", "/lp/create").context("stage=API request")?;
+
+        // Approvals, one at a time, each confirmed before the next is sent.
+        let approval_resp = lp_post(
+            &self.http,
+            "/lp/check_approval",
+            &build_check_approval_body(wallet, &[want0.clone(), want1.clone()]),
+        )
+        .await
+        .context("stage=API request")?;
+        let approvals = parse_approval_transactions(&approval_resp).context("stage=API request")?;
+
+        let mut approval_hashes: Vec<String> = Vec::new();
+        for (i, approval) in approvals.iter().enumerate() {
+            let step = format!("approval {}/{}", i + 1, approvals.len());
+
+            let validated = with_approvals(
+                validate_api_transaction(approval, wallet, SEPOLIA_V3.chain_id)
+                    .with_context(|| format!("stage=approval ({step})")),
+                &approval_hashes,
+            )?;
+
+            let hash = with_approvals(
+                sign_and_broadcast(db, agent_id, &rpc_url, &provider, &validated)
+                    .await
+                    .with_context(|| format!("stage=broadcast ({step})")),
+                &approval_hashes,
+            )?;
+            approval_hashes.push(format!("{hash:#x}"));
+
+            with_approvals(
+                wait_for_receipt(&provider, hash, &step)
+                    .await
+                    .with_context(|| format!("stage=receipt ({step})")),
+                &approval_hashes,
+            )?;
+        }
+
+        // Pass 2 — the transaction we will actually sign. Refetched because the approvals just
+        // took real block time, which staleifies the deadline the first response carried, and
+        // because only now can the server-side simulation mean anything.
+        let created = with_approvals(
+            lp_post(&self.http, "/lp/create", &create_body(true))
+                .await
+                .context("stage=API request"),
+            &approval_hashes,
+        )?;
+
+        let token0 = with_approvals(
+            parse_lp_token(&created, "token0", "/lp/create").context("stage=API request"),
+            &approval_hashes,
+        )?;
+        let token1 = with_approvals(
+            parse_lp_token(&created, "token1", "/lp/create").context("stage=API request"),
+            &approval_hashes,
+        )?;
+
+        let create_tx = with_approvals(
+            require_field(&created, "create", "/lp/create").context("stage=API request"),
+            &approval_hashes,
+        )?;
+
+        let validated = with_approvals(
+            validate_api_transaction(create_tx, wallet, SEPOLIA_V3.chain_id)
+                .context("stage=simulation"),
+            &approval_hashes,
+        )?;
+
+        with_approvals(
+            simulate_tx(&provider, wallet, &validated)
+                .await
+                .context("stage=simulation"),
+            &approval_hashes,
+        )?;
+
+        let hash = with_approvals(
+            sign_and_broadcast(db, agent_id, &rpc_url, &provider, &validated)
+                .await
+                .context("stage=broadcast"),
+            &approval_hashes,
+        )?;
+
+        let receipt = with_approvals(
+            wait_for_receipt(&provider, hash, "position create")
+                .await
+                .context("stage=receipt"),
+            &approval_hashes,
+        )?;
+
+        let logs: Vec<PrimitiveLog> = receipt
+            .inner
+            .logs()
+            .iter()
+            .map(|log| log.inner.clone())
+            .collect();
+
+        let nft_token_id = with_approvals(
+            parse_minted_token_id(&logs, SEPOLIA_V3.position_manager, wallet)
+                .context("stage=receipt"),
+            &approval_hashes,
+        )?;
+
+        Ok(json!({
+            "hash": format!("{hash:#x}"),
+            "nftTokenId": nft_token_id.to_string(),
+            "poolAddress": pool_address.to_checksum(None),
+            "tickLower": created.get("tickLower").cloned().unwrap_or(json!(tick_lower)),
+            "tickUpper": created.get("tickUpper").cloned().unwrap_or(json!(tick_upper)),
+            "adjustedMinPrice": created.get("adjustedMinPrice").cloned().unwrap_or(Value::Null),
+            "adjustedMaxPrice": created.get("adjustedMaxPrice").cloned().unwrap_or(Value::Null),
+            "token0": lp_token_json(&token0),
+            "token1": lp_token_json(&token1),
+            "approvalHashes": approval_hashes,
         })
         .to_string())
     }
@@ -631,6 +1398,504 @@ mod tests {
             SEPOLIA_V3.position_manager,
             address!("1238536071E1c677A632429e3655c799b22cDA52")
         );
+    }
+
+    // ─── create_v3_position argument validation ──────────────────────────────
+
+    #[test]
+    fn rejects_non_increasing_tick_ranges() {
+        // Equal or inverted bounds are not a range. Uniswap would revert, but only after the
+        // approvals in front of the mint had already been paid for on-chain.
+        for (lower, upper) in [(100, 100), (100, -100), (-100, -200), (0, 0)] {
+            let a = args(&[("tickLower", json!(lower)), ("tickUpper", json!(upper))]);
+            let l = parse_tick_arg(&a, "tickLower").unwrap();
+            let u = parse_tick_arg(&a, "tickUpper").unwrap();
+            assert!(
+                l >= u,
+                "test case ({lower}, {upper}) should be non-increasing"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_ticks_as_numbers_or_strings_including_negatives() {
+        let a = args(&[
+            ("tickLower", json!(-198950)),
+            ("tickUpper", json!("-198200")),
+        ]);
+        assert_eq!(parse_tick_arg(&a, "tickLower").unwrap(), -198950);
+        assert_eq!(parse_tick_arg(&a, "tickUpper").unwrap(), -198200);
+    }
+
+    #[test]
+    fn rejects_unusable_ticks() {
+        for bad in [
+            json!("abc"),
+            json!(1.5),
+            json!(null),
+            json!(true),
+            json!(i64::MAX),
+        ] {
+            assert!(
+                parse_tick_arg(&args(&[("tickLower", bad.clone())]), "tickLower").is_err(),
+                "{bad} should not parse as a tick"
+            );
+        }
+        assert!(parse_tick_arg(&args(&[]), "tickLower").is_err());
+    }
+
+    #[test]
+    fn requires_a_positive_decimal_amount() {
+        assert_eq!(
+            parse_amount_arg(&args(&[("amt", json!("1000000000000000000"))]), "amt").unwrap(),
+            "1000000000000000000"
+        );
+        for bad in [
+            json!("0"),
+            json!(""),
+            json!("-5"),
+            json!("1.5"),
+            json!("0x10"),
+            json!(5),
+        ] {
+            assert!(
+                parse_amount_arg(&args(&[("amt", bad.clone())]), "amt").is_err(),
+                "{bad} should not parse as an amount"
+            );
+        }
+    }
+
+    #[test]
+    fn validates_slippage_tolerance_range() {
+        assert_eq!(parse_slippage_arg(&args(&[])).unwrap(), None);
+        assert_eq!(
+            parse_slippage_arg(&args(&[("slippageTolerance", json!(0.5))])).unwrap(),
+            Some(0.5)
+        );
+        for bad in [json!(0), json!(-1), json!(100.1), json!("0.5")] {
+            assert!(
+                parse_slippage_arg(&args(&[("slippageTolerance", bad.clone())])).is_err(),
+                "{bad} should be rejected as a slippage tolerance"
+            );
+        }
+    }
+
+    // ─── transaction validation ──────────────────────────────────────────────
+
+    const WALLET: Address = address!("79ea449c3375ed1a9d7d99f8068209ea748c6d42");
+    const OTHER: Address = address!("37fa291fe3053c4dd58985a6cec6c448c2c47e0c");
+
+    fn valid_tx() -> Value {
+        json!({
+            "to": "0x1238536071E1c677A632429e3655c799b22cDA52",
+            "from": "0x79ea449c3375ed1a9d7d99f8068209ea748c6d42",
+            "chainId": 11155111,
+            "data": "0x88316456deadbeef",
+            "value": "0",
+        })
+    }
+
+    #[test]
+    fn accepts_a_well_formed_transaction_without_touching_calldata() {
+        let v = validate_api_transaction(&valid_tx(), WALLET, SEPOLIA_V3.chain_id).unwrap();
+        assert_eq!(v.to, SEPOLIA_V3.position_manager);
+        assert_eq!(v.value, U256::ZERO);
+        assert_eq!(
+            alloy::hex::encode_prefixed(&v.data),
+            "0x88316456deadbeef",
+            "calldata must survive validation byte-for-byte"
+        );
+    }
+
+    #[test]
+    fn rejects_a_transaction_built_for_another_sender() {
+        let err = validate_api_transaction(&valid_tx(), OTHER, SEPOLIA_V3.chain_id)
+            .expect_err("a from-mismatch must not be signed")
+            .to_string();
+        assert!(
+            err.contains("from"),
+            "error should name the mismatch: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_transaction_for_another_chain() {
+        // Both spellings: the API documents chainId as a number, but a string would otherwise
+        // slip through the number-only match arm as "no usable chainId" rather than a mismatch.
+        for wrong in [json!(1), json!("1"), json!(8453)] {
+            let mut tx = valid_tx();
+            tx["chainId"] = wrong.clone();
+            assert!(
+                validate_api_transaction(&tx, WALLET, SEPOLIA_V3.chain_id).is_err(),
+                "chainId {wrong} should be rejected"
+            );
+        }
+        // ...and the matching string spelling is accepted.
+        let mut tx = valid_tx();
+        tx["chainId"] = json!("11155111");
+        assert!(validate_api_transaction(&tx, WALLET, SEPOLIA_V3.chain_id).is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_calldata() {
+        for empty in [json!(""), json!("0x"), json!("0X")] {
+            let mut tx = valid_tx();
+            tx["data"] = empty.clone();
+            let err = validate_api_transaction(&tx, WALLET, SEPOLIA_V3.chain_id)
+                .expect_err("empty calldata must not be signed")
+                .to_string();
+            assert!(err.contains("data"), "error should name 'data': {err}");
+        }
+
+        let mut tx = valid_tx();
+        tx.as_object_mut().unwrap().remove("data");
+        assert!(validate_api_transaction(&tx, WALLET, SEPOLIA_V3.chain_id).is_err());
+    }
+
+    #[test]
+    fn rejects_missing_or_malformed_to_and_from() {
+        for field in ["to", "from"] {
+            let mut missing = valid_tx();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(validate_api_transaction(&missing, WALLET, SEPOLIA_V3.chain_id).is_err());
+
+            let mut garbage = valid_tx();
+            garbage[field] = json!("not-an-address");
+            assert!(validate_api_transaction(&garbage, WALLET, SEPOLIA_V3.chain_id).is_err());
+        }
+    }
+
+    #[test]
+    fn parses_value_in_every_documented_spelling() {
+        let cases = [
+            (json!("0"), U256::ZERO),
+            (
+                json!("1000000000000000000"),
+                U256::from(1_000_000_000_000_000_000u64),
+            ),
+            (
+                json!("0x0de0b6b3a7640000"),
+                U256::from(1_000_000_000_000_000_000u64),
+            ),
+            (json!(12345), U256::from(12345)),
+        ];
+        for (input, expected) in cases {
+            let mut tx = valid_tx();
+            tx["value"] = input.clone();
+            let v = validate_api_transaction(&tx, WALLET, SEPOLIA_V3.chain_id)
+                .unwrap_or_else(|e| panic!("value {input} should parse: {e}"));
+            assert_eq!(v.value, expected);
+        }
+
+        // Absent value means zero — a create in a pool with no native side sends no ETH.
+        let mut tx = valid_tx();
+        tx.as_object_mut().unwrap().remove("value");
+        assert_eq!(
+            validate_api_transaction(&tx, WALLET, SEPOLIA_V3.chain_id)
+                .unwrap()
+                .value,
+            U256::ZERO
+        );
+
+        let mut bad = valid_tx();
+        bad["value"] = json!("not a number");
+        assert!(validate_api_transaction(&bad, WALLET, SEPOLIA_V3.chain_id).is_err());
+    }
+
+    // ─── minted NFT id ───────────────────────────────────────────────────────
+
+    fn transfer_log(contract: Address, from: Address, to: Address, id: u64) -> PrimitiveLog {
+        PrimitiveLog::new_unchecked(
+            contract,
+            vec![
+                ERC721_TRANSFER_TOPIC,
+                from.into_word(),
+                to.into_word(),
+                B256::from(U256::from(id).to_be_bytes::<32>()),
+            ],
+            Bytes::new(),
+        )
+    }
+
+    fn mint_log(id: u64) -> PrimitiveLog {
+        transfer_log(SEPOLIA_V3.position_manager, Address::ZERO, WALLET, id)
+    }
+
+    #[test]
+    fn finds_the_minted_token_id() {
+        let id =
+            parse_minted_token_id(&[mint_log(4242)], SEPOLIA_V3.position_manager, WALLET).unwrap();
+        assert_eq!(id, U256::from(4242));
+    }
+
+    #[test]
+    fn ignores_unrelated_transfers_in_the_same_transaction() {
+        // A create transaction also emits ERC-20 Transfers for the deposited tokens, and may
+        // touch other NFTs. Matching on topic0 alone would pick up the wrong id.
+        let erc20 = address!("fff9976782d46cc05630d1f6ebab18b2324d6b14");
+        let logs = vec![
+            transfer_log(erc20, WALLET, OTHER, 999),
+            transfer_log(erc20, WALLET, SEPOLIA_V3.position_manager, 888),
+            mint_log(7),
+        ];
+        let id = parse_minted_token_id(&logs, SEPOLIA_V3.position_manager, WALLET).unwrap();
+        assert_eq!(id, U256::from(7));
+    }
+
+    #[test]
+    fn rejects_a_mint_to_someone_else() {
+        // A Transfer to another address is not our position, and reporting its id would tell
+        // the caller they own something they do not.
+        let logs = vec![transfer_log(
+            SEPOLIA_V3.position_manager,
+            Address::ZERO,
+            OTHER,
+            7,
+        )];
+        assert!(parse_minted_token_id(&logs, SEPOLIA_V3.position_manager, WALLET).is_err());
+    }
+
+    #[test]
+    fn rejects_a_transfer_that_is_not_a_mint() {
+        // from != 0 means an existing position changed hands, not a new one being created.
+        let logs = vec![transfer_log(SEPOLIA_V3.position_manager, OTHER, WALLET, 7)];
+        assert!(parse_minted_token_id(&logs, SEPOLIA_V3.position_manager, WALLET).is_err());
+    }
+
+    #[test]
+    fn rejects_a_mint_from_another_contract() {
+        let logs = vec![transfer_log(
+            address!("00000000000000000000000000000000deadbeef"),
+            Address::ZERO,
+            WALLET,
+            7,
+        )];
+        assert!(parse_minted_token_id(&logs, SEPOLIA_V3.position_manager, WALLET).is_err());
+    }
+
+    #[test]
+    fn rejects_a_receipt_with_no_logs() {
+        let err = parse_minted_token_id(&[], SEPOLIA_V3.position_manager, WALLET)
+            .expect_err("no logs means no position was minted")
+            .to_string();
+        assert!(
+            err.contains("mint"),
+            "error should say a mint was expected: {err}"
+        );
+    }
+
+    // ─── LP API request bodies ───────────────────────────────────────────────
+
+    fn test_pool() -> V3Pool {
+        V3Pool {
+            token0: address!("1f9840a85d5af5bf1d1762f925bdaddc4201f984"),
+            token1: address!("fff9976782d46cc05630d1f6ebab18b2324d6b14"),
+        }
+    }
+
+    #[test]
+    fn builds_the_documented_create_body() {
+        let body = build_lp_create_body(
+            WALLET,
+            address!("287b0e934ed0439e2a7b1d5f0fc25ea2c24b64f7"),
+            &test_pool(),
+            address!("1f9840a85d5af5bf1d1762f925bdaddc4201f984"),
+            "198251669183062942",
+            -198950,
+            -198200,
+            Some(0.5),
+            true,
+        );
+
+        assert_eq!(body["chainId"], json!(11155111));
+        assert_eq!(body["protocol"], json!("V3"));
+        assert_eq!(
+            body["existingPool"]["poolReference"],
+            json!("0x287B0e934ed0439E2a7b1d5F0FC25eA2c24b64f7")
+        );
+        assert_eq!(
+            body["independentToken"]["amount"],
+            json!("198251669183062942")
+        );
+        assert_eq!(
+            body["tickBounds"],
+            json!({"tickLower": -198950, "tickUpper": -198200})
+        );
+        assert_eq!(body["slippageTolerance"], json!(0.5));
+        assert_eq!(body["simulateTransaction"], json!(true));
+        // priceBounds is the alternative to tickBounds; sending both is an error.
+        assert!(body.get("priceBounds").is_none());
+    }
+
+    #[test]
+    fn omits_slippage_when_not_supplied_and_can_disable_simulation() {
+        let body = build_lp_create_body(
+            WALLET,
+            Address::ZERO,
+            &test_pool(),
+            test_pool().token0,
+            "1",
+            -10,
+            10,
+            None,
+            false,
+        );
+        assert!(body.get("slippageTolerance").is_none());
+        // The sizing pass runs before approvals exist, so simulating it would fail for a reason
+        // that says nothing about the position.
+        assert_eq!(body["simulateTransaction"], json!(false));
+    }
+
+    #[test]
+    fn builds_the_documented_check_approval_body() {
+        let pool = test_pool();
+        let body = build_check_approval_body(
+            WALLET,
+            &[
+                (pool.token0, "100".to_string()),
+                (pool.token1, "200".to_string()),
+            ],
+        );
+
+        assert_eq!(body["action"], json!("CREATE"));
+        assert_eq!(body["protocol"], json!("V3"));
+        assert_eq!(body["chainId"], json!(11155111));
+        assert_eq!(body["generatePermitAsTransaction"], json!(true));
+        assert_eq!(body["lpTokens"].as_array().unwrap().len(), 2);
+        assert_eq!(body["lpTokens"][0]["amount"], json!("100"));
+        assert_eq!(body["lpTokens"][1]["amount"], json!("200"));
+    }
+
+    // ─── LP API response parsing ─────────────────────────────────────────────
+
+    #[test]
+    fn parses_the_documented_approval_response() {
+        let resp = json!({
+            "transactions": [
+                {"transaction": {"to": "0x1", "data": "0xaa"}, "cancelApproval": false, "action": "CREATE"},
+                {"transaction": {"to": "0x2", "data": "0xbb"}, "cancelApproval": true, "action": "CREATE"}
+            ]
+        });
+        let txs = parse_approval_transactions(&resp).unwrap();
+        assert_eq!(txs.len(), 2);
+        assert_eq!(txs[0]["data"], json!("0xaa"));
+        assert_eq!(txs[1]["data"], json!("0xbb"));
+    }
+
+    #[test]
+    fn treats_an_empty_approval_list_as_nothing_to_do() {
+        let txs = parse_approval_transactions(&json!({ "transactions": [] })).unwrap();
+        assert!(txs.is_empty());
+    }
+
+    #[test]
+    fn fails_loudly_on_an_undocumented_approval_shape() {
+        // Deliberately no fallback: guessing at an unrecognised shape would mean signing
+        // calldata we did not actually parse. Each case must name what was wrong.
+        let cases = [
+            json!({}),
+            json!({"transactions": null}),
+            json!({"transactions": {"transaction": {}}}),
+            json!({"token0Approval": {"to": "0x1", "data": "0xaa"}}),
+            json!({"transactions": [{"cancelApproval": false}]}),
+            json!({"transactions": [{"transaction": null}]}),
+        ];
+        for resp in cases {
+            let err = parse_approval_transactions(&resp)
+                .expect_err("undocumented shape must not be silently accepted")
+                .to_string();
+            assert!(
+                err.contains("transactions"),
+                "error should name the field it could not read, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_the_documented_create_response() {
+        let resp = json!({
+            "requestId": "abc",
+            "token0": {"tokenAddress": "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984", "amount": "100"},
+            "token1": {"tokenAddress": "0xfff9976782d46cc05630d1f6ebab18b2324d6b14", "amount": "200"},
+            "tickLower": -198950,
+            "tickUpper": -198200,
+            "adjustedMinPrice": "0.0000000000032",
+            "adjustedMaxPrice": "0.0000000000039",
+            "create": {"to": "0x1", "from": "0x2", "data": "0xaa", "value": "0", "chainId": 11155111}
+        });
+
+        let (addr, amount) = parse_lp_token(&resp, "token0", "/lp/create").unwrap();
+        assert_eq!(addr, address!("1f9840a85d5af5bf1d1762f925bdaddc4201f984"));
+        assert_eq!(amount, "100");
+        assert_eq!(
+            parse_lp_token(&resp, "token1", "/lp/create").unwrap().1,
+            "200"
+        );
+        assert_eq!(
+            require_field(&resp, "create", "/lp/create").unwrap()["data"],
+            json!("0xaa")
+        );
+    }
+
+    #[test]
+    fn fails_loudly_on_an_undocumented_create_response() {
+        assert!(parse_lp_token(&json!({}), "token0", "/lp/create").is_err());
+        assert!(
+            parse_lp_token(&json!({"token0": {"amount": "1"}}), "token0", "/lp/create").is_err(),
+            "a token without tokenAddress must not be accepted"
+        );
+        assert!(
+            parse_lp_token(
+                &json!({"token0": {"tokenAddress": "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984"}}),
+                "token0",
+                "/lp/create"
+            )
+            .is_err(),
+            "a token without amount must not be accepted"
+        );
+        assert!(require_field(&json!({"create": null}), "create", "/lp/create").is_err());
+        assert!(require_field(&json!({}), "create", "/lp/create").is_err());
+    }
+
+    #[test]
+    fn error_excerpts_are_bounded() {
+        let huge = "x".repeat(10_000);
+        let out = excerpt(&huge);
+        assert!(
+            out.chars().count() < 700,
+            "excerpt should be capped, got {}",
+            out.chars().count()
+        );
+        assert!(out.ends_with("(truncated)"));
+        assert_eq!(excerpt("short"), "short");
+    }
+
+    // ─── partial-failure reporting ───────────────────────────────────────────
+
+    #[test]
+    fn errors_after_an_approval_lands_report_its_hash() {
+        // An approval is real on-chain state. If a later step fails, a retry must not look like
+        // it is starting from scratch.
+        let hashes = vec!["0xaaa".to_string(), "0xbbb".to_string()];
+        let err = with_approvals::<()>(Err(anyhow::anyhow!("stage=broadcast: nope")), &hashes)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("stage=broadcast"),
+            "original error should survive: {err}"
+        );
+        assert!(
+            err.contains("0xaaa") && err.contains("0xbbb"),
+            "hashes should be listed: {err}"
+        );
+    }
+
+    #[test]
+    fn errors_before_any_approval_are_left_alone() {
+        let err = with_approvals::<()>(Err(anyhow::anyhow!("stage=position read: nope")), &[])
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err, "stage=position read: nope");
     }
 
     // ─── tool schema ─────────────────────────────────────────────────────────

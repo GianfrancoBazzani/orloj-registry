@@ -496,7 +496,7 @@ impl UniswapMcpServer {
                     .await
                     .context("Permit2 token approval failed")?;
 
-                wait_for_receipt(&provider, hash)
+                wait_for_receipt(&provider, hash, "Permit2 approval")
                     .await
                     .context("Permit2 token approval did not confirm")?;
 

@@ -6,6 +6,7 @@ use std::time::Duration;
 use alloy::{
     primitives::{B256, U256},
     providers::Provider,
+    rpc::types::TransactionReceipt,
 };
 use anyhow::{Context, Result};
 use serde_json::{Map, Value};
@@ -33,23 +34,30 @@ pub(super) fn parse_chain_id_arg(args: &Map<String, Value>) -> Option<u64> {
     }
 }
 
-/// Polls for a transaction receipt, bounded to ~60s. Used only for the Permit2 approval step —
-/// waiting for on-chain confirmation before signing/broadcasting the swap avoids racing a nonce
-/// or attempting a swap that would predictably fail from insufficient allowance.
-pub(super) async fn wait_for_receipt(provider: &impl Provider, hash: B256) -> Result<()> {
+/// Polls for a transaction receipt, bounded to ~60s, and fails if the transaction reverted.
+///
+/// `label` names the transaction in error messages ("Permit2 approval", "position create", ...)
+/// so a timeout or revert says which step of a multi-transaction flow stalled.
+///
+/// Waiting matters wherever a later transaction depends on an earlier one: broadcasting a swap
+/// or a mint before its approval has confirmed either races the nonce or predictably reverts on
+/// insufficient allowance. The receipt is returned rather than discarded because callers that
+/// mint an NFT need its logs to learn the new token id.
+pub(super) async fn wait_for_receipt(
+    provider: &impl Provider,
+    hash: B256,
+    label: &str,
+) -> Result<TransactionReceipt> {
     for _ in 0..30 {
         if let Some(receipt) = provider
             .get_transaction_receipt(hash)
             .await
             .context("eth_getTransactionReceipt failed")?
         {
-            anyhow::ensure!(
-                receipt.status(),
-                "Permit2 approval transaction {hash:#x} reverted"
-            );
-            return Ok(());
+            anyhow::ensure!(receipt.status(), "{label} transaction {hash:#x} reverted");
+            return Ok(receipt);
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
-    anyhow::bail!("timed out waiting for Permit2 approval transaction {hash:#x} to confirm")
+    anyhow::bail!("timed out waiting for {label} transaction {hash:#x} to confirm")
 }
