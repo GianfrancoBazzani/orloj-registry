@@ -35,6 +35,61 @@ export const GRAPH_EVIDENCE_DOMAINS = Object.freeze([
   "missingInputFlags",
 ]);
 
+/**
+ * Domains whose metrics may actionably support HOLD/REDUCE.
+ * windows / evidence / graph / position / usdDataUsable / missingInputFlags are excluded.
+ */
+export const ACTIONABLE_MARKET_DOMAINS = Object.freeze([
+  "range",
+  "volatility",
+  "activity",
+  "volumes",
+  "fees",
+  "liquidity",
+  "tvl",
+]);
+
+/** Path segments that never count as actionable market metrics (UNCERTAINTY OK). */
+export const NON_ACTIONABLE_SEGMENTS = Object.freeze([
+  "note",
+  "reason",
+  "reasons",
+  // Identity / addressing
+  "subgraphId",
+  "indexedBlock",
+  "indexedTimestamp",
+  "nftTokenId",
+  "poolAddress",
+  "chainId",
+  "walletAddress",
+  "token0",
+  "token1",
+  "deployment",
+  "positionLiquidity",
+  // Window / sample / evidence metadata
+  "observationCount",
+  "startUnix",
+  "endUnix",
+  "includeEnd",
+  "hourRowsTotal",
+  "hourRows6h",
+  "hourRows24h",
+  "hourRowsPrev6h",
+  "swapRowsSampled",
+  "swapSample",
+  "truncated",
+  "complete",
+  "rowCount",
+  "fetchedCount",
+  "limit",
+  "sampleCount",
+  "observationSpanSeconds",
+  "minSpanSeconds",
+  "sufficient",
+  "maxIndexedAgeSeconds",
+  "nowUnix",
+]);
+
 const BLOCKED_PATH_SEGMENTS = new Set(["__proto__", "prototype", "constructor"]);
 
 const DECISION_KEYS = Object.freeze([
@@ -71,6 +126,27 @@ export function evidenceDomainForPath(path) {
  */
 export function isGraphDerivedDomain(path) {
   return GRAPH_EVIDENCE_DOMAINS.includes(evidenceDomainForPath(path));
+}
+
+/**
+ * Whether a path is an explicit market-metric eligible for SUPPORTS_HOLD / SUPPORTS_REDUCE.
+ * .note / .reason / .reasons, identity fields, window/evidence metadata are excluded
+ * (they may still be cited by UNCERTAINTY).
+ * @param {string} path
+ * @returns {boolean}
+ */
+export function isActionableMarketMetricPath(path) {
+  const domain = evidenceDomainForPath(path);
+  if (!ACTIONABLE_MARKET_DOMAINS.includes(domain)) {
+    return false;
+  }
+  const parts = path.split(".");
+  for (const part of parts) {
+    if (NON_ACTIONABLE_SEGMENTS.includes(part)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -269,7 +345,7 @@ export function validateDecision(decision, features) {
 
   /** @type {string[]} */
   const allCitations = [];
-  /** @type {Array<{ direction: string, domains: Set<string>, citations: string[] }>} */
+  /** @type {Array<{ direction: string, domain: string, citations: string[] }>} */
   const supportSignals = [];
 
   for (let i = 0; i < d.signals.length; i++) {
@@ -314,9 +390,9 @@ export function validateDecision(decision, features) {
       const nullReason = isNullReasonEvidence(leaf);
 
       if (direction === "UNCERTAINTY") {
-        // Null/reason evidence is allowed; actionable primitives also OK for uncertainty notes.
+        // Null/reason, notes, identity, and metadata may be cited as uncertainty.
       } else {
-        // SUPPORTS_HOLD | SUPPORTS_REDUCE — actionable non-null primitives only.
+        // SUPPORTS_HOLD | SUPPORTS_REDUCE — actionable market-metric primitives only.
         if (nullReason) {
           throw new Error(
             `decision signals[${i}].citations[${j}] is null/reason evidence and may only be cited by UNCERTAINTY`,
@@ -325,6 +401,11 @@ export function validateDecision(decision, features) {
         if (!isActionablePrimitive(leaf)) {
           throw new Error(
             `decision signals[${i}].citations[${j}] must resolve to a non-null primitive for actionable support`,
+          );
+        }
+        if (!isActionableMarketMetricPath(cite)) {
+          throw new Error(
+            `decision signals[${i}].citations[${j}] is not an actionable market-metric path (notes/reasons/identity/window/evidence metadata may only be cited by UNCERTAINTY)`,
           );
         }
         if (!usdUsable && isUsdDerivedPath(cite)) {
@@ -340,53 +421,68 @@ export function validateDecision(decision, features) {
     }
 
     if (direction === "SUPPORTS_HOLD" || direction === "SUPPORTS_REDUCE") {
-      supportSignals.push({ direction, domains, citations: signalCitations });
+      if (domains.size !== 1) {
+        throw new Error(
+          `decision signals[${i}] actionable support must concern exactly one evidence domain (got ${domains.size}: ${[...domains].join(", ") || "none"})`,
+        );
+      }
+      supportSignals.push({
+        direction,
+        domain: [...domains][0],
+        citations: signalCitations,
+      });
     }
   }
 
-  // Action-aligned support + independence.
+  const requiredDirection =
+    d.action === "HOLD" ? "SUPPORTS_HOLD" : "SUPPORTS_REDUCE";
+  const actionAligned = supportSignals.filter(
+    (s) => s.direction === requiredDirection,
+  );
+
   if (d.action === "HOLD") {
-    const holdSupports = supportSignals.filter((s) => s.direction === "SUPPORTS_HOLD");
-    if (holdSupports.length < 1) {
+    if (actionAligned.length < 1) {
       throw new Error("decision HOLD requires at least one SUPPORTS_HOLD signal");
     }
   } else {
-    const reduceSupports = supportSignals.filter((s) => s.direction === "SUPPORTS_REDUCE");
-    if (reduceSupports.length < MIN_REDUCE_SUPPORT_SIGNALS) {
+    if (actionAligned.length < MIN_REDUCE_SUPPORT_SIGNALS) {
       throw new Error(
         `decision REDUCE_LIQUIDITY requires at least ${MIN_REDUCE_SUPPORT_SIGNALS} SUPPORTS_REDUCE signals`,
       );
     }
-    /** @type {Set<string>} */
-    const reduceDomains = new Set();
-    for (const s of reduceSupports) {
-      for (const dom of s.domains) reduceDomains.add(dom);
-    }
-    if (reduceDomains.size < MIN_REDUCE_SUPPORT_SIGNALS) {
+
+    // Reject duplicate citation sets across action-aligned signals.
+    const citeKeys = actionAligned.map((s) =>
+      [...s.citations].slice().sort().join("\0"),
+    );
+    if (new Set(citeKeys).size !== citeKeys.length) {
       throw new Error(
-        `decision REDUCE_LIQUIDITY requires SUPPORTS_REDUCE citations from at least ${MIN_REDUCE_SUPPORT_SIGNALS} distinct evidence domains`,
+        "decision REDUCE_LIQUIDITY rejects duplicate citation sets across SUPPORTS_REDUCE signals",
+      );
+    }
+
+    /** Distinct Graph market domains from action-aligned signals only. */
+    const reduceMarketDomains = new Set(
+      actionAligned
+        .map((s) => s.domain)
+        .filter((dom) => ACTIONABLE_MARKET_DOMAINS.includes(dom)),
+    );
+    if (reduceMarketDomains.size < MIN_REDUCE_SUPPORT_SIGNALS) {
+      throw new Error(
+        `decision REDUCE_LIQUIDITY requires SUPPORTS_REDUCE signals from at least ${MIN_REDUCE_SUPPORT_SIGNALS} distinct Graph market domains`,
       );
     }
   }
 
-  // Every decision needs ≥1 live Graph-derived domain among actionable support citations.
-  /** @type {Set<string>} */
-  const supportGraphDomains = new Set();
-  for (const s of supportSignals) {
-    for (const cite of s.citations) {
-      const resolved = resolveFeaturePath(features, cite);
-      if (!resolved.ok) continue;
-      if (isNullReasonEvidence(resolved.value)) continue;
-      if (!isActionablePrimitive(resolved.value)) continue;
-      if (!usdUsable && isUsdDerivedPath(cite)) continue;
-      if (isGraphDerivedDomain(cite)) {
-        supportGraphDomains.add(evidenceDomainForPath(cite));
-      }
-    }
-  }
-  if (supportGraphDomains.size < 1) {
+  // Graph grounding: only signals aligned with the selected action.
+  const groundedMarketDomains = new Set(
+    actionAligned
+      .map((s) => s.domain)
+      .filter((dom) => ACTIONABLE_MARKET_DOMAINS.includes(dom)),
+  );
+  if (groundedMarketDomains.size < 1) {
     throw new Error(
-      "decision requires at least one live Graph-derived evidence domain (position.* alone never qualifies)",
+      "decision requires at least one action-aligned live Graph market-metric domain (position/window/evidence/identity alone never qualifies)",
     );
   }
 
@@ -413,9 +509,9 @@ export function validateDecision(decision, features) {
       "decision graphEvidence.indexedBlock must be a non-empty string or finite number",
     );
   }
-  if (String(ge.indexedBlock) !== String(featuresGraph.indexedBlock)) {
+  if (ge.indexedBlock !== featuresGraph.indexedBlock) {
     throw new Error(
-      `decision graphEvidence.indexedBlock does not match features (${ge.indexedBlock} !== ${featuresGraph.indexedBlock})`,
+      `decision graphEvidence.indexedBlock does not match features (type-and-value exact: ${JSON.stringify(ge.indexedBlock)} !== ${JSON.stringify(featuresGraph.indexedBlock)})`,
     );
   }
 

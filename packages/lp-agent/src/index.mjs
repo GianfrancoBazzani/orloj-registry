@@ -26,11 +26,13 @@ export {
   SIGNAL_DIRECTIONS,
   MIN_REDUCE_SUPPORT_SIGNALS,
   MIN_REDUCE_SIGNALS,
+  ACTIONABLE_MARKET_DOMAINS,
   GRAPH_EVIDENCE_DOMAINS,
   featurePathExists,
   resolveFeaturePath,
   evidenceDomainForPath,
   isUsdDerivedPath,
+  isActionableMarketMetricPath,
   validateDecision,
 } from "./decision-schema.mjs";
 export {

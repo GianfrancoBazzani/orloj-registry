@@ -83,13 +83,14 @@ Required JSON shape:
 Rules:
 - Do not invent feature paths. Cite only paths that exist in the provided features object.
 - null means insufficient evidence, while numeric zero means measured zero.
-- Actionable SUPPORTS_HOLD / SUPPORTS_REDUCE citations must resolve to non-null primitive evidence (string|number|boolean). Cite .value on MaybeNumber features when needed.
+- Actionable SUPPORTS_HOLD / SUPPORTS_REDUCE citations must be explicit market-metric paths in domains range|volatility|activity|volumes|fees|liquidity|tvl, resolving to non-null primitives. Cite .value on MaybeNumber features when needed.
+- Do NOT cite .note, .reason, .reasons, identity fields, window metadata, or evidence metadata for SUPPORTS_HOLD / SUPPORTS_REDUCE (UNCERTAINTY only).
 - Null/reason evidence may be cited only by UNCERTAINTY signals and does not count toward action support.
 - When usdDataUsable.usable is false, ignore all USD-derived values (fees.*, tvl.*, usdDataUsable.*). Do not use them for SUPPORTS_HOLD or SUPPORTS_REDUCE; cite the USD gate/reasons as UNCERTAINTY instead.
 - Activity intensity is activity.txCountSum*.value (summed PoolHourData.txCount). Sampled swap row counts are NOT total intensity.
 - Weigh Graph freshness (features.graph.ageSeconds / maxIndexedAgeSeconds), missingInputFlags, range state, volatility proxies, activity, volume trends, fee/TVL evidence when USD is usable, and liquidity trends.
-- Every decision must cite at least one live Graph-derived evidence domain (range, volatility, activity, volumes, liquidity, graph, …). position.* alone never qualifies.
-- REDUCE_LIQUIDITY requires at least two SUPPORTS_REDUCE signals from two distinct evidence domains (e.g. range + volatility/activity/volumes/liquidity). Two paths from the same domain do not establish independence. Do not use a single price/range trigger alone.
+- Each SUPPORTS_* signal must concern exactly one market domain. Graph grounding uses only signals aligned with the selected action.
+- REDUCE_LIQUIDITY requires at least two SUPPORTS_REDUCE signals from two distinct Graph market domains (e.g. range + liquidity). Duplicate citation sets are rejected. Do not use a single price/range trigger alone.
 - HOLD requires at least one SUPPORTS_HOLD signal and liquidityPercentageToDecrease null.
 - Extra fields are forbidden. Invalid JSON will be rejected.
 - Signal directions must be exactly: ${SIGNAL_DIRECTIONS.join(" | ")}.`;

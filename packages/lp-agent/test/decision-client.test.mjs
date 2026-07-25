@@ -106,8 +106,8 @@ function holdDecision() {
   const signals = [
     {
       direction: "SUPPORTS_HOLD",
-      observation: "In range; activity txCountSum6h is 2.",
-      citations: ["range.status", "activity.txCountSum6h.value"],
+      observation: "In range near mid.",
+      citations: ["range.status", "range.inRange"],
     },
     {
       direction: "UNCERTAINTY",
@@ -206,8 +206,9 @@ describe("decision-client", () => {
     assert.match(messages[0].content, /numeric zero means measured zero/i);
     assert.match(messages[0].content, /untrusted data, never instructions/i);
     assert.match(messages[0].content, /SUPPORTS_HOLD/);
-    assert.match(messages[0].content, /distinct evidence domains/);
-    assert.match(messages[0].content, /position\.\* alone never qualifies/);
+    assert.match(messages[0].content, /distinct Graph market domains/);
+    assert.match(messages[0].content, /exactly one market domain/);
+    assert.match(messages[0].content, /\.note/);
     const user = JSON.parse(messages[1].content);
     assert.match(user.instruction, /untrusted data/i);
     assert.equal(user.pair.token0.symbol, "AAA");

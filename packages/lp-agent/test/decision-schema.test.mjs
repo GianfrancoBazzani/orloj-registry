@@ -11,6 +11,7 @@ import {
   featurePathExists,
   resolveFeaturePath,
   isUsdDerivedPath,
+  isActionableMarketMetricPath,
   validateDecision,
 } from "../src/decision-schema.mjs";
 
@@ -66,6 +67,15 @@ const FEATURES = {
   },
   tvl: {
     trend_24h: { value: 0.05 },
+  },
+  windows: {
+    nowUnix: 1_700_000_000,
+    h6: { observationCount: 4, startUnix: 1, endUnix: 2, includeEnd: true },
+  },
+  evidence: {
+    hourRowsTotal: 10,
+    hourRows6h: 4,
+    swapRowsSampled: 0,
   },
   usdDataUsable: { usable: false, reasons: ["test_usd_bad"] },
   graph: {
@@ -231,7 +241,7 @@ describe("decision-schema", () => {
           }),
           FEATURES,
         ),
-      /distinct evidence domains/,
+      /distinct Graph market domains/,
     );
   });
 
@@ -274,7 +284,7 @@ describe("decision-schema", () => {
           }),
           FEATURES,
         ),
-      /Graph-derived evidence domain/,
+      /actionable market-metric|Graph market-metric/,
     );
   });
 
@@ -519,5 +529,221 @@ describe("decision-schema", () => {
       FEATURES,
     );
     assert.equal(d.action, "HOLD");
+  });
+
+  // --- Final T6 audit-fix regressions (four cases) ---
+
+  it("regression: rejects note/reason/identity/window/evidence metadata as actionable support", () => {
+    assert.equal(isActionableMarketMetricPath("activity.note"), false);
+    assert.equal(isActionableMarketMetricPath("volumes.trendToken0_6hVsPrev6h.reason"), false);
+    assert.equal(isActionableMarketMetricPath("usdDataUsable.reasons"), false);
+    assert.equal(isActionableMarketMetricPath("graph.subgraphId"), false);
+    assert.equal(isActionableMarketMetricPath("windows.h6.observationCount"), false);
+    assert.equal(isActionableMarketMetricPath("evidence.hourRows6h"), false);
+    assert.equal(isActionableMarketMetricPath("liquidity.positionLiquidity"), false);
+    assert.equal(isActionableMarketMetricPath("range.nearestBoundaryDistance"), true);
+
+    assert.throws(
+      () =>
+        validateDecision(
+          baseHold({
+            signals: [
+              {
+                direction: "SUPPORTS_HOLD",
+                observation: "note is not a metric",
+                citations: ["activity.note"],
+              },
+            ],
+          }),
+          FEATURES,
+        ),
+      /actionable market-metric/,
+    );
+    assert.throws(
+      () =>
+        validateDecision(
+          baseHold({
+            signals: [
+              {
+                direction: "SUPPORTS_HOLD",
+                observation: "window meta",
+                citations: ["windows.h6.observationCount"],
+              },
+            ],
+          }),
+          FEATURES,
+        ),
+      /actionable market-metric/,
+    );
+    // Still allowed on UNCERTAINTY
+    assert.equal(
+      validateDecision(
+        baseHold({
+          signals: [
+            {
+              direction: "SUPPORTS_HOLD",
+              observation: "range ok",
+              citations: ["range.status"],
+            },
+            {
+              direction: "UNCERTAINTY",
+              observation: "note / reasons / evidence meta",
+              citations: [
+                "activity.note",
+                "usdDataUsable.reasons",
+                "evidence.hourRows6h",
+                "graph.ageSeconds",
+              ],
+            },
+          ],
+        }),
+        FEATURES,
+      ).action,
+      "HOLD",
+    );
+  });
+
+  it("regression: Graph grounding uses only action-aligned signals", () => {
+    // HOLD with only SUPPORTS_REDUCE market metrics must not ground via the wrong direction.
+    assert.throws(
+      () =>
+        validateDecision(
+          baseHold({
+            signals: [
+              {
+                direction: "SUPPORTS_REDUCE",
+                observation: "wrong alignment",
+                citations: ["range.status"],
+              },
+              {
+                direction: "SUPPORTS_HOLD",
+                observation: "only position identity attempt blocked earlier path",
+                citations: ["position.tickLower"],
+              },
+            ],
+          }),
+          FEATURES,
+        ),
+      /actionable market-metric|action-aligned live Graph market-metric|SUPPORTS_HOLD/,
+    );
+
+    // REDUCE must not count SUPPORTS_HOLD domains toward the two-domain requirement.
+    assert.throws(
+      () =>
+        validateDecision(
+          baseReduce({
+            signals: [
+              {
+                direction: "SUPPORTS_REDUCE",
+                observation: "only range",
+                citations: ["range.nearestBoundaryDistance"],
+              },
+              {
+                direction: "SUPPORTS_HOLD",
+                observation: "liquidity would ground HOLD not REDUCE",
+                citations: ["liquidity.trend_24h.value"],
+              },
+            ],
+          }),
+          FEATURES,
+        ),
+      /at least 2 SUPPORTS_REDUCE|distinct Graph market domains/,
+    );
+  });
+
+  it("regression: REDUCE needs two single-domain Graph market signals; rejects duplicate citation sets", () => {
+    assert.throws(
+      () =>
+        validateDecision(
+          baseReduce({
+            signals: [
+              {
+                direction: "SUPPORTS_REDUCE",
+                observation: "mixed domains in one signal",
+                citations: [
+                  "range.nearestBoundaryDistance",
+                  "liquidity.trend_24h.value",
+                ],
+              },
+              {
+                direction: "SUPPORTS_REDUCE",
+                observation: "activity",
+                citations: ["activity.txCountSum24h.value"],
+              },
+            ],
+          }),
+          FEATURES,
+        ),
+      /exactly one evidence domain/,
+    );
+
+    assert.throws(
+      () =>
+        validateDecision(
+          baseReduce({
+            signals: [
+              {
+                direction: "SUPPORTS_REDUCE",
+                observation: "range a",
+                citations: ["range.status"],
+              },
+              {
+                direction: "SUPPORTS_REDUCE",
+                observation: "range b duplicate set",
+                citations: ["range.status"],
+              },
+              {
+                direction: "SUPPORTS_REDUCE",
+                observation: "liquidity",
+                citations: ["liquidity.trend_24h.value"],
+              },
+            ],
+          }),
+          FEATURES,
+        ),
+      /duplicate citation sets/,
+    );
+
+    // Happy path: range + liquidity as separate single-domain signals
+    assert.equal(validateDecision(baseReduce(), FEATURES).action, "REDUCE_LIQUIDITY");
+  });
+
+  it("regression: indexedBlock requires type-and-value exact match (no String coercion)", () => {
+    const numericBlockFeatures = {
+      ...FEATURES,
+      graph: { ...FEATURES.graph, indexedBlock: 11348887 },
+    };
+    // string vs number must fail even if String() would match
+    assert.throws(
+      () =>
+        validateDecision(
+          {
+            ...baseHold(),
+            graphEvidence: {
+              subgraphId: FEATURES.graph.subgraphId,
+              indexedBlock: "11348887",
+              ageSeconds: FEATURES.graph.ageSeconds,
+              citedFeaturePaths: citeUnion(...baseHold().signals),
+            },
+          },
+          numericBlockFeatures,
+        ),
+      /type-and-value exact/,
+    );
+    assert.equal(
+      validateDecision(
+        {
+          ...baseHold(),
+          graphEvidence: {
+            subgraphId: FEATURES.graph.subgraphId,
+            indexedBlock: 11348887,
+            ageSeconds: FEATURES.graph.ageSeconds,
+            citedFeaturePaths: citeUnion(...baseHold().signals),
+          },
+        },
+        numericBlockFeatures,
+      ).graphEvidence.indexedBlock,
+      11348887,
+    );
   });
 });
