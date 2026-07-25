@@ -147,6 +147,7 @@ impl UniswapMcpServer {
             "swap" => self.handle_swap(args).await,
             "supported_networks" => self.handle_supported_networks().await,
             "get_v3_position" => self.handle_get_v3_position(args).await,
+            "get_v3_pool_state" => self.handle_get_v3_pool_state(args).await,
             "create_v3_position" => self.handle_create_v3_position(args).await,
             "decrease_v3_position" => self.handle_decrease_v3_position(args).await,
             "claim_v3_fees" => self.handle_claim_v3_fees(args).await,
@@ -301,6 +302,7 @@ mod tests {
             "swap",
             "supported_networks",
             "get_v3_position",
+            "get_v3_pool_state",
             "create_v3_position",
             "decrease_v3_position",
             "claim_v3_fees",
@@ -310,7 +312,7 @@ mod tests {
                 "tools/list should contain {expected}, got {names:?}"
             );
         }
-        assert_eq!(names.len(), 7, "no unexpected tools: {names:?}");
+        assert_eq!(names.len(), 8, "no unexpected tools: {names:?}");
     }
 
     #[tokio::test]

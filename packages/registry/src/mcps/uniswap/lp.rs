@@ -68,6 +68,12 @@ const POSITION_MANAGER_ABI: &str = r#"[
   {"name":"ownerOf","type":"function","stateMutability":"view",
    "inputs":[{"name":"tokenId","type":"uint256"}],
    "outputs":[{"name":"owner","type":"address"}]},
+  {"name":"balanceOf","type":"function","stateMutability":"view",
+   "inputs":[{"name":"owner","type":"address"}],
+   "outputs":[{"name":"balance","type":"uint256"}]},
+  {"name":"tokenOfOwnerByIndex","type":"function","stateMutability":"view",
+   "inputs":[{"name":"owner","type":"address"},{"name":"index","type":"uint256"}],
+   "outputs":[{"name":"tokenId","type":"uint256"}]},
   {"name":"positions","type":"function","stateMutability":"view",
    "inputs":[{"name":"tokenId","type":"uint256"}],
    "outputs":[
@@ -98,7 +104,20 @@ const POOL_ABI: &str = r#"[
   {"name":"token1","type":"function","stateMutability":"view","inputs":[],
    "outputs":[{"name":"","type":"address"}]},
   {"name":"fee","type":"function","stateMutability":"view","inputs":[],
-   "outputs":[{"name":"","type":"uint24"}]}
+   "outputs":[{"name":"","type":"uint24"}]},
+  {"name":"tickSpacing","type":"function","stateMutability":"view","inputs":[],
+   "outputs":[{"name":"","type":"int24"}]},
+  {"name":"liquidity","type":"function","stateMutability":"view","inputs":[],
+   "outputs":[{"name":"","type":"uint128"}]},
+  {"name":"slot0","type":"function","stateMutability":"view","inputs":[],
+   "outputs":[
+     {"name":"sqrtPriceX96","type":"uint160"},
+     {"name":"tick","type":"int24"},
+     {"name":"observationIndex","type":"uint16"},
+     {"name":"observationCardinality","type":"uint16"},
+     {"name":"observationCardinalityNext","type":"uint16"},
+     {"name":"feeProtocol","type":"uint8"},
+     {"name":"unlocked","type":"bool"}]}
 ]"#;
 
 fn parse_abi(src: &str, what: &str) -> JsonAbi {
@@ -299,22 +318,32 @@ async fn get_pool(
     as_address(out(&outs, 0, "getPool.pool")?, "getPool.pool")
 }
 
-/// A V3 pool's token pair, read from the pool itself and verified against the factory.
-pub struct V3Pool {
+/// Everything about a pool that position sizing and range derivation need, read from the pool
+/// itself and verified against the factory.
+pub struct V3PoolState {
     pub token0: Address,
     pub token1: Address,
+    pub fee: u32,
+    pub tick_spacing: i32,
+    pub current_tick: i32,
+    pub sqrt_price_x96: U256,
+    pub liquidity: U256,
 }
 
-/// Reads a pool's own token pair and fee tier, then proves the address really is a V3 pool from
-/// the canonical Sepolia factory by round-tripping it through `getPool`.
+/// Reads a pool's pair, fee tier, current price/tick, tick spacing and active liquidity, then
+/// proves the address really is a V3 pool from the canonical Sepolia factory by round-tripping it
+/// through `getPool`.
 ///
-/// This is what lets `create_v3_position` drop `token0Address`/`token1Address` from its tool
-/// arguments: the caller supplies only a pool, and the token pair it will be asked to approve
-/// spending on is derived from that pool rather than asserted alongside it. Taking both from the
-/// caller would let a model pair a real pool with unrelated token addresses and get approvals
-/// issued for the wrong assets. An arbitrary contract that merely answers token0()/token1()/fee()
-/// fails the factory round-trip.
-async fn read_v3_pool(provider: &impl Provider, pool: Address) -> Result<V3Pool> {
+/// The factory round-trip is what lets `create_v3_position` take a pool (or none at all) instead
+/// of caller-supplied token addresses: the pair it will approve spending on is derived from a
+/// pool the factory vouches for, rather than asserted alongside it. Taking both from the caller
+/// would let a model pair a real pool with unrelated token addresses and get approvals issued for
+/// the wrong assets. An arbitrary contract that merely answers token0()/token1()/fee() fails the
+/// round-trip.
+///
+/// `current_tick`/`tick_spacing` are read here rather than left to the caller because deriving a
+/// price range needs both, and an agent has no good way to obtain them otherwise.
+async fn read_v3_pool_state(provider: &impl Provider, pool: Address) -> Result<V3PoolState> {
     let abi = pool_abi();
 
     let t0 = call_view(provider, pool, abi_function(abi, "token0")?, &[])
@@ -322,6 +351,9 @@ async fn read_v3_pool(provider: &impl Provider, pool: Address) -> Result<V3Pool>
         .with_context(|| format!("{pool:#x} does not answer token0() — not a Uniswap V3 pool"))?;
     let t1 = call_view(provider, pool, abi_function(abi, "token1")?, &[]).await?;
     let f = call_view(provider, pool, abi_function(abi, "fee")?, &[]).await?;
+    let spacing = call_view(provider, pool, abi_function(abi, "tickSpacing")?, &[]).await?;
+    let liq = call_view(provider, pool, abi_function(abi, "liquidity")?, &[]).await?;
+    let slot0 = call_view(provider, pool, abi_function(abi, "slot0")?, &[]).await?;
 
     let token0 = as_address(out(&t0, 0, "pool.token0")?, "pool.token0")?;
     let token1 = as_address(out(&t1, 0, "pool.token1")?, "pool.token1")?;
@@ -334,7 +366,22 @@ async fn read_v3_pool(provider: &impl Provider, pool: Address) -> Result<V3Pool>
          {token0:#x}/{token1:#x} at fee tier {fee} to {canonical:#x}"
     );
 
-    Ok(V3Pool { token0, token1 })
+    let tick_spacing = as_i32(out(&spacing, 0, "pool.tickSpacing")?, "pool.tickSpacing")?;
+    anyhow::ensure!(
+        tick_spacing > 0,
+        "{pool:#x} reports a non-positive tickSpacing ({tick_spacing}) — refusing to derive a \
+         range against it"
+    );
+
+    Ok(V3PoolState {
+        token0,
+        token1,
+        fee,
+        tick_spacing,
+        current_tick: as_i32(out(&slot0, 1, "slot0.tick")?, "slot0.tick")?,
+        sqrt_price_x96: as_u256(out(&slot0, 0, "slot0.sqrtPriceX96")?, "slot0.sqrtPriceX96")?,
+        liquidity: as_u256(out(&liq, 0, "pool.liquidity")?, "pool.liquidity")?,
+    })
 }
 
 /// ERC-721 `Transfer(address indexed from, address indexed to, uint256 indexed tokenId)`.
@@ -443,7 +490,7 @@ async fn lp_post(http: &reqwest::Client, path: &str, body: &Value) -> Result<Val
 struct CreateParams<'a> {
     wallet: Address,
     pool: Address,
-    pool_tokens: &'a V3Pool,
+    pool_tokens: &'a V3PoolState,
     independent_token: Address,
     independent_amount: &'a str,
     tick_lower: i32,
@@ -1171,8 +1218,35 @@ pub(super) fn build_uniswap_lp_tools() -> Vec<Tool> {
         ),
     );
 
+    let get_v3_pool_state = Tool::new(
+        "get_v3_pool_state".to_string(),
+        "Read the live state of a Uniswap V3 pool on Ethereum Sepolia: token pair, fee tier, \
+         current tick and sqrt price, tick spacing, and active in-range liquidity. Read-only: \
+         pure on-chain reads, no Uniswap API call, no wallet involved, no funds moved. The \
+         address is verified against the canonical V3 factory, so a contract that merely mimics \
+         a pool's interface is rejected. Use this to inspect price and depth before opening a \
+         position — create_v3_position derives its own range internally, so you do not need this \
+         to compute ticks."
+            .to_string(),
+        object_schema(
+            vec![
+                ("chainId", sepolia_chain_id_prop()),
+                (
+                    "poolAddress",
+                    json!({
+                        "type": "string",
+                        "description": "Address of a Uniswap V3 pool on Sepolia. Verified against \
+                                        the V3 factory before anything is returned."
+                    }),
+                ),
+            ],
+            &["chainId", "poolAddress"],
+        ),
+    );
+
     vec![
         get_v3_position,
+        get_v3_pool_state,
         create_v3_position,
         decrease_v3_position,
         claim_v3_fees,
@@ -1184,22 +1258,17 @@ pub(super) fn build_uniswap_lp_tools() -> Vec<Tool> {
 // ---------------------------------------------------------------------------
 
 impl UniswapMcpServer {
-    /// Everything an LP tool needs before it can do anything: who is acting, where to sign, and
-    /// what to talk to. None of it is a tool argument — the wallet comes from the agent's vault
-    /// and the rpc_url from the `networks` table.
-    async fn lp_session(&self, tool: &str) -> Result<LpSession<'_>> {
-        let agent_id = self
-            .agent_id
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("{tool} requires an authenticated agent"))?;
+    /// A Sepolia RPC provider and the url behind it, with no vault involved.
+    ///
+    /// Read-only tools use this instead of `lp_session`: the HTTP route already requires a valid
+    /// bearer token for every call, and a pool-state read has no ownership concept, so demanding
+    /// the calling agent also have a vault *provisioned* would only produce a confusing
+    /// vault-resolution error from a tool that never touches a vault.
+    async fn sepolia_rpc(&self, tool: &str) -> Result<(String, DynProvider)> {
         let db = self
             .db
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("{tool} requires a database connection"))?;
-
-        let wallet = resolve_agent_address(db, agent_id)
-            .await
-            .context("resolving agent wallet failed")?;
 
         let rpc_url = db
             .get_network(SEPOLIA_V3.chain_id)
@@ -1219,13 +1288,62 @@ impl UniswapMcpServer {
             .await
             .context("rpc connect failed")?;
 
+        Ok((rpc_url, provider.erased()))
+    }
+
+    /// Everything a fund-moving LP tool needs before it can do anything: who is acting, where to
+    /// sign, and what to talk to. None of it is a tool argument — the wallet comes from the
+    /// agent's vault and the rpc_url from the `networks` table.
+    async fn lp_session(&self, tool: &str) -> Result<LpSession<'_>> {
+        let agent_id = self
+            .agent_id
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("{tool} requires an authenticated agent"))?;
+        let db = self
+            .db
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("{tool} requires a database connection"))?;
+
+        let wallet = resolve_agent_address(db, agent_id)
+            .await
+            .context("resolving agent wallet failed")?;
+
+        let (rpc_url, provider) = self.sepolia_rpc(tool).await?;
+
         Ok(LpSession {
             agent_id,
             db,
             wallet,
-            provider: provider.erased(),
+            provider,
             rpc_url,
         })
+    }
+
+    pub(super) async fn handle_get_v3_pool_state(
+        &self,
+        args: &Map<String, Value>,
+    ) -> Result<String> {
+        require_sepolia(args)?;
+        let pool_address = parse_address_arg(args, "poolAddress")?;
+
+        let (_rpc_url, provider) = self.sepolia_rpc("get_v3_pool_state").await?;
+
+        let pool = read_v3_pool_state(&provider, pool_address)
+            .await
+            .context("stage=pool read")?;
+
+        Ok(json!({
+            "chainId": SEPOLIA_V3.chain_id,
+            "poolAddress": pool_address.to_checksum(None),
+            "token0": pool.token0.to_checksum(None),
+            "token1": pool.token1.to_checksum(None),
+            "fee": pool.fee.to_string(),
+            "currentTick": pool.current_tick.to_string(),
+            "sqrtPriceX96": pool.sqrt_price_x96.to_string(),
+            "tickSpacing": pool.tick_spacing.to_string(),
+            "liquidity": pool.liquidity.to_string(),
+        })
+        .to_string())
     }
 
     pub(super) async fn handle_get_v3_position(&self, args: &Map<String, Value>) -> Result<String> {
@@ -1280,7 +1398,7 @@ impl UniswapMcpServer {
         let s = self.lp_session("create_v3_position").await?;
 
         // The token pair comes from the pool, never from the caller — see read_v3_pool.
-        let pool_tokens = read_v3_pool(&s.provider, pool_address)
+        let pool_tokens = read_v3_pool_state(&s.provider, pool_address)
             .await
             .context("stage=position read")?;
 
@@ -1759,10 +1877,59 @@ mod tests {
 
     #[test]
     fn built_in_abis_parse_and_expose_the_functions_we_call() {
-        for name in ["ownerOf", "positions"] {
+        for name in ["ownerOf", "positions", "balanceOf", "tokenOfOwnerByIndex"] {
             abi_function(position_manager_abi(), name).unwrap();
         }
         abi_function(factory_abi(), "getPool").unwrap();
+        for name in [
+            "token0",
+            "token1",
+            "fee",
+            "tickSpacing",
+            "liquidity",
+            "slot0",
+        ] {
+            abi_function(pool_abi(), name).unwrap();
+        }
+    }
+
+    /// slot0() returns seven values and we read two of them by index, so the ordering in the
+    /// fragment is load-bearing exactly like positions()' is. Decoding a real return blob pins
+    /// it: sqrtPriceX96 first, tick second.
+    #[test]
+    fn decodes_a_real_slot0_return() {
+        // Live capture from the Sepolia UNI/WETH 0.3% pool
+        // (0x287B0e934ed0439E2a7b1d5F0FC25eA2c24b64f7), 2026-07-25.
+        const SLOT0_RETURN: &str = "0x\
+0000000000000000000000000000000000000004b197a8b0d920715a9316b5f5\
+00000000000000000000000000000000000000000000000000000000000078ce\
+00000000000000000000000000000000000000000000000000000000000003de\
+00000000000000000000000000000000000000000000000000000000000003e8\
+00000000000000000000000000000000000000000000000000000000000003e8\
+0000000000000000000000000000000000000000000000000000000000000000\
+0000000000000000000000000000000000000000000000000000000000000001";
+
+        let bytes = alloy::hex::decode(SLOT0_RETURN.trim_start_matches("0x")).unwrap();
+        let func = abi_function(pool_abi(), "slot0").unwrap();
+        let outs = func
+            .abi_decode_output(&bytes)
+            .expect("slot0 fixture should decode");
+
+        // Swapping these two indices is the realistic mistake, and it would be silent: a
+        // sqrt price read as a tick is off by 25 orders of magnitude, not off by a little.
+        let tick = as_i32(out(&outs, 1, "slot0.tick").unwrap(), "slot0.tick").unwrap();
+        assert_eq!(tick, 30926, "tick is the SECOND return value");
+
+        let sqrt = as_u256(
+            out(&outs, 0, "slot0.sqrtPriceX96").unwrap(),
+            "slot0.sqrtPriceX96",
+        )
+        .unwrap();
+        assert_eq!(
+            sqrt,
+            U256::from(371874841214038945356433503733u128),
+            "sqrtPriceX96 is the FIRST return value"
+        );
     }
 
     #[test]
@@ -2193,10 +2360,15 @@ mod tests {
 
     // ─── LP API request bodies ───────────────────────────────────────────────
 
-    fn test_pool() -> V3Pool {
-        V3Pool {
+    fn test_pool() -> V3PoolState {
+        V3PoolState {
             token0: address!("1f9840a85d5af5bf1d1762f925bdaddc4201f984"),
             token1: address!("fff9976782d46cc05630d1f6ebab18b2324d6b14"),
+            fee: 3000,
+            tick_spacing: 60,
+            current_tick: -61380,
+            sqrt_price_x96: U256::from(1u64) << 96,
+            liquidity: U256::from(349461572960640780840u128),
         }
     }
 
@@ -2541,7 +2713,7 @@ mod tests {
     #[test]
     fn every_lp_tool_is_pinned_to_sepolia() {
         let tools = build_uniswap_lp_tools();
-        assert_eq!(tools.len(), 4);
+        assert_eq!(tools.len(), 5);
 
         for tool in &tools {
             let props = tool.input_schema.get("properties").unwrap();
