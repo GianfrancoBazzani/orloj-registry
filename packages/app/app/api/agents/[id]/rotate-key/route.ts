@@ -2,6 +2,7 @@ import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
 import { assertAgentOwner } from "@/lib/agent-ownership";
 import { issueTokenForAgent, revokeAllTokensForAgent } from "@/lib/mcp-tokens";
+import { killByAgent } from "@/lib/session/registry";
 
 export async function POST(
   _request: Request,
@@ -22,6 +23,9 @@ export async function POST(
   try {
     await revokeAllTokensForAgent(id);
     const issued = await issueTokenForAgent(id);
+    // The live process holds the now-revoked token in its config, so its MCP calls would
+    // start 401-ing mid-turn. The next session start rewrites the block with this token.
+    killByAgent(id);
     return Response.json({ api_key: issued.token });
   } catch (err) {
     console.error("[agents] mcp token rotation failed", err);

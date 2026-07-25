@@ -443,6 +443,17 @@ async fn handle_mcp(
         }
     };
 
+    // Metrics context — captured before `body_json` and `agent_id` are consumed below.
+    // Native entries store just the symbol in `meta`, but the activity feed has always
+    // shown them as "Native ETH", so reproduce that here.
+    let call_info = tool_call_request(&body_json);
+    let log_agent_id = agent_id.clone();
+    let contract_name = if entry.is_native {
+        format!("Native {}", chain_info(entry.chain_id).symbol)
+    } else {
+        entry.meta.contract_name.clone()
+    };
+
     let result = if entry.is_native {
         NativeMcpServer::new(
             entry.chain_id,
@@ -467,6 +478,25 @@ async fn handle_mcp(
         .dispatch(body_json)
         .await
     };
+
+    // Persist tool call metrics (tool_call_log + user_mcp_binding). Failures are
+    // logged inside log_tool_call and never affect the MCP response.
+    if let Some((tool_name, args)) = call_info {
+        let (status, result_summary, error_message) = tool_call_result(&result);
+        state
+            .db
+            .log_tool_call(
+                &log_agent_id,
+                &name,
+                Some(&contract_name),
+                &tool_name,
+                args.as_ref(),
+                status,
+                result_summary.as_deref(),
+                error_message.as_deref(),
+            )
+            .await;
+    }
 
     // Notifications: dispatch returns Null — send 202 No Content.
     if result.is_null() {
@@ -505,9 +535,29 @@ async fn handle_uniswap_mcp(
         }
     };
 
+    let call_info = tool_call_request(&body_json);
+    let log_agent_id = agent_id.clone();
+
     let result = UniswapMcpServer::new(Some(agent_id), Some(Arc::clone(&state.db)))
         .dispatch(body_json)
         .await;
+
+    if let Some((tool_name, args)) = call_info {
+        let (status, result_summary, error_message) = tool_call_result(&result);
+        state
+            .db
+            .log_tool_call(
+                &log_agent_id,
+                "uniswap",
+                Some("Uniswap"),
+                &tool_name,
+                args.as_ref(),
+                status,
+                result_summary.as_deref(),
+                error_message.as_deref(),
+            )
+            .await;
+    }
 
     if result.is_null() {
         return StatusCode::ACCEPTED.into_response();
@@ -528,6 +578,58 @@ pub fn entry_name(chain_id: u64, address: &str) -> String {
 /// Registry key for native-token MCPs — mirrors entryName in server.mjs.
 pub fn native_entry_name(chain_id: u64) -> String {
     format!("native_token_chain_id_{chain_id}")
+}
+
+// ---------------------------------------------------------------------------
+// Tool call metrics
+// ---------------------------------------------------------------------------
+
+/// Request-side metrics fields for a JSON-RPC `tools/call`: `(tool_name, args)`.
+///
+/// Returns None for every other method (`initialize`, `tools/list`, `ping`,
+/// notifications, …) — those are not tool calls and must not be logged. Called
+/// *before* `dispatch` consumes the body.
+fn tool_call_request(body: &Value) -> Option<(String, Option<Value>)> {
+    if body.get("method").and_then(Value::as_str)? != "tools/call" {
+        return None;
+    }
+    let params = body.get("params")?;
+    let tool_name = params.get("name").and_then(Value::as_str)?.to_string();
+    Some((tool_name, params.get("arguments").cloned()))
+}
+
+/// Result-side metrics fields: `(status, result_summary, error_message)`.
+///
+/// Mirrors `withLogging()` from the pre-Rust generate-mcp.js: a tool result with
+/// `isError` set — or a JSON-RPC level error — counts as a failed call, and the
+/// first text content block is the summary.
+fn tool_call_result(result: &Value) -> (&'static str, Option<String>, Option<String>) {
+    if let Some(msg) = result
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(Value::as_str)
+    {
+        return ("error", None, Some(msg.to_string()));
+    }
+
+    let call = result.get("result");
+    let text = call
+        .and_then(|r| r.get("content"))
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("text"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let is_error = call
+        .and_then(|r| r.get("isError"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    if is_error {
+        ("error", None, text)
+    } else {
+        ("ok", text, None)
+    }
 }
 
 /// Build an Arc<McpEntry> from raw DB data (EVM contract).
@@ -694,4 +796,86 @@ pub fn router(state: SharedState) -> Router {
         .route("/interface/:name/mcp", post(handle_mcp))
         .layer(CorsLayer::permissive())
         .with_state(state)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn call_body(args: Value) -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": "balanceOf", "arguments": args },
+        })
+    }
+
+    #[test]
+    fn extracts_tool_name_and_args_from_tools_call() {
+        let args = json!({ "account": "0xabc" });
+        let (tool_name, extracted) = tool_call_request(&call_body(args.clone())).unwrap();
+        assert_eq!(tool_name, "balanceOf");
+        assert_eq!(extracted, Some(args));
+    }
+
+    #[test]
+    fn ignores_non_tool_call_methods() {
+        for method in ["initialize", "tools/list", "ping", "notifications/initialized"] {
+            let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method });
+            assert!(
+                tool_call_request(&body).is_none(),
+                "{method} must not be logged as a tool call"
+            );
+        }
+    }
+
+    #[test]
+    fn successful_result_records_summary() {
+        let result = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "content": [{ "type": "text", "text": "1000" }],
+                "isError": false,
+            },
+        });
+        assert_eq!(
+            tool_call_result(&result),
+            ("ok", Some("1000".to_string()), None)
+        );
+    }
+
+    #[test]
+    fn tool_error_records_error_message() {
+        let result = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "content": [{ "type": "text", "text": "eth_call failed" }],
+                "isError": true,
+            },
+        });
+        assert_eq!(
+            tool_call_result(&result),
+            ("error", None, Some("eth_call failed".to_string()))
+        );
+    }
+
+    #[test]
+    fn json_rpc_error_records_error_message() {
+        let result = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": { "code": -32601, "message": "method not found: nope" },
+        });
+        assert_eq!(
+            tool_call_result(&result),
+            ("error", None, Some("method not found: nope".to_string()))
+        );
+    }
 }

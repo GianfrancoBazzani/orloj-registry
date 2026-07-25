@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import type { Hex } from "viem";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "./auth-context";
 import { authClient } from "@/lib/auth-client";
@@ -542,7 +543,7 @@ const Overview = ({
         {t("profile.recentActivity")}
       </h3>
       <ActivityFeed
-        compact
+        maxHeight={340}
         events={metrics?.recentActivity ?? []}
         agents={agents}
       />
@@ -2219,6 +2220,7 @@ const Agents = ({
   reloadMetrics: (signal?: AbortSignal) => Promise<void>;
 }) => {
   const t = useT();
+  const locale = useLocale();
   const [revealing, setRevealing] = useState<Agent | null>(null);
   const [changingKey, setChangingKey] = useState<Agent | null>(null);
   const [newApiKey, setNewApiKey] = useState<{
@@ -2432,6 +2434,17 @@ const Agents = ({
                   justifyContent: "flex-end",
                 }}
               >
+                {/* Wrapped in next/link rather than router.push so middle-click and
+                    open-in-new-tab keep working. Never disabled: an agent with no granted key
+                    can still chat and make read-only calls. */}
+                <Link
+                  href={`/${locale}/session/${a.id}`}
+                  style={{ textDecoration: "none" }}
+                >
+                  <Btn size="sm" kind="ghost">
+                    {t("profile.startSession")}
+                  </Btn>
+                </Link>
                 <Btn
                   size="sm"
                   kind="ghost"
@@ -3310,15 +3323,15 @@ const summarizeResult = (row: ActivityRow): string => {
 };
 
 const ActivityFeed = ({
-  compact,
+  maxHeight,
   events,
   agents,
 }: {
-  compact?: boolean;
+  maxHeight?: number;
   events: ActivityRow[];
   agents: Agent[];
 }) => {
-  const slice = compact ? events.slice(0, 5) : events;
+  const slice = events;
   if (slice.length === 0) {
     return (
       <div
@@ -3342,6 +3355,9 @@ const ActivityFeed = ({
         marginTop: 12,
         border: "1px solid var(--line)",
         background: "rgba(241,233,212,0.5)",
+        maxHeight,
+        overflowY: maxHeight ? "auto" : undefined,
+        overscrollBehavior: "contain",
       }}
     >
       {slice.map((e, i) => {

@@ -1,0 +1,52 @@
+import { headers } from "next/headers";
+import { auth } from "@/lib/auth";
+import { assertAgentOwner } from "@/lib/agent-ownership";
+import { NoActiveTokenError } from "@/lib/session/registry";
+import { RegistryUnreachableError, UnknownMcpError } from "@/lib/session/mcp-servers";
+import {
+  agentDir,
+  InvalidAgentIdError,
+  TemplateUnavailableError,
+  ZeroclawBinaryMissingError,
+} from "@/lib/session/zeroclaw-config";
+
+// These live outside the route files because Next.js route modules may only export route
+// handlers and a fixed set of config values, and several routes need both.
+const RUNTIME_UNAVAILABLE = { error: "Agent runtime unavailable on this host" };
+const NOT_FOUND = { error: "Agent not found" };
+
+export const authorizeAgent = async (
+  id: string,
+): Promise<{ userId: string } | Response> => {
+  const session = await auth.api.getSession({ headers: await headers() });
+  if (!session) return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const ownership = await assertAgentOwner(id, session.user.id);
+  if (ownership !== true) return ownership;
+  // A malformed id cannot own anything, so it reads as a 404 like a non-owner.
+  try {
+    agentDir(id);
+  } catch (err) {
+    if (err instanceof InvalidAgentIdError) return Response.json(NOT_FOUND, { status: 404 });
+    throw err;
+  }
+  return { userId: session.user.id };
+};
+
+export const errorResponse = (err: unknown): Response => {
+  if (err instanceof UnknownMcpError) {
+    return Response.json({ error: `Unknown MCP: ${err.mcpName}` }, { status: 400 });
+  }
+  if (err instanceof NoActiveTokenError) {
+    return Response.json({ error: "Agent has no active API key" }, { status: 409 });
+  }
+  if (err instanceof RegistryUnreachableError) {
+    console.error("[session] registry manifest unreachable", err);
+    return Response.json({ error: "Registry unreachable" }, { status: 502 });
+  }
+  if (err instanceof ZeroclawBinaryMissingError || err instanceof TemplateUnavailableError) {
+    console.error("[session] runtime unavailable", err);
+    return Response.json(RUNTIME_UNAVAILABLE, { status: 503 });
+  }
+  console.error("[session] start failed", err);
+  return Response.json({ error: "Failed to start session" }, { status: 500 });
+};

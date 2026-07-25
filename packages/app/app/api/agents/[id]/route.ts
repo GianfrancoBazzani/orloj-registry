@@ -2,6 +2,8 @@ import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
 import { getOneclawClient } from "@/lib/oneclaw";
 import { assertAgentOwner, deregisterAgent } from "@/lib/agent-ownership";
+import { killByAgent } from "@/lib/session/registry";
+import { InvalidAgentIdError, removeConfigDir } from "@/lib/session/zeroclaw-config";
 
 export async function GET(
   request: Request,
@@ -91,6 +93,19 @@ export async function DELETE(
       { error: "Failed to deregister agent ownership" },
       { status: 500 },
     );
+  }
+
+  // The dir holds this agent's bearer token in cleartext and its whole transcript; a
+  // re-created agent reusing the id must not inherit a stranger's memory. Cleanup failure is
+  // logged, not fatal — the agent is already gone upstream and in Postgres, so a 500 here
+  // would misreport a completed deletion.
+  try {
+    killByAgent(id);
+    await removeConfigDir(id);
+  } catch (cleanupErr) {
+    if (!(cleanupErr instanceof InvalidAgentIdError)) {
+      console.error("[agents] session cleanup failed", cleanupErr);
+    }
   }
 
   return Response.json({ success: true }, { status: 200 });

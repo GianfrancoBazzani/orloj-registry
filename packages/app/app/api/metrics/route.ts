@@ -2,7 +2,7 @@ import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
 import { getPool } from "@/lib/db";
 
-const RECENT_LIMIT = 25;
+const RECENT_LIMIT = 100;
 
 interface ToolCallRow {
   occurred_at: Date;
@@ -19,7 +19,10 @@ interface ToolCallRow {
 function chainIdFromMcpName(name: string): number | null {
   const native = /^native_token_chain_id_(\d+)$/.exec(name);
   if (native) return Number(native[1]);
-  const contract = /^(\d+)-0x[a-fA-F0-9]{40}$/.exec(name);
+  // The registry named contract MCPs "{chainId}-{address}" before the Rust
+  // rewrite and "{chainId}_{address}" after it — accept both so rows logged on
+  // either side of that migration still resolve to a chain.
+  const contract = /^(\d+)[-_]0x[a-fA-F0-9]{40}$/.exec(name);
   if (contract) return Number(contract[1]);
   return null;
 }

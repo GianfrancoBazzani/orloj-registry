@@ -54,6 +54,93 @@ body {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ==========================================================================
+   Markdown in agent replies. react-markdown emits bare elements, so this
+   subtree is styled here rather than inline like the rest of the app.
+   Font size, line height and colour are inherited from the bubble.
+   ========================================================================== */
+.chat-md > :first-child { margin-top: 0; }
+.chat-md > :last-child { margin-bottom: 0; }
+
+/* Agents emit newline-separated prose about as often as blank-line paragraphs.
+   pre-wrap keeps the former from collapsing into one run-on line, which is what
+   markdown would otherwise do to every soft break. */
+.chat-md p, .chat-md li { white-space: pre-wrap; }
+.chat-md p { margin: 0 0 10px; }
+
+.chat-md h1, .chat-md h2, .chat-md h3, .chat-md h4, .chat-md h5, .chat-md h6 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.3;
+  margin: 16px 0 8px;
+}
+.chat-md h1 { font-size: 17px; }
+.chat-md h2 { font-size: 15.5px; }
+.chat-md h3 { font-size: 14.5px; }
+.chat-md h4, .chat-md h5, .chat-md h6 { font-size: 13.5px; }
+
+.chat-md ul, .chat-md ol { margin: 0 0 10px; padding-left: 20px; }
+.chat-md li { margin: 3px 0; }
+.chat-md li > ul, .chat-md li > ol { margin: 3px 0; }
+.chat-md li::marker { color: var(--brass-deep); }
+/* Task lists read as prose, not bullets. */
+.chat-md ul:has(> li > input[type="checkbox"]) { list-style: none; padding-left: 4px; }
+.chat-md li > input[type="checkbox"] { margin-right: 6px; accent-color: var(--brass-deep); }
+
+.chat-md a { color: var(--verdigris); text-decoration: underline; text-underline-offset: 2px; }
+.chat-md a:hover { color: var(--verdigris-deep); }
+
+.chat-md strong { font-weight: 650; }
+
+.chat-md code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: rgba(26, 22, 18, 0.06);
+  border: 1px solid var(--line-soft);
+  padding: 1px 4px;
+  word-break: break-word;
+}
+.chat-md pre {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  background: rgba(26, 22, 18, 0.06);
+  border: 1px solid var(--line);
+  overflow-x: auto;
+}
+.chat-md pre code {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre;
+  word-break: normal;
+}
+
+.chat-md blockquote {
+  margin: 0 0 10px;
+  padding: 2px 0 2px 12px;
+  border-left: 2px solid var(--brass);
+  color: var(--ink-soft);
+}
+
+.chat-md hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0; }
+
+/* display:block so a wide table scrolls itself instead of the message column. */
+.chat-md table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 0 0 10px;
+  font-size: 12.5px;
+}
+.chat-md th, .chat-md td { border: 1px solid var(--line); padding: 5px 9px; text-align: left; }
+.chat-md th { background: rgba(26, 22, 18, 0.05); font-variant: small-caps; letter-spacing: 0.08em; }
+
+.chat-md img { max-width: 100%; }
+
+/* ==========================================================================
    Mobile responsive overrides (<= 768px).
    The codebase uses inline styles, so we override with !important here.
    ========================================================================== */
