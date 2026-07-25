@@ -79,6 +79,36 @@ Both modules are `kind: map`. This is the load-bearing design decision:
   on that code"* — minimal, stable Rust keeps the cache warm.
 - `substreams estimate` only supports mapper-only modules anyway.
 
+## Setup from a fresh clone
+
+`target/` is gitignored, so a clone has **no compiled module**. The `feeling` MCP will
+fail until you build it. Four steps:
+
+```bash
+# 1. Toolchain
+rustup target add wasm32-unknown-unknown
+brew install protobuf                              # prost-build shells out to protoc
+brew install streamingfast/tap/substreams          # the MCP shells out to this CLI
+
+# 2. Build the module (produces the .wasm the manifest points at)
+cd packages/substreams-sentiment
+cargo build --target wasm32-unknown-unknown --release
+
+# 3. Exchange your StreamingFast API key for a JWT (one-time, lasts ~3650 days)
+export SUBSTREAMS_API_TOKEN=$(curl -sS -X POST https://auth.streamingfast.io/v1/auth/issue \
+  -H "Content-Type: application/json" \
+  -d "{\"api_key\":\"$SUBSTREAMS_API_KEY\"}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
+
+# 4. Run the registry from packages/registry/ (SENTIMENT_MANIFEST_DIR defaults to
+#    ../substreams-sentiment, so it resolves correctly from there)
+cd ../registry && cargo run
+```
+
+Get a free API key at [thegraph.com/studio](https://thegraph.com/studio) or
+[app.streamingfast.io](https://app.streamingfast.io). The raw key is **not** the token —
+step 3 is not optional, and skipping it fails with `invalid JWT token`.
+
 ## Build
 
 Needs the wasm target and `protoc` (`prost-build` shells out to it):
