@@ -26,6 +26,7 @@ use crate::{
     db::{ContractMetaRow, DbPool},
     mcps::{
         evm_mcp::{EvmMcpServer, build_tools},
+        feeling::FeelingMcpServer,
         native_mcp::{NativeMcpServer, build_native_tools, chain_info},
         uniswap_mcp::UniswapMcpServer,
     },
@@ -516,6 +517,46 @@ async fn handle_uniswap_mcp(
     Json(result).into_response()
 }
 
+/// POST /interface/feeling/mcp
+/// Requires `Authorization: Bearer <token>`.
+///
+/// Fixed route for the onchain sentiment MCP — like uniswap-mcp it is not
+/// registry-backed (no ABI or address to fetch, nothing to lazily build), so it is
+/// constructed fresh per request from the authenticated agent_id. Unlike every other
+/// MCP here it is READ-ONLY: each call decodes recent mainnet blocks on demand and
+/// never resolves a vault or signs anything.
+async fn handle_feeling_mcp(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let agent_id = match require_bearer(&headers, &state.db).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+
+    let body_json: Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("invalid JSON: {e}") })),
+            )
+                .into_response();
+        }
+    };
+
+    let result = FeelingMcpServer::new(Some(agent_id), Some(Arc::clone(&state.db)))
+        .dispatch(body_json)
+        .await;
+
+    if result.is_null() {
+        return StatusCode::ACCEPTED.into_response();
+    }
+
+    Json(result).into_response()
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -691,6 +732,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/register", post(register))
         .route("/register-native", post(register_native))
         .route("/interface/uniswap/mcp", post(handle_uniswap_mcp))
+        .route("/interface/feeling/mcp", post(handle_feeling_mcp))
         .route("/interface/:name/mcp", post(handle_mcp))
         .layer(CorsLayer::permissive())
         .with_state(state)
