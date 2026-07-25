@@ -40,5 +40,7 @@ describe("lp-agent scaffold", () => {
     assert.match(readme, /Phase 2/);
     assert.match(readme, /HOLD/);
     assert.match(readme, /REDUCE_LIQUIDITY/);
+    assert.match(readme, /periodStartUnix/);
+    assert.match(readme, /Live schema probe/);
   });
 });
