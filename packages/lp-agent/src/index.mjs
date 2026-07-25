@@ -23,7 +23,18 @@ export {
 } from "./graph-client.mjs";
 export { PHASE1_ACTIONS, validateDecision } from "./decision-schema.mjs";
 export { planAction } from "./action-planner.mjs";
-export { extractFeatures } from "./features.mjs";
+export {
+  extractFeatures,
+  isInRange,
+  assessUsdDataUsable,
+  nullFeature,
+  numberFeature,
+  WINDOW_6H_SECONDS,
+  WINDOW_24H_SECONDS,
+  MIN_TICK_SAMPLES_6H,
+  MIN_TICK_SAMPLES_24H,
+  SUSPICIOUS_TVL_USD,
+} from "./features.mjs";
 export {
   buildToolsCallRequest,
   parseMcpToolsCallResponse,
