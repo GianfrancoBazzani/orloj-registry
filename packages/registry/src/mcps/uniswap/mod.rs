@@ -21,6 +21,7 @@
 //     CLIENT_ID/CLIENT_SECRET have no defaults, API_URL does)
 
 mod common;
+mod lp;
 mod permit2;
 mod trading;
 
@@ -36,6 +37,7 @@ use rmcp::{
 use serde_json::{Map, Value, json};
 
 use crate::db::DbPool;
+use lp::build_uniswap_lp_tools;
 use trading::build_uniswap_tools;
 
 const INSTRUCTIONS: &str = "Chain-agnostic Uniswap swaps. Every call takes an explicit chainId so token addresses are never ambiguous across networks. quote and swap act on the authenticated agent's own wallet, resolved automatically from its vault — you never supply a wallet/swapper address. supported_networks() lists the chainIds registered with an rpc_url (name + chainId) — swap only works on these. quote(chainId, tokenIn, tokenOut, amount, type?, slippageTolerance?) returns pricing and routing for any Uniswap-supported chain, with no side effects. swap(chainId, tokenIn, tokenOut, amount, type?, slippageTolerance?) resolves rpc_url from chainId automatically, fetches a quote, transparently handles Permit2 approval/signing if needed, and signs + broadcasts the swap — you do not provide private keys, an rpc_url, or manage nonces/gas yourself.";
@@ -72,7 +74,9 @@ impl UniswapMcpServer {
             Some(db) => db.list_networks().await.unwrap_or_default(),
             _none => Vec::new(),
         };
-        build_uniswap_tools(&networks)
+        let mut tools = build_uniswap_tools(&networks);
+        tools.extend(build_uniswap_lp_tools());
+        tools
     }
 
     /// Single tool-name → handler table, shared by the HTTP and stdio transports.
@@ -81,6 +85,7 @@ impl UniswapMcpServer {
             "quote" => self.handle_quote(args).await,
             "swap" => self.handle_swap(args).await,
             "supported_networks" => self.handle_supported_networks().await,
+            "get_v3_position" => self.handle_get_v3_position(args).await,
             other => Err(anyhow::anyhow!("unknown tool: {other}")),
         }
     }
