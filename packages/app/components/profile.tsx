@@ -14,6 +14,7 @@ import {
   Select,
   GearIcon,
   OrlojMark,
+  Tag,
 } from "./ornaments";
 import {
   MCP_REGISTRY,
@@ -105,6 +106,7 @@ export const Profile = () => {
             name: string;
             is_active?: boolean;
             created_at?: string;
+            mcps?: string[];
           }>;
           error?: string;
         }
@@ -157,7 +159,7 @@ export const Profile = () => {
           vaultId: g?.vaultId,
           grantId: g?.id,
           keyPath: g?.secretPathPattern,
-          mcps: [],
+          mcps: a.mcps ?? [],
           status: a.is_active === false ? "paused" : "active",
           runs: 0,
           lastRun: a.created_at ? "—" : "never",
@@ -2219,6 +2221,8 @@ const Agents = ({
   reloadMetrics: (signal?: AbortSignal) => Promise<void>;
 }) => {
   const t = useT();
+  const router = useRouter();
+  const locale = useLocale();
   const [revealing, setRevealing] = useState<Agent | null>(null);
   const [changingKey, setChangingKey] = useState<Agent | null>(null);
   const [newApiKey, setNewApiKey] = useState<{
@@ -2423,6 +2427,22 @@ const Agents = ({
                     No key granted yet.
                   </div>
                 )}
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 6,
+                    flexWrap: "wrap",
+                    marginTop: 8,
+                  }}
+                >
+                  {a.mcps.length > 0 ? (
+                    a.mcps.map((mcp) => <Tag key={mcp}>{mcp}</Tag>)
+                  ) : (
+                    <span style={{ fontSize: 12, color: "var(--ink-soft)" }}>
+                      {t("agentApp.noMcps")}
+                    </span>
+                  )}
+                </div>
               </div>
               <div
                 style={{
@@ -2432,6 +2452,13 @@ const Agents = ({
                   justifyContent: "flex-end",
                 }}
               >
+                <Btn
+                  size="sm"
+                  kind="brass"
+                  onClick={() => router.push(`/${locale}/agents/${a.id}`)}
+                >
+                  {t("agentApp.openApp")}
+                </Btn>
                 <Btn
                   size="sm"
                   kind="ghost"
@@ -2610,6 +2637,26 @@ const CreateAgent = ({
         throw new Error(
           grantPayload?.error ?? `Failed to grant key (${grantRes.status})`,
         );
+      }
+
+      if (bindMcp) {
+        const bindRes = await fetch(`/api/agents/${agentId}/mcps`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ mcpName: bindMcp.id }),
+        });
+        if (!bindRes.ok) {
+          const bindPayload = (await bindRes.json().catch(() => null)) as
+            | { error?: string }
+            | null;
+          await onCreated(apiKey, name.trim());
+          window.alert(
+            `Agent created, but MCP assignment failed: ${
+              bindPayload?.error ?? bindRes.status
+            }`,
+          );
+          return;
+        }
       }
 
       await onCreated(apiKey, name.trim());

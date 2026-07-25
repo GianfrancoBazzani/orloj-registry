@@ -25,9 +25,9 @@ use crate::{
     auth::require_bearer,
     db::{ContractMetaRow, DbPool},
     mcps::{
-        evm_mcp::{EvmMcpServer, build_tools},
+        evm_mcp::{EvmMcpServer, build_tools, is_view},
         native_mcp::{NativeMcpServer, build_native_tools, chain_info},
-        uniswap_mcp::UniswapMcpServer,
+        uniswap_mcp::{UniswapMcpServer, build_uniswap_tools},
     },
     registry::{McpEntry, McpMeta, Registry},
     sourcify::fetch_contract,
@@ -97,12 +97,18 @@ async fn list_mcp(State(state): State<SharedState>) -> Response {
             // see DbPool::upsert_uniswap_entry) maps to its own fixed route, not the usual
             // {chain_id}_{address} naming, and has no single chainId to report.
             if row.address == "uniswap" {
+                let tool_count = build_uniswap_tools(&[]).len();
                 return json!({
                     "name": "uniswap",
                     "chainId": Value::Null,
+                    "platform": "Multichain",
                     "address": row.address,
                     "implementation": row.implementation,
                     "contractName": row.contract_name,
+                    "description": "Quote and execute token swaps through Uniswap across supported blockchain networks.",
+                    "toolCount": tool_count,
+                    "tokens": ["Any token"],
+                    "interactionType": "mixed",
                     "url": "/interface/uniswap/mcp",
                 });
             }
@@ -112,18 +118,108 @@ async fn list_mcp(State(state): State<SharedState>) -> Response {
             } else {
                 entry_name(row.chain_id, &row.address)
             };
+
+            let info = chain_info(row.chain_id);
+            let (description, tool_count, tokens, interaction_type) =
+                marketplace_metadata(&row, info.name);
             json!({
                 "name": name,
                 "chainId": row.chain_id,
+                "platform": info.name,
                 "address": row.address,
                 "implementation": row.implementation,
                 "contractName": row.contract_name,
+                "description": description,
+                "toolCount": tool_count,
+                "tokens": tokens,
+                "interactionType": interaction_type,
                 "url": format!("/interface/{name}/mcp"),
             })
         })
         .collect();
 
     Json(json!(items)).into_response()
+}
+
+fn marketplace_metadata(
+    row: &ContractMetaRow,
+    platform: &str,
+) -> (String, usize, Vec<String>, &'static str) {
+    if row.address == "native" {
+        return (
+            format!(
+                "Check balances and transfer the native {} token on {platform}.",
+                row.contract_name
+            ),
+            build_native_tools(&row.contract_name).len(),
+            vec![row.contract_name.clone()],
+            "mixed",
+        );
+    }
+
+    let abi: JsonAbi = serde_json::from_value(row.abi.clone()).unwrap_or_default();
+    let mut has_read = false;
+    let mut has_write = false;
+    let mut function_names = std::collections::HashSet::new();
+    for function in abi.functions() {
+        function_names.insert(function.name.as_str());
+        if is_view(function) {
+            has_read = true;
+        } else {
+            has_write = true;
+        }
+    }
+
+    let interaction_type = match (has_read, has_write) {
+        (true, true) => "mixed",
+        (false, true) => "transactional",
+        _ => "read-only",
+    };
+    let is_token = function_names.contains("balanceOf")
+        && (function_names.contains("transfer") || function_names.contains("symbol"));
+    let tokens = if is_token {
+        vec![row.contract_name.clone()]
+    } else {
+        vec![]
+    };
+    let action = match interaction_type {
+        "mixed" => "Read data from and submit transactions to",
+        "transactional" => "Submit transactions to",
+        _ => "Read onchain data from",
+    };
+
+    (
+        format!(
+            "{action} {} on {platform} through typed MCP tools.",
+            row.contract_name
+        ),
+        build_tools(&abi).len(),
+        tokens,
+        interaction_type,
+    )
+}
+
+async fn require_mcp_assignment(
+    state: &SharedState,
+    agent_id: &str,
+    mcp_name: &str,
+) -> Result<(), Response> {
+    match state.db.agent_has_mcp(agent_id, mcp_name).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "mcp_not_assigned" })),
+        )
+            .into_response()),
+        Err(error) => {
+            eprintln!("[auth] assignment lookup failed: {error:#}");
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "internal error" })),
+            )
+                .into_response())
+        }
+    }
 }
 
 /// Validates scheme, connects, and verifies the chain ID.
@@ -138,27 +234,21 @@ async fn validate_rpc(chain_id: u64, rpc_url: &str) -> Result<impl Provider, Res
             .into_response());
     }
 
-    let provider = ProviderBuilder::new()
-        .connect(rpc_url)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({ "error": format!("could not reach rpcUrl: {e}") })),
-            )
-                .into_response()
-        })?;
+    let provider = ProviderBuilder::new().connect(rpc_url).await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": format!("could not reach rpcUrl: {e}") })),
+        )
+            .into_response()
+    })?;
 
-    let got = provider
-        .get_chain_id()
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({ "error": format!("eth_chainId failed: {e}") })),
-            )
-                .into_response()
-        })?;
+    let got = provider.get_chain_id().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": format!("eth_chainId failed: {e}") })),
+        )
+            .into_response()
+    })?;
 
     if got != chain_id {
         return Err((
@@ -388,6 +478,9 @@ async fn handle_mcp(
         Ok(id) => id,
         Err(resp) => return resp,
     };
+    if let Err(resp) = require_mcp_assignment(&state, &agent_id, &name).await {
+        return resp;
+    }
 
     // Registry lookup with lazy-load fallback.
     let entry = match get_or_load(&state, &name).await {
@@ -493,6 +586,9 @@ async fn handle_uniswap_mcp(
         Ok(id) => id,
         Err(resp) => return resp,
     };
+    if let Err(resp) = require_mcp_assignment(&state, &agent_id, "uniswap").await {
+        return resp;
+    }
 
     let body_json: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
@@ -694,4 +790,72 @@ pub fn router(state: SharedState) -> Router {
         .route("/interface/:name/mcp", post(handle_mcp))
         .layer(CorsLayer::permissive())
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn contract_row(name: &str, abi: Value) -> ContractMetaRow {
+        ContractMetaRow {
+            chain_id: 1,
+            address: "0x0000000000000000000000000000000000000001".into(),
+            abi,
+            contract_name: name.into(),
+            implementation: None,
+            rpc_url: None,
+        }
+    }
+
+    #[test]
+    fn marketplace_metadata_marks_view_only_contracts_read_only() {
+        let row = contract_row(
+            "PriceFeed",
+            json!([{
+                "type": "function",
+                "name": "latestAnswer",
+                "inputs": [],
+                "outputs": [{ "name": "", "type": "int256" }],
+                "stateMutability": "view"
+            }]),
+        );
+
+        let (_, tool_count, tokens, interaction) = marketplace_metadata(&row, "Ethereum");
+
+        assert_eq!(tool_count, 1);
+        assert!(tokens.is_empty());
+        assert_eq!(interaction, "read-only");
+    }
+
+    #[test]
+    fn marketplace_metadata_marks_erc20_contracts_mixed_and_tokenized() {
+        let row = contract_row(
+            "USDC",
+            json!([
+                {
+                    "type": "function",
+                    "name": "balanceOf",
+                    "inputs": [{ "name": "account", "type": "address" }],
+                    "outputs": [{ "name": "", "type": "uint256" }],
+                    "stateMutability": "view"
+                },
+                {
+                    "type": "function",
+                    "name": "transfer",
+                    "inputs": [
+                        { "name": "to", "type": "address" },
+                        { "name": "amount", "type": "uint256" }
+                    ],
+                    "outputs": [{ "name": "", "type": "bool" }],
+                    "stateMutability": "nonpayable"
+                }
+            ]),
+        );
+
+        let (_, tool_count, tokens, interaction) = marketplace_metadata(&row, "Ethereum");
+
+        assert_eq!(tool_count, 2);
+        assert_eq!(tokens, vec!["USDC"]);
+        assert_eq!(interaction, "mixed");
+    }
 }

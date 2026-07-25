@@ -100,12 +100,18 @@ body {
   .section-pad { padding: 40px 16px !important; }
   .section-pad-tight { padding: 24px 16px !important; }
 
-  /* Explore: filter rail stacks; hide search filter (header search) but keep selects + chip rail */
+  /* Explore: keep marketplace search visible and stack compact controls. */
   .explore-filters {
     grid-template-columns: 1fr 1fr !important;
     gap: 8px !important;
   }
-  .explore-filters > .explore-search { display: none !important; }
+  .explore-filters > .explore-search {
+    display: block !important;
+    grid-column: 1 / -1 !important;
+  }
+  .explore-filters > :nth-child(4) {
+    grid-column: 1 / -1 !important;
+  }
   /* No list view on phones — table doesn't fit. Hide the toggle entirely. */
   .explore-filters > .explore-view-toggle { display: none !important; }
 
@@ -122,6 +128,8 @@ body {
 
   /* Detail drawer: full width */
   .detail-drawer { width: 100% !important; }
+  .detail-metrics { grid-template-columns: 1fr !important; }
+  .agent-app-grid { grid-template-columns: 1fr !important; }
 
   /* Register form: stack form + sidebar; collapse address/chain row */
   .register-grid { grid-template-columns: 1fr !important; gap: 20px !important; }
