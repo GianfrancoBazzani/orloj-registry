@@ -149,6 +149,7 @@ export async function runOnce(deps = {}) {
       missingInputFlags: features.missingInputFlags,
       usdDataUsable: features.usdDataUsable,
     },
+    features,
     decision: {
       action: decision.action,
       confidence: decision.confidence,

@@ -248,6 +248,7 @@ describe("run-once pipeline", () => {
     });
     assert.equal(trace.phase, 2);
     assert.equal(trace.execution.status, "executed");
+    assert.deepEqual(trace.features, FEATURES);
     assert.equal(calls.length, 1);
     assert.deepEqual(calls[0], {
       chainId: "11155111",
@@ -288,6 +289,7 @@ describe("run-once pipeline", () => {
         assert.equal(trace.agentMode, "execute");
         assert.equal(trace.position.nftTokenId, "7");
         assert.equal(trace.graph.subgraphId, CONFIG.subgraphId);
+        assert.deepEqual(trace.features, FEATURES);
         assert.equal(trace.decision.action, "REDUCE_LIQUIDITY");
         assert.equal(trace.plan.mcpCall.toolName, "decrease_v3_position");
         assert.equal(trace.execution.status, "failed");
