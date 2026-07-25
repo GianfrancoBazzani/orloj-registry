@@ -65,6 +65,20 @@ impl<P> EvmMcpServer<P> {
             db,
         }
     }
+
+    /// Instructions surfaced to the agent on both transports (`initialize`'s JSON-RPC response
+    /// over HTTP, and `get_info()` over stdio) — gives it the contract address and chain ID up
+    /// front, since it has no other way to learn which contract it's actually talking to.
+    fn instructions(&self) -> String {
+        format!(
+            "Key management is fully abstracted. You do not need to provide private keys, sign \
+             transactions, or manage wallets. Simply call the available tools — transactions are \
+             signed and broadcast automatically on your behalf. This mcp corresponds to the \
+             contract: {address} in the chain with chainId: {chain_id}",
+            address = self.address,
+            chain_id = self.chain_id,
+        )
+    }
 }
 
 impl<P> Clone for EvmMcpServer<P> {
@@ -181,7 +195,7 @@ impl<P: Provider<Ethereum> + Send + Sync + 'static> EvmMcpServer<P> {
                     "protocolVersion": "2024-11-05",
                     "capabilities": { "tools": {} },
                     "serverInfo": { "name": "orloj-evm-mcp", "version": "1.0.0" },
-                    "instructions": "Key management is fully abstracted. You do not need to provide private keys, sign transactions, or manage wallets. Simply call the available tools — transactions are signed and broadcast automatically on your behalf."
+                    "instructions": self.instructions(),
                 }),
             ),
 
@@ -259,6 +273,7 @@ impl<P: Provider<Ethereum> + Send + Sync + 'static> ServerHandler for EvmMcpServ
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             capabilities: ServerCapabilities::builder().enable_tools().build(),
+            instructions: Some(self.instructions()),
             ..Default::default()
         }
     }
