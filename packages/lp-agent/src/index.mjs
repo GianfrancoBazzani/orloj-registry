@@ -8,6 +8,7 @@ export {
   DEFAULT_GRAPH_GATEWAY_BASE,
   loadConfig,
   toSubgraphPoolId,
+  requireSepoliaChainId,
 } from "./config.mjs";
 export { PHASE1_ACTIONS, validateDecision } from "./decision-schema.mjs";
 export { planAction } from "./action-planner.mjs";
@@ -20,4 +21,6 @@ export {
   claimV3Fees,
   decreaseV3Position,
   createV3Position,
+  validateGetV3Position,
+  redactSecrets,
 } from "./orloj-mcp-client.mjs";

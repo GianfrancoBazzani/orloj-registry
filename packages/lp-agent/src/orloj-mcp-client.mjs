@@ -6,6 +6,8 @@
  * Never log API keys, bearer tokens, or Authorization headers.
  */
 
+import { DEFAULT_CHAIN_ID } from "./config.mjs";
+
 /**
  * @typedef {object} McpClientOptions
  * @property {string} url
@@ -19,6 +21,62 @@
  * @property {string} text
  * @property {unknown} [data] JSON-parsed text when possible
  */
+
+/**
+ * @typedef {object} V3Position
+ * @property {string} chainId
+ * @property {string} walletAddress
+ * @property {string} nftTokenId
+ * @property {string} poolAddress
+ * @property {string} token0
+ * @property {string} token1
+ * @property {string} fee
+ * @property {string} tickLower
+ * @property {string} tickUpper
+ * @property {string} liquidity
+ * @property {string} tokensOwed0
+ * @property {string} tokensOwed1
+ */
+
+const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+const UNSIGNED_DECIMAL_RE = /^(0|[1-9]\d*)$/;
+const SIGNED_DECIMAL_RE = /^-?(0|[1-9]\d*)$/;
+
+const GET_V3_POSITION_FIELDS = [
+  "chainId",
+  "walletAddress",
+  "nftTokenId",
+  "poolAddress",
+  "token0",
+  "token1",
+  "fee",
+  "tickLower",
+  "tickUpper",
+  "liquidity",
+  "tokensOwed0",
+  "tokensOwed1",
+];
+
+/**
+ * Redact secrets from strings that may be surfaced in errors.
+ * @param {string} text
+ * @param {string} [apiKey]
+ * @returns {string}
+ */
+export function redactSecrets(text, apiKey) {
+  if (typeof text !== "string" || text === "") {
+    return text;
+  }
+  let out = text;
+  if (typeof apiKey === "string" && apiKey !== "") {
+    out = out.split(apiKey).join("[REDACTED]");
+    const bearer = `Bearer ${apiKey}`;
+    out = out.split(bearer).join("Bearer [REDACTED]");
+  }
+  // Defense in depth if a bearer token appears without a known key match.
+  out = out.replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]");
+  return out;
+}
 
 /**
  * Build a JSON-RPC tools/call request body (no secrets).
@@ -113,6 +171,110 @@ export function parseMcpToolsCallResponse(body) {
 }
 
 /**
+ * @param {unknown} value
+ * @param {string} field
+ * @returns {string}
+ */
+function requireAddress(value, field) {
+  if (typeof value !== "string" || !ADDRESS_RE.test(value)) {
+    throw new Error(
+      `get_v3_position.${field} must be a 20-byte 0x-prefixed address`,
+    );
+  }
+  return value;
+}
+
+/**
+ * @param {unknown} value
+ * @param {string} field
+ * @returns {string}
+ */
+function requireUnsignedDecimalString(value, field) {
+  if (typeof value !== "string" || !UNSIGNED_DECIMAL_RE.test(value)) {
+    throw new Error(
+      `get_v3_position.${field} must be an unsigned decimal integer string`,
+    );
+  }
+  return value;
+}
+
+/**
+ * @param {unknown} value
+ * @param {string} field
+ * @returns {string}
+ */
+function requireSignedDecimalString(value, field) {
+  if (typeof value !== "string" || !SIGNED_DECIMAL_RE.test(value)) {
+    throw new Error(
+      `get_v3_position.${field} must be a signed decimal integer string`,
+    );
+  }
+  return value;
+}
+
+/**
+ * Strict validation of a get_v3_position payload against the request.
+ *
+ * @param {unknown} data
+ * @param {{ chainId: string, nftTokenId: string }} request
+ * @returns {V3Position}
+ */
+export function validateGetV3Position(data, request) {
+  if (data === null || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error("get_v3_position must return a non-null JSON object");
+  }
+
+  /** @type {Record<string, unknown>} */
+  const obj = /** @type {Record<string, unknown>} */ (data);
+
+  for (const field of GET_V3_POSITION_FIELDS) {
+    if (!(field in obj) || obj[field] === null || obj[field] === undefined) {
+      throw new Error(`get_v3_position missing required field: ${field}`);
+    }
+  }
+
+  const chainIdRaw = obj.chainId;
+  const chainId =
+    typeof chainIdRaw === "number"
+      ? String(chainIdRaw)
+      : typeof chainIdRaw === "string"
+        ? chainIdRaw
+        : null;
+  if (chainId !== DEFAULT_CHAIN_ID) {
+    throw new Error(
+      `get_v3_position.chainId must be ${DEFAULT_CHAIN_ID}; got ${JSON.stringify(chainIdRaw)}`,
+    );
+  }
+  if (request.chainId !== DEFAULT_CHAIN_ID) {
+    throw new Error(
+      `get_v3_position request chainId must be ${DEFAULT_CHAIN_ID}`,
+    );
+  }
+
+  const nftTokenId = requireUnsignedDecimalString(obj.nftTokenId, "nftTokenId");
+  if (nftTokenId !== request.nftTokenId) {
+    throw new Error(
+      `get_v3_position.nftTokenId ${JSON.stringify(nftTokenId)} does not match request ${JSON.stringify(request.nftTokenId)}`,
+    );
+  }
+
+  return {
+    chainId,
+    walletAddress: requireAddress(obj.walletAddress, "walletAddress"),
+    nftTokenId,
+    poolAddress: requireAddress(obj.poolAddress, "poolAddress"),
+    token0: requireAddress(obj.token0, "token0"),
+    token1: requireAddress(obj.token1, "token1"),
+    fee: requireUnsignedDecimalString(obj.fee, "fee"),
+    tickLower: requireSignedDecimalString(obj.tickLower, "tickLower"),
+    tickUpper: requireSignedDecimalString(obj.tickUpper, "tickUpper"),
+    liquidity: requireUnsignedDecimalString(obj.liquidity, "liquidity"),
+    tokensOwed0: requireUnsignedDecimalString(obj.tokensOwed0, "tokensOwed0"),
+    tokensOwed1: requireUnsignedDecimalString(obj.tokensOwed1, "tokensOwed1"),
+  };
+}
+
+/**
  * @param {McpClientOptions} client
  * @param {string} toolName
  * @param {Record<string, unknown>} args
@@ -149,7 +311,10 @@ export async function callMcpTool(client, toolName, args, opts = {}) {
       body: JSON.stringify(requestBody),
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = redactSecrets(
+      err instanceof Error ? err.message : String(err),
+      client.apiKey,
+    );
     throw new Error(`MCP HTTP request failed: ${message}`);
   }
 
@@ -157,9 +322,9 @@ export async function callMcpTool(client, toolName, args, opts = {}) {
   const rawText = await response.text();
 
   if (!response.ok) {
-    // Do not echo response bodies that might contain sensitive upstream detail at length.
-    const excerpt =
+    const excerptRaw =
       rawText.length > 200 ? `${rawText.slice(0, 200)}…` : rawText;
+    const excerpt = redactSecrets(excerptRaw, client.apiKey);
     throw new Error(
       `MCP HTTP ${status}${excerpt ? `: ${excerpt}` : ""}`.trim(),
     );
@@ -178,16 +343,25 @@ export async function callMcpTool(client, toolName, args, opts = {}) {
 /**
  * @param {McpClientOptions} client
  * @param {{ chainId: string, nftTokenId: string }} params
+ * @returns {Promise<V3Position>}
  */
 export async function getV3Position(client, { chainId, nftTokenId }) {
+  if (chainId !== DEFAULT_CHAIN_ID) {
+    throw new Error(
+      `get_v3_position only supports chainId ${DEFAULT_CHAIN_ID}`,
+    );
+  }
+  if (typeof nftTokenId !== "string" || !UNSIGNED_DECIMAL_RE.test(nftTokenId)) {
+    throw new Error(
+      "nftTokenId must be an unsigned decimal integer string without leading zeros",
+    );
+  }
+
   const result = await callMcpTool(client, "get_v3_position", {
     chainId,
     nftTokenId,
   });
-  if (result.data === undefined || typeof result.data !== "object") {
-    throw new Error("get_v3_position did not return JSON object text");
-  }
-  return /** @type {Record<string, unknown>} */ (result.data);
+  return validateGetV3Position(result.data, { chainId, nftTokenId });
 }
 
 /**

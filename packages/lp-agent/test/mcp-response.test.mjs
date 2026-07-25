@@ -13,6 +13,8 @@ import {
   getV3Position,
   claimV3Fees,
   decreaseV3Position,
+  validateGetV3Position,
+  redactSecrets,
 } from "../src/orloj-mcp-client.mjs";
 
 const validEnv = {
@@ -26,6 +28,32 @@ const validEnv = {
   AGENT_MODE: "observe",
   CHAIN_ID: "11155111",
 };
+
+const ADDR = {
+  wallet: "0x1111111111111111111111111111111111111111",
+  pool: "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01",
+  token0: "0x0000000000000000000000000000000000000001",
+  token1: "0x0000000000000000000000000000000000000002",
+};
+
+/** @returns {Record<string, unknown>} */
+function validPosition(overrides = {}) {
+  return {
+    chainId: 11155111,
+    walletAddress: ADDR.wallet,
+    nftTokenId: "7",
+    poolAddress: ADDR.pool,
+    token0: ADDR.token0,
+    token1: ADDR.token1,
+    fee: "3000",
+    tickLower: "-120",
+    tickUpper: "120",
+    liquidity: "1000",
+    tokensOwed0: "1",
+    tokensOwed1: "2",
+    ...overrides,
+  };
+}
 
 describe("config", () => {
   it("loads a complete env and builds the Graph gateway URL", () => {
@@ -64,6 +92,25 @@ describe("config", () => {
     );
   });
 
+  it("requires CHAIN_ID to be exactly Sepolia 11155111", () => {
+    assert.throws(
+      () => loadConfig({ ...validEnv, CHAIN_ID: "1" }),
+      /11155111/,
+    );
+    assert.throws(
+      () => loadConfig({ ...validEnv, CHAIN_ID: "17000" }),
+      /11155111/,
+    );
+    assert.throws(
+      () => loadConfig({ ...validEnv, CHAIN_ID: "sepolia" }),
+      /11155111/,
+    );
+    assert.throws(
+      () => loadConfig({ ...validEnv, CHAIN_ID: "011155111" }),
+      /11155111/,
+    );
+  });
+
   it("normalizes checksummed pool addresses for subgraph IDs", () => {
     assert.equal(
       toSubgraphPoolId("0xAbCdEf0123456789AbCdEf0123456789AbCdEf01"),
@@ -91,20 +138,7 @@ describe("mcp-response", () => {
   });
 
   it("parses a successful get_v3_position tools/call result", () => {
-    const position = {
-      chainId: 11155111,
-      walletAddress: "0xWallet",
-      nftTokenId: "42",
-      poolAddress: "0xPoolCheckSum",
-      token0: "0xToken0",
-      token1: "0xToken1",
-      fee: "3000",
-      tickLower: "-120",
-      tickUpper: "120",
-      liquidity: "1000",
-      tokensOwed0: "1",
-      tokensOwed1: "2",
-    };
+    const position = validPosition({ nftTokenId: "42" });
     const parsed = parseMcpToolsCallResponse({
       jsonrpc: "2.0",
       id: 1,
@@ -156,7 +190,62 @@ describe("mcp-response", () => {
     );
   });
 
-  it("callMcpTool posts Bearer auth and parses JSON via injected fetch", async () => {
+  it("strictly validates get_v3_position payloads", () => {
+    const request = { chainId: "11155111", nftTokenId: "7" };
+    const ok = validateGetV3Position(validPosition(), request);
+    assert.equal(ok.chainId, "11155111");
+    assert.equal(ok.nftTokenId, "7");
+    assert.equal(ok.poolAddress, ADDR.pool);
+
+    assert.throws(() => validateGetV3Position(null, request), /non-null/);
+    assert.throws(() => validateGetV3Position([], request), /non-null/);
+    assert.throws(
+      () =>
+        validateGetV3Position(validPosition({ poolAddress: undefined }), request),
+      /missing required field: poolAddress/,
+    );
+    assert.throws(
+      () =>
+        validateGetV3Position(validPosition({ poolAddress: "0xabc" }), request),
+      /poolAddress/,
+    );
+    assert.throws(
+      () =>
+        validateGetV3Position(validPosition({ fee: "03000" }), request),
+      /fee/,
+    );
+    assert.throws(
+      () =>
+        validateGetV3Position(validPosition({ chainId: 1 }), request),
+      /chainId/,
+    );
+    assert.throws(
+      () =>
+        validateGetV3Position(validPosition({ nftTokenId: "8" }), request),
+      /does not match request/,
+    );
+    assert.throws(
+      () =>
+        validateGetV3Position(validPosition({ tickLower: "-012" }), request),
+      /tickLower/,
+    );
+  });
+
+  it("accepts numeric or string Sepolia chainId from get_v3_position", () => {
+    const request = { chainId: "11155111", nftTokenId: "7" };
+    const fromNumber = validateGetV3Position(
+      validPosition({ chainId: 11155111 }),
+      request,
+    );
+    const fromString = validateGetV3Position(
+      validPosition({ chainId: "11155111" }),
+      request,
+    );
+    assert.equal(fromNumber.chainId, "11155111");
+    assert.equal(fromString.chainId, "11155111");
+  });
+
+  it("callMcpTool posts Bearer auth and validates get_v3_position JSON", async () => {
     /** @type {RequestInit | undefined} */
     let seenInit;
     /** @type {string | undefined} */
@@ -165,19 +254,14 @@ describe("mcp-response", () => {
     const fetchImpl = async (url, init) => {
       seenUrl = String(url);
       seenInit = init;
-      const position = {
-        poolAddress: "0xAbC",
-        nftTokenId: "7",
-        tickLower: "0",
-        tickUpper: "10",
-        liquidity: "1",
-      };
       return new Response(
         JSON.stringify({
           jsonrpc: "2.0",
           id: 1,
           result: {
-            content: [{ type: "text", text: JSON.stringify(position) }],
+            content: [
+              { type: "text", text: JSON.stringify(validPosition()) },
+            ],
             isError: false,
           },
         }),
@@ -199,7 +283,7 @@ describe("mcp-response", () => {
     const headers = /** @type {Record<string, string>} */ (seenInit?.headers);
     assert.equal(headers.authorization, "Bearer secret-token-should-not-leak");
     assert.equal(data.nftTokenId, "7");
-    assert.equal(toSubgraphPoolId(/** @type {string} */ (data.poolAddress)), "0xabc");
+    assert.equal(toSubgraphPoolId(data.poolAddress), ADDR.pool.toLowerCase());
   });
 
   it("callMcpTool HTTP errors do not embed the API key", async () => {
@@ -222,7 +306,31 @@ describe("mcp-response", () => {
     }
     assert.match(message, /MCP HTTP 401/);
     assert.doesNotMatch(message, /very-secret-api-key/);
-    assert.doesNotMatch(message, /Bearer/);
+    assert.doesNotMatch(message, /Bearer very-secret/);
+  });
+
+  it("redacts MCP API key when an upstream HTTP body echoes it", async () => {
+    const apiKey = "mcpk_live_echo_secret_value";
+    const fetchImpl = async () =>
+      new Response(
+        `unauthorized token=${apiKey} Authorization: Bearer ${apiKey}`,
+        { status: 401 },
+      );
+
+    let message = "";
+    try {
+      await callMcpTool(
+        { url: "http://mcp.test/mcp", apiKey, fetchImpl },
+        "get_v3_position",
+        { chainId: "11155111", nftTokenId: "1" },
+      );
+    } catch (e) {
+      message = e instanceof Error ? e.message : String(e);
+    }
+    assert.match(message, /MCP HTTP 401/);
+    assert.doesNotMatch(message, new RegExp(apiKey));
+    assert.match(message, /\[REDACTED\]/);
+    assert.equal(redactSecrets(`Bearer ${apiKey}`, apiKey), "Bearer [REDACTED]");
   });
 
   it("exposes claim and decrease helpers for later use", async () => {

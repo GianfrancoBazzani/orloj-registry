@@ -9,6 +9,7 @@ export const DEFAULT_SUBGRAPH_ID =
 export const DEFAULT_GRAPH_GATEWAY_BASE =
   "https://gateway.thegraph.com/api/subgraphs/id";
 
+/** Ethereum Sepolia — the only chain supported by Orloj Uniswap V3 LP tools. */
 export const DEFAULT_CHAIN_ID = "11155111";
 
 /** @typedef {"observe" | "execute"} AgentMode */
@@ -39,6 +40,19 @@ export function toSubgraphPoolId(poolAddress) {
     throw new Error("poolAddress must be a non-empty string");
   }
   return poolAddress.trim().toLowerCase();
+}
+
+/**
+ * @param {string} chainId
+ * @returns {string} DEFAULT_CHAIN_ID
+ */
+export function requireSepoliaChainId(chainId) {
+  if (chainId !== DEFAULT_CHAIN_ID) {
+    throw new Error(
+      `CHAIN_ID must be exactly "${DEFAULT_CHAIN_ID}" (Ethereum Sepolia); got ${JSON.stringify(chainId)}`,
+    );
+  }
+  return chainId;
 }
 
 /**
@@ -92,12 +106,13 @@ export function loadConfig(env = process.env) {
     );
   }
 
-  if (!/^\d+$/.test(nftTokenId)) {
-    throw new Error("NFT_TOKEN_ID must be a decimal integer string");
+  if (!/^(0|[1-9]\d*)$/.test(nftTokenId)) {
+    throw new Error(
+      "NFT_TOKEN_ID must be a decimal integer string without leading zeros",
+    );
   }
-  if (!/^\d+$/.test(chainId)) {
-    throw new Error("CHAIN_ID must be a decimal integer string");
-  }
+
+  requireSepoliaChainId(chainId);
 
   const gateway = graphGatewayBase.replace(/\/$/, "");
   return {
