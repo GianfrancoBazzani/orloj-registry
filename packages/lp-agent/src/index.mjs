@@ -15,6 +15,7 @@ export {
   parseGraphHttpJson,
   normalizePoolMarketContext,
   asGraphString,
+  asGraphScalar,
   POOL_MARKET_CONTEXT_QUERY,
   DEFAULT_MAX_INDEXED_AGE_SECONDS,
   DEFAULT_HOUR_LOOKBACK_SECONDS,

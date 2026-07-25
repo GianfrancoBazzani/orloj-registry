@@ -2,16 +2,22 @@
  * The Graph client for Uniswap V3 Sepolia market context.
  * Load-bearing: no RPC/static fallback. Fail closed on transport, GraphQL,
  * indexing-error, stale _meta, missing pool, or malformed essential fields.
- * Sparse/empty hour or swap rows with fresh _meta = inactive market (OK).
+ * Present empty arrays for hours/swaps with fresh _meta = inactive market (OK).
+ * Missing/null hour or swap arrays are fail-closed (not treated as inactivity).
  *
  * Large Graph numeric values are preserved as strings. No feature math here.
+ * Swap intensity (later) should use PoolHourData.txCount, not sampled swap counts.
  */
 
 import { DEFAULT_SUBGRAPH_ID, toSubgraphPoolId } from "./config.mjs";
 import { redactSecrets } from "./orloj-mcp-client.mjs";
 
-/** Default max age of indexed block timestamp vs wall clock. */
-export const DEFAULT_MAX_INDEXED_AGE_SECONDS = 6 * 60 * 60;
+/**
+ * Default max age of indexed block timestamp vs wall clock.
+ * Live Sepolia smoke showed ~10s lag; 60 minutes is the chosen default in the
+ * 30–60m preference band. Always exposed on the result as evidence.
+ */
+export const DEFAULT_MAX_INDEXED_AGE_SECONDS = 60 * 60;
 
 /** Default PoolHourData lookback (timestamp window, not row count). */
 export const DEFAULT_HOUR_LOOKBACK_SECONDS = 48 * 60 * 60;
@@ -27,8 +33,10 @@ export const POOL_MARKET_CONTEXT_QUERY = `#graphql
 query PoolMarketContext(
   $poolId: ID!
   $hourStartUnix: Int!
+  $hourEndUnix: Int!
   $hourLimit: Int!
   $swapStartUnix: BigInt!
+  $swapEndUnix: BigInt!
   $swapLimit: Int!
 ) {
   _meta {
@@ -56,7 +64,11 @@ query PoolMarketContext(
     first: $hourLimit
     orderBy: periodStartUnix
     orderDirection: desc
-    where: { pool: $poolId, periodStartUnix_gte: $hourStartUnix }
+    where: {
+      pool: $poolId
+      periodStartUnix_gte: $hourStartUnix
+      periodStartUnix_lte: $hourEndUnix
+    }
   ) {
     id
     periodStartUnix
@@ -80,7 +92,11 @@ query PoolMarketContext(
     first: $swapLimit
     orderBy: timestamp
     orderDirection: desc
-    where: { pool: $poolId, timestamp_gte: $swapStartUnix }
+    where: {
+      pool: $poolId
+      timestamp_gte: $swapStartUnix
+      timestamp_lte: $swapEndUnix
+    }
   ) {
     id
     timestamp
@@ -108,31 +124,75 @@ query PoolMarketContext(
  * @property {() => number} [nowSeconds]
  */
 
+const UNSIGNED_INT_RE = /^(0|[1-9]\d*)$/;
+const SIGNED_INT_RE = /^-?(0|[1-9]\d*)$/;
+/** BigDecimal-like: optional sign, digits, optional fractional part. */
+const DECIMAL_RE = /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/;
+
 /**
- * Coerce Graph scalar to string without doing feature math.
+ * Preserve Graph numerics as strings. Reject unsafe JS numbers (non-safe integers).
+ * Fractional values must arrive as strings (The Graph BigDecimal practice).
+ *
  * @param {unknown} value
  * @param {string} path
+ * @param {{ kind: "uint" | "int" | "decimal" | "hash" | "id" }} opts
  * @returns {string}
  */
-export function asGraphString(value, path) {
-  if (typeof value === "string") {
-    if (value.trim() === "") {
-      throw new Error(`Graph field ${path} is an empty string`);
-    }
-    return value;
-  }
+export function asGraphScalar(value, path, opts) {
   if (typeof value === "number") {
     if (!Number.isFinite(value)) {
       throw new Error(`Graph field ${path} is not a finite number`);
     }
-    return String(value);
+    if (!Number.isSafeInteger(value)) {
+      throw new Error(
+        `Graph field ${path} is an unsafe JS number; require a string scalar`,
+      );
+    }
+    value = String(value);
+  } else if (typeof value === "bigint") {
+    value = value.toString();
+  } else if (typeof value !== "string") {
+    throw new Error(
+      `Graph field ${path} must be a string or safe integer (got ${typeof value})`,
+    );
   }
-  if (typeof value === "bigint") {
-    return value.toString();
+
+  const s = value.trim();
+  if (s === "") {
+    throw new Error(`Graph field ${path} is an empty string`);
   }
-  throw new Error(
-    `Graph field ${path} must be a string or number (got ${typeof value})`,
-  );
+
+  switch (opts.kind) {
+    case "uint":
+      if (!UNSIGNED_INT_RE.test(s)) {
+        throw new Error(`Graph field ${path} must be an unsigned integer string`);
+      }
+      return s;
+    case "int":
+      if (!SIGNED_INT_RE.test(s)) {
+        throw new Error(`Graph field ${path} must be a signed integer string`);
+      }
+      return s;
+    case "decimal":
+      if (!DECIMAL_RE.test(s)) {
+        throw new Error(`Graph field ${path} must be a decimal string`);
+      }
+      return s;
+    case "hash":
+      if (!/^0x[0-9a-fA-F]+$/.test(s)) {
+        throw new Error(`Graph field ${path} must be a 0x-hex string`);
+      }
+      return s;
+    case "id":
+      return s;
+    default:
+      throw new Error(`Unknown scalar kind for ${path}`);
+  }
+}
+
+/** @deprecated use asGraphScalar — kept for call-site clarity in tests */
+export function asGraphString(value, path) {
+  return asGraphScalar(value, path, { kind: "decimal" });
 }
 
 /**
@@ -141,7 +201,7 @@ export function asGraphString(value, path) {
  * @returns {string}
  */
 function asAddressString(value, path) {
-  const s = asGraphString(value, path).toLowerCase();
+  const s = asGraphScalar(value, path, { kind: "id" }).toLowerCase();
   if (!/^0x[0-9a-f]{40}$/.test(s)) {
     throw new Error(`Graph field ${path} is not a 20-byte address`);
   }
@@ -175,8 +235,25 @@ export function parseGraphHttpJson(body) {
 }
 
 /**
+ * @param {number} ts
+ * @param {number} start
+ * @param {number} end
+ * @param {string} path
+ */
+function assertInWindow(ts, start, end, path) {
+  if (!Number.isFinite(ts)) {
+    throw new Error(`Graph ${path} is not numeric`);
+  }
+  if (ts < start || ts > end) {
+    throw new Error(
+      `Graph ${path} ${ts} is outside requested window [${start}, ${end}]`,
+    );
+  }
+}
+
+/**
  * Validate Graph data and normalize numerics to strings.
- * Empty hour/swap arrays are allowed when _meta is fresh (caller checks staleness).
+ * `poolHourDatas` and `swaps` must be present arrays; only `[]` means inactivity.
  *
  * @param {Record<string, unknown>} data
  * @param {{
@@ -185,7 +262,10 @@ export function parseGraphHttpJson(body) {
  *   nowSeconds: number,
  *   maxIndexedAgeSeconds: number,
  *   hourStartUnix: number,
+ *   hourEndUnix: number,
  *   swapStartUnix: number,
+ *   swapEndUnix: number,
+ *   swapRowLimit: number,
  * }} ctx
  */
 export function normalizePoolMarketContext(data, ctx) {
@@ -209,12 +289,16 @@ export function normalizePoolMarketContext(data, ctx) {
   /** @type {Record<string, unknown>} */
   const block = /** @type {Record<string, unknown>} */ (blockRaw);
 
-  const blockNumber = asGraphString(block.number, "_meta.block.number");
-  const blockHash = asGraphString(block.hash, "_meta.block.hash");
-  const blockTimestamp = asGraphString(block.timestamp, "_meta.block.timestamp");
+  const blockNumber = asGraphScalar(block.number, "_meta.block.number", {
+    kind: "uint",
+  });
+  const blockHash = asGraphScalar(block.hash, "_meta.block.hash", { kind: "hash" });
+  const blockTimestamp = asGraphScalar(block.timestamp, "_meta.block.timestamp", {
+    kind: "uint",
+  });
   const indexedAt = Number(blockTimestamp);
-  if (!Number.isFinite(indexedAt)) {
-    throw new Error("Graph _meta.block.timestamp is not numeric");
+  if (!Number.isSafeInteger(indexedAt)) {
+    throw new Error("Graph _meta.block.timestamp is not a safe integer");
   }
   const ageSeconds = ctx.nowSeconds - indexedAt;
   if (ageSeconds > ctx.maxIndexedAgeSeconds) {
@@ -223,7 +307,6 @@ export function normalizePoolMarketContext(data, ctx) {
     );
   }
   if (ageSeconds < -300) {
-    // Clock skew guard — indexed "in the future" by more than 5 minutes.
     throw new Error(
       `Graph indexed block timestamp is in the future (age=${ageSeconds}s)`,
     );
@@ -251,32 +334,54 @@ export function normalizePoolMarketContext(data, ctx) {
 
   const pool = {
     id: poolId,
-    tick: asGraphString(poolObj.tick, "pool.tick"),
-    sqrtPrice: asGraphString(poolObj.sqrtPrice, "pool.sqrtPrice"),
-    liquidity: asGraphString(poolObj.liquidity, "pool.liquidity"),
-    feeTier: asGraphString(poolObj.feeTier, "pool.feeTier"),
-    totalValueLockedUSD: optionalGraphString(
+    tick: asGraphScalar(poolObj.tick, "pool.tick", { kind: "int" }),
+    sqrtPrice: asGraphScalar(poolObj.sqrtPrice, "pool.sqrtPrice", { kind: "uint" }),
+    liquidity: asGraphScalar(poolObj.liquidity, "pool.liquidity", { kind: "uint" }),
+    feeTier: asGraphScalar(poolObj.feeTier, "pool.feeTier", { kind: "uint" }),
+    totalValueLockedUSD: optionalScalar(
       poolObj.totalValueLockedUSD,
       "pool.totalValueLockedUSD",
+      "decimal",
     ),
-    totalValueLockedToken0: optionalGraphString(
+    totalValueLockedToken0: optionalScalar(
       poolObj.totalValueLockedToken0,
       "pool.totalValueLockedToken0",
+      "decimal",
     ),
-    totalValueLockedToken1: optionalGraphString(
+    totalValueLockedToken1: optionalScalar(
       poolObj.totalValueLockedToken1,
       "pool.totalValueLockedToken1",
+      "decimal",
     ),
-    volumeUSD: optionalGraphString(poolObj.volumeUSD, "pool.volumeUSD"),
-    volumeToken0: optionalGraphString(poolObj.volumeToken0, "pool.volumeToken0"),
-    volumeToken1: optionalGraphString(poolObj.volumeToken1, "pool.volumeToken1"),
-    feesUSD: optionalGraphString(poolObj.feesUSD, "pool.feesUSD"),
+    volumeUSD: optionalScalar(poolObj.volumeUSD, "pool.volumeUSD", "decimal"),
+    volumeToken0: optionalScalar(poolObj.volumeToken0, "pool.volumeToken0", "decimal"),
+    volumeToken1: optionalScalar(poolObj.volumeToken1, "pool.volumeToken1", "decimal"),
+    feesUSD: optionalScalar(poolObj.feesUSD, "pool.feesUSD", "decimal"),
     token0,
     token1,
   };
 
-  const hourData = normalizeHourRows(data.poolHourDatas, ctx.hourStartUnix);
-  const swaps = normalizeSwapRows(data.swaps, ctx.swapStartUnix);
+  if (!Array.isArray(data.poolHourDatas)) {
+    throw new Error("Graph poolHourDatas must be a present array");
+  }
+  if (!Array.isArray(data.swaps)) {
+    throw new Error("Graph swaps must be a present array");
+  }
+
+  const hourData = normalizeHourRows(
+    data.poolHourDatas,
+    ctx.hourStartUnix,
+    ctx.hourEndUnix,
+  );
+  const swapFetched = normalizeSwapRows(
+    data.swaps,
+    ctx.swapStartUnix,
+    ctx.swapEndUnix,
+  );
+  const truncated = swapFetched.length > ctx.swapRowLimit;
+  const swaps = truncated
+    ? swapFetched.slice(0, ctx.swapRowLimit)
+    : swapFetched;
 
   return {
     subgraphId: ctx.subgraphId,
@@ -287,6 +392,8 @@ export function normalizePoolMarketContext(data, ctx) {
       blockHash,
       blockTimestamp,
       hasIndexingErrors: false,
+      ageSeconds,
+      maxIndexedAgeSeconds: ctx.maxIndexedAgeSeconds,
       deployment:
         typeof metaObj.deployment === "string" ? metaObj.deployment : undefined,
     },
@@ -296,15 +403,22 @@ export function normalizePoolMarketContext(data, ctx) {
     windows: {
       hour: {
         startUnix: ctx.hourStartUnix,
-        endUnix: ctx.nowSeconds,
+        endUnix: ctx.hourEndUnix,
         boundBy: "periodStartUnix",
         rowCount: hourData.length,
       },
       swap: {
         startUnix: ctx.swapStartUnix,
-        endUnix: ctx.nowSeconds,
+        endUnix: ctx.swapEndUnix,
         boundBy: "timestamp",
         rowCount: swaps.length,
+        fetchedCount: swapFetched.length,
+        limit: ctx.swapRowLimit,
+        truncated,
+        complete: !truncated,
+        // Intensity features must use hour txCount, not this sample size.
+        sampleNote:
+          "swap rows are a capped sample; use PoolHourData.txCount for intensity",
       },
     },
     inactivity: {
@@ -326,8 +440,8 @@ function normalizeToken(tokenRaw, path) {
   const t = /** @type {Record<string, unknown>} */ (tokenRaw);
   return {
     id: asAddressString(t.id, `${path}.id`),
-    symbol: asGraphString(t.symbol, `${path}.symbol`),
-    decimals: asGraphString(t.decimals, `${path}.decimals`),
+    symbol: asGraphScalar(t.symbol, `${path}.symbol`, { kind: "id" }),
+    decimals: asGraphScalar(t.decimals, `${path}.decimals`, { kind: "uint" }),
     name: typeof t.name === "string" ? t.name : undefined,
   };
 }
@@ -335,39 +449,32 @@ function normalizeToken(tokenRaw, path) {
 /**
  * @param {unknown} value
  * @param {string} path
+ * @param {"uint" | "int" | "decimal"} kind
  * @returns {string | undefined}
  */
-function optionalGraphString(value, path) {
+function optionalScalar(value, path, kind) {
   if (value === null || value === undefined) {
     return undefined;
   }
-  return asGraphString(value, path);
+  return asGraphScalar(value, path, { kind });
 }
 
 /**
- * @param {unknown} rows
+ * @param {unknown[]} rows
  * @param {number} hourStartUnix
+ * @param {number} hourEndUnix
  */
-function normalizeHourRows(rows, hourStartUnix) {
-  if (rows === null || rows === undefined) {
-    return [];
-  }
-  if (!Array.isArray(rows)) {
-    throw new Error("Graph poolHourDatas must be an array");
-  }
+function normalizeHourRows(rows, hourStartUnix, hourEndUnix) {
   /** @type {ReturnType<typeof normalizeHourRow>[]} */
   const out = [];
   for (let i = 0; i < rows.length; i++) {
     const row = normalizeHourRow(rows[i], i);
-    const period = Number(row.periodStartUnix);
-    if (!Number.isFinite(period)) {
-      throw new Error(`Graph poolHourDatas[${i}].periodStartUnix not numeric`);
-    }
-    if (period < hourStartUnix) {
-      throw new Error(
-        `Graph poolHourDatas[${i}].periodStartUnix ${period} is outside requested window (>= ${hourStartUnix})`,
-      );
-    }
+    assertInWindow(
+      Number(row.periodStartUnix),
+      hourStartUnix,
+      hourEndUnix,
+      `poolHourDatas[${i}].periodStartUnix`,
+    );
     out.push(row);
   }
   return out;
@@ -385,50 +492,44 @@ function normalizeHourRow(row, index) {
   const r = /** @type {Record<string, unknown>} */ (row);
   const path = `poolHourDatas[${index}]`;
   return {
-    id: asGraphString(r.id, `${path}.id`),
-    periodStartUnix: asGraphString(r.periodStartUnix, `${path}.periodStartUnix`),
-    tick: optionalGraphString(r.tick, `${path}.tick`),
-    liquidity: optionalGraphString(r.liquidity, `${path}.liquidity`),
-    sqrtPrice: optionalGraphString(r.sqrtPrice, `${path}.sqrtPrice`),
-    tvlUSD: optionalGraphString(r.tvlUSD, `${path}.tvlUSD`),
-    volumeUSD: optionalGraphString(r.volumeUSD, `${path}.volumeUSD`),
-    volumeToken0: optionalGraphString(r.volumeToken0, `${path}.volumeToken0`),
-    volumeToken1: optionalGraphString(r.volumeToken1, `${path}.volumeToken1`),
-    feesUSD: optionalGraphString(r.feesUSD, `${path}.feesUSD`),
-    open: optionalGraphString(r.open, `${path}.open`),
-    high: optionalGraphString(r.high, `${path}.high`),
-    low: optionalGraphString(r.low, `${path}.low`),
-    close: optionalGraphString(r.close, `${path}.close`),
-    token0Price: optionalGraphString(r.token0Price, `${path}.token0Price`),
-    token1Price: optionalGraphString(r.token1Price, `${path}.token1Price`),
-    txCount: optionalGraphString(r.txCount, `${path}.txCount`),
+    id: asGraphScalar(r.id, `${path}.id`, { kind: "id" }),
+    periodStartUnix: asGraphScalar(r.periodStartUnix, `${path}.periodStartUnix`, {
+      kind: "uint",
+    }),
+    tick: optionalScalar(r.tick, `${path}.tick`, "int"),
+    liquidity: optionalScalar(r.liquidity, `${path}.liquidity`, "uint"),
+    sqrtPrice: optionalScalar(r.sqrtPrice, `${path}.sqrtPrice`, "uint"),
+    tvlUSD: optionalScalar(r.tvlUSD, `${path}.tvlUSD`, "decimal"),
+    volumeUSD: optionalScalar(r.volumeUSD, `${path}.volumeUSD`, "decimal"),
+    volumeToken0: optionalScalar(r.volumeToken0, `${path}.volumeToken0`, "decimal"),
+    volumeToken1: optionalScalar(r.volumeToken1, `${path}.volumeToken1`, "decimal"),
+    feesUSD: optionalScalar(r.feesUSD, `${path}.feesUSD`, "decimal"),
+    open: optionalScalar(r.open, `${path}.open`, "decimal"),
+    high: optionalScalar(r.high, `${path}.high`, "decimal"),
+    low: optionalScalar(r.low, `${path}.low`, "decimal"),
+    close: optionalScalar(r.close, `${path}.close`, "decimal"),
+    token0Price: optionalScalar(r.token0Price, `${path}.token0Price`, "decimal"),
+    token1Price: optionalScalar(r.token1Price, `${path}.token1Price`, "decimal"),
+    txCount: optionalScalar(r.txCount, `${path}.txCount`, "uint"),
   };
 }
 
 /**
- * @param {unknown} rows
+ * @param {unknown[]} rows
  * @param {number} swapStartUnix
+ * @param {number} swapEndUnix
  */
-function normalizeSwapRows(rows, swapStartUnix) {
-  if (rows === null || rows === undefined) {
-    return [];
-  }
-  if (!Array.isArray(rows)) {
-    throw new Error("Graph swaps must be an array");
-  }
+function normalizeSwapRows(rows, swapStartUnix, swapEndUnix) {
   /** @type {ReturnType<typeof normalizeSwapRow>[]} */
   const out = [];
   for (let i = 0; i < rows.length; i++) {
     const row = normalizeSwapRow(rows[i], i);
-    const ts = Number(row.timestamp);
-    if (!Number.isFinite(ts)) {
-      throw new Error(`Graph swaps[${i}].timestamp not numeric`);
-    }
-    if (ts < swapStartUnix) {
-      throw new Error(
-        `Graph swaps[${i}].timestamp ${ts} is outside requested window (>= ${swapStartUnix})`,
-      );
-    }
+    assertInWindow(
+      Number(row.timestamp),
+      swapStartUnix,
+      swapEndUnix,
+      `swaps[${i}].timestamp`,
+    );
     out.push(row);
   }
   return out;
@@ -446,14 +547,38 @@ function normalizeSwapRow(row, index) {
   const r = /** @type {Record<string, unknown>} */ (row);
   const path = `swaps[${index}]`;
   return {
-    id: asGraphString(r.id, `${path}.id`),
-    timestamp: asGraphString(r.timestamp, `${path}.timestamp`),
-    tick: asGraphString(r.tick, `${path}.tick`),
-    amount0: asGraphString(r.amount0, `${path}.amount0`),
-    amount1: asGraphString(r.amount1, `${path}.amount1`),
-    amountUSD: optionalGraphString(r.amountUSD, `${path}.amountUSD`),
-    sqrtPriceX96: optionalGraphString(r.sqrtPriceX96, `${path}.sqrtPriceX96`),
+    id: asGraphScalar(r.id, `${path}.id`, { kind: "id" }),
+    timestamp: asGraphScalar(r.timestamp, `${path}.timestamp`, { kind: "uint" }),
+    tick: asGraphScalar(r.tick, `${path}.tick`, { kind: "int" }),
+    amount0: asGraphScalar(r.amount0, `${path}.amount0`, { kind: "decimal" }),
+    amount1: asGraphScalar(r.amount1, `${path}.amount1`, { kind: "decimal" }),
+    amountUSD: optionalScalar(r.amountUSD, `${path}.amountUSD`, "decimal"),
+    sqrtPriceX96: optionalScalar(r.sqrtPriceX96, `${path}.sqrtPriceX96`, "uint"),
   };
+}
+
+/**
+ * @param {Response} response
+ * @param {AbortSignal} signal
+ * @returns {Promise<string>}
+ */
+async function readBodyText(response, signal) {
+  if (signal.aborted) {
+    const err = new Error("The operation was aborted");
+    err.name = "AbortError";
+    throw err;
+  }
+  return await Promise.race([
+    response.text(),
+    new Promise((_, reject) => {
+      const onAbort = () => {
+        const err = new Error("The operation was aborted");
+        err.name = "AbortError";
+        reject(err);
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    }),
+  ]);
 }
 
 /**
@@ -484,14 +609,19 @@ export async function fetchPoolMarketContext(client, { poolAddress }) {
   const nowSeconds = (client.nowSeconds ?? (() => Math.floor(Date.now() / 1000)))();
 
   const hourStartUnix = nowSeconds - hourLookbackSeconds;
+  const hourEndUnix = nowSeconds;
   const swapStartUnix = nowSeconds - swapLookbackSeconds;
+  const swapEndUnix = nowSeconds;
 
+  // Request one extra swap row so we can report truncated vs complete honestly.
   const variables = {
     poolId,
     hourStartUnix,
+    hourEndUnix,
     hourLimit: hourRowLimit,
     swapStartUnix: String(swapStartUnix),
-    swapLimit: swapRowLimit,
+    swapEndUnix: String(swapEndUnix),
+    swapLimit: swapRowLimit + 1,
   };
 
   const fetchImpl = client.fetchImpl ?? globalThis.fetch;
@@ -502,57 +632,81 @@ export async function fetchPoolMarketContext(client, { poolAddress }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  let response;
   try {
-    response = await fetchImpl(client.graphUrl, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json",
-        authorization: `Bearer ${client.apiKey}`,
-      },
-      body: JSON.stringify({
-        query: POOL_MARKET_CONTEXT_QUERY,
-        variables,
-      }),
-      signal: controller.signal,
-    });
-  } catch (err) {
-    const name = err && typeof err === "object" && "name" in err ? err.name : "";
-    const raw = err instanceof Error ? err.message : String(err);
-    const message = redactSecrets(raw, client.apiKey);
-    if (name === "AbortError" || /aborted/i.test(message)) {
-      throw new Error(`Graph request timed out after ${timeoutMs}ms`);
+    let response;
+    try {
+      response = await fetchImpl(client.graphUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json",
+          authorization: `Bearer ${client.apiKey}`,
+        },
+        body: JSON.stringify({
+          query: POOL_MARKET_CONTEXT_QUERY,
+          variables,
+        }),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      throw mapTransportError(err, client.apiKey, timeoutMs);
     }
-    throw new Error(`Graph HTTP request failed: ${message}`);
+
+    let rawText;
+    try {
+      rawText = await readBodyText(response, controller.signal);
+    } catch (err) {
+      throw mapTransportError(err, client.apiKey, timeoutMs, "body read");
+    }
+
+    const status = response.status;
+    if (!response.ok) {
+      const excerptRaw =
+        rawText.length > 200 ? `${rawText.slice(0, 200)}…` : rawText;
+      const excerpt = redactSecrets(excerptRaw, client.apiKey);
+      throw new Error(`Graph HTTP ${status}${excerpt ? `: ${excerpt}` : ""}`);
+    }
+
+    let body;
+    try {
+      body = JSON.parse(rawText);
+    } catch {
+      throw new Error(`Graph HTTP ${status} returned invalid JSON`);
+    }
+
+    const data = parseGraphHttpJson(body);
+    return normalizePoolMarketContext(data, {
+      poolId,
+      subgraphId,
+      nowSeconds,
+      maxIndexedAgeSeconds,
+      hourStartUnix,
+      hourEndUnix,
+      swapStartUnix,
+      swapEndUnix,
+      swapRowLimit,
+    });
   } finally {
     clearTimeout(timer);
   }
+}
 
-  const status = response.status;
-  const rawText = await response.text();
-
-  if (!response.ok) {
-    const excerptRaw =
-      rawText.length > 200 ? `${rawText.slice(0, 200)}…` : rawText;
-    const excerpt = redactSecrets(excerptRaw, client.apiKey);
-    throw new Error(`Graph HTTP ${status}${excerpt ? `: ${excerpt}` : ""}`);
+/**
+ * @param {unknown} err
+ * @param {string} apiKey
+ * @param {number} timeoutMs
+ * @param {string} [phase]
+ */
+function mapTransportError(err, apiKey, timeoutMs, phase) {
+  const name = err && typeof err === "object" && "name" in err ? err.name : "";
+  const raw = err instanceof Error ? err.message : String(err);
+  const message = redactSecrets(raw, apiKey);
+  if (name === "AbortError" || /aborted/i.test(message)) {
+    return new Error(`Graph request timed out after ${timeoutMs}ms`);
   }
-
-  let body;
-  try {
-    body = JSON.parse(rawText);
-  } catch {
-    throw new Error(`Graph HTTP ${status} returned invalid JSON`);
-  }
-
-  const data = parseGraphHttpJson(body);
-  return normalizePoolMarketContext(data, {
-    poolId,
-    subgraphId,
-    nowSeconds,
-    maxIndexedAgeSeconds,
-    hourStartUnix,
-    swapStartUnix,
-  });
+  const prefix =
+    phase === "body read"
+      ? "Graph HTTP body read failed"
+      : "Graph HTTP request failed";
+  return new Error(`${prefix}: ${message}`);
 }
