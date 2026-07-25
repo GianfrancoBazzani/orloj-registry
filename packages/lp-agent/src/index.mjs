@@ -41,12 +41,17 @@ export {
   buildDecisionMessages,
   extractChatCompletionJsonText,
   pairContextFromMarket,
+  requirePairContextFromMarket,
   requestDecision,
   resolveAiTimeoutMs,
   validatePairAgainstFeatures,
   assertAcceptableFinishReason,
 } from "./decision-client.mjs";
-export { planAction } from "./action-planner.mjs";
+export {
+  DECREASE_V3_POSITION_TOOL,
+  planAction,
+} from "./action-planner.mjs";
+export { runOnce } from "./run-once.mjs";
 export {
   extractFeatures,
   isInRange,
@@ -72,4 +77,5 @@ export {
   createV3Position,
   validateGetV3Position,
   redactSecrets,
+  DEFAULT_MCP_TIMEOUT_MS,
 } from "./orloj-mcp-client.mjs";

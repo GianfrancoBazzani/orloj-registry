@@ -13,7 +13,10 @@ import { DEFAULT_CHAIN_ID } from "./config.mjs";
  * @property {string} url
  * @property {string} apiKey
  * @property {typeof fetch} [fetchImpl]
+ * @property {number} [timeoutMs]
  */
+
+export const DEFAULT_MCP_TIMEOUT_MS = 30_000;
 
 /**
  * @typedef {object} ParsedMcpToolResult
@@ -275,6 +278,48 @@ export function validateGetV3Position(data, request) {
 }
 
 /**
+ * @param {Response} response
+ * @param {AbortSignal} signal
+ * @returns {Promise<string>}
+ */
+async function readMcpBodyText(response, signal) {
+  if (signal.aborted) {
+    const err = new Error("The operation was aborted");
+    err.name = "AbortError";
+    throw err;
+  }
+  return await Promise.race([
+    response.text(),
+    new Promise((_, reject) => {
+      const onAbort = () => {
+        const err = new Error("The operation was aborted");
+        err.name = "AbortError";
+        reject(err);
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    }),
+  ]);
+}
+
+/**
+ * @param {unknown} err
+ * @param {string} apiKey
+ * @param {number} timeoutMs
+ * @param {string} [phase]
+ */
+function mapMcpTransportError(err, apiKey, timeoutMs, phase) {
+  const name = err && typeof err === "object" && "name" in err ? err.name : "";
+  const raw = err instanceof Error ? err.message : String(err);
+  const message = redactSecrets(raw, apiKey);
+  if (name === "AbortError" || /aborted/i.test(message)) {
+    return new Error(`MCP request timed out after ${timeoutMs}ms`);
+  }
+  const prefix =
+    phase === "body read" ? "MCP HTTP body read failed" : "MCP HTTP request failed";
+  return new Error(`${prefix}: ${message}`);
+}
+
+/**
  * @param {McpClientOptions} client
  * @param {string} toolName
  * @param {Record<string, unknown>} args
@@ -297,47 +342,63 @@ export async function callMcpTool(client, toolName, args, opts = {}) {
     throw new Error("fetch is not available");
   }
 
+  const timeoutMs =
+    client.timeoutMs === undefined || client.timeoutMs === null
+      ? DEFAULT_MCP_TIMEOUT_MS
+      : client.timeoutMs;
+  if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("timeoutMs must be a positive finite number");
+  }
+
   const requestBody = buildToolsCallRequest(toolName, args, opts.id ?? 1);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  let response;
   try {
-    response = await fetchImpl(client.url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json",
-        authorization: `Bearer ${client.apiKey}`,
-      },
-      body: JSON.stringify(requestBody),
-    });
-  } catch (err) {
-    const message = redactSecrets(
-      err instanceof Error ? err.message : String(err),
-      client.apiKey,
-    );
-    throw new Error(`MCP HTTP request failed: ${message}`);
+    let response;
+    try {
+      response = await fetchImpl(client.url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json",
+          authorization: `Bearer ${client.apiKey}`,
+        },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      throw mapMcpTransportError(err, client.apiKey, timeoutMs);
+    }
+
+    let rawText;
+    try {
+      rawText = await readMcpBodyText(response, controller.signal);
+    } catch (err) {
+      throw mapMcpTransportError(err, client.apiKey, timeoutMs, "body read");
+    }
+
+    const status = response.status;
+    if (!response.ok) {
+      const excerptRaw =
+        rawText.length > 200 ? `${rawText.slice(0, 200)}…` : rawText;
+      const excerpt = redactSecrets(excerptRaw, client.apiKey);
+      throw new Error(
+        `MCP HTTP ${status}${excerpt ? `: ${excerpt}` : ""}`.trim(),
+      );
+    }
+
+    let body;
+    try {
+      body = JSON.parse(rawText);
+    } catch {
+      throw new Error(`MCP HTTP ${status} returned non-JSON body`);
+    }
+
+    return parseMcpToolsCallResponse(body);
+  } finally {
+    clearTimeout(timer);
   }
-
-  const status = response.status;
-  const rawText = await response.text();
-
-  if (!response.ok) {
-    const excerptRaw =
-      rawText.length > 200 ? `${rawText.slice(0, 200)}…` : rawText;
-    const excerpt = redactSecrets(excerptRaw, client.apiKey);
-    throw new Error(
-      `MCP HTTP ${status}${excerpt ? `: ${excerpt}` : ""}`.trim(),
-    );
-  }
-
-  let body;
-  try {
-    body = JSON.parse(rawText);
-  } catch {
-    throw new Error(`MCP HTTP ${status} returned non-JSON body`);
-  }
-
-  return parseMcpToolsCallResponse(body);
 }
 
 /**

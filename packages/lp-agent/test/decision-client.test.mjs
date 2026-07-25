@@ -241,12 +241,22 @@ describe("decision-client", () => {
     );
   });
 
-  it("pairContextFromMarket requires ids", () => {
+  it("pairContextFromMarket requires ids, symbols, decimals, and fee tier", () => {
     assert.equal(
       pairContextFromMarket({
         pool: {
+          feeTier: "3000",
           token0: { symbol: "A", decimals: "18" },
           token1: { symbol: "B", decimals: "6" },
+        },
+      }),
+      null,
+    );
+    assert.equal(
+      pairContextFromMarket({
+        pool: {
+          token0: { id: "0x01", symbol: "AAA", decimals: "18" },
+          token1: { id: "0x02", symbol: "BBB", decimals: "6" },
         },
       }),
       null,
@@ -259,6 +269,25 @@ describe("decision-client", () => {
       },
     });
     assert.equal(pair?.token0.id, "0x01");
+    assert.equal(pair?.feeTier, "3000");
+  });
+
+  it("requestDecision rejects missing pair (no address-only fallback)", async () => {
+    await assert.rejects(
+      () =>
+        requestDecision(
+          {
+            aiChatCompletionsUrl: URL,
+            aiApiKey: API_KEY,
+            aiModel: "test-model",
+            fetchImpl: async () => {
+              throw new Error("should not fetch");
+            },
+          },
+          { features: FEATURES },
+        ),
+      /requires input\.pair|address-only fallback is forbidden/,
+    );
   });
 
   it("accepts finish_reason stop and missing finish_reason", () => {
@@ -357,7 +386,7 @@ describe("decision-client", () => {
               throw new Error("should not fetch");
             },
           },
-          { features: FEATURES },
+          { features: FEATURES, pair: PAIR },
         ),
       /timeoutMs must be a positive finite number/,
     );
@@ -376,7 +405,7 @@ describe("decision-client", () => {
                 completionEnvelope(JSON.stringify({ action: "HOLD", confidence: 1 })),
               ),
           },
-          { features: FEATURES },
+          { features: FEATURES, pair: PAIR },
         ),
       /unexpected or missing/,
     );
@@ -394,7 +423,7 @@ describe("decision-client", () => {
             fetchImpl: async () =>
               jsonResponse(completionEnvelope(JSON.stringify(bad))),
           },
-          { features: FEATURES },
+          { features: FEATURES, pair: PAIR },
         ),
       /nonexistent or blocked/,
     );
@@ -415,7 +444,7 @@ describe("decision-client", () => {
               text: async () => `unauthorized key=${API_KEY}`,
             }),
           },
-          { features: FEATURES },
+          { features: FEATURES, pair: PAIR },
         ),
       (err) => {
         assert.equal(String(err.message).includes(API_KEY), false);
@@ -442,7 +471,7 @@ describe("decision-client", () => {
               });
             },
           },
-          { features: FEATURES },
+          { features: FEATURES, pair: PAIR },
         ),
       /AI request timed out after 20ms/,
     );
@@ -464,7 +493,7 @@ describe("decision-client", () => {
               },
             }),
           },
-          { features: FEATURES },
+          { features: FEATURES, pair: PAIR },
         ),
       /AI request timed out after 25ms/,
     );
@@ -485,7 +514,7 @@ describe("decision-client", () => {
               },
             }),
           },
-          { features: FEATURES },
+          { features: FEATURES, pair: PAIR },
         ),
       (err) => {
         assert.match(String(err.message), /body read failed/);
@@ -509,7 +538,7 @@ describe("decision-client", () => {
                 completionEnvelope(JSON.stringify(holdDecision()), "length"),
               ),
           },
-          { features: FEATURES },
+          { features: FEATURES, pair: PAIR },
         ),
       /not an acceptable terminal state/,
     );
