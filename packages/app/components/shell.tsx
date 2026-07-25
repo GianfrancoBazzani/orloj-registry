@@ -9,6 +9,9 @@ const ROUTE_KEYS: Record<string, string> = {
   "": "home",
   explore: "explore",
   register: "register",
+  // Public, like explore — deliberately NOT in the sign-in gate below, since the
+  // sentiment read needs no account.
+  sentiment: "sentiment",
   profile: "profile",
   docs: "docs",
 };

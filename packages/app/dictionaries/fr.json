@@ -2,6 +2,7 @@
   "nav": {
     "explore": "Explorer",
     "register": "Enregistrer",
+    "sentiment": "Sentiment du Marché",
     "docs": "Documentation",
     "signIn": "Se connecter",
     "signOut": "Se déconnecter"

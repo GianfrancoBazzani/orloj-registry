@@ -2,6 +2,7 @@
   "nav": {
     "explore": "Explore",
     "register": "Register",
+    "sentiment": "Market Sentiment",
     "docs": "Docs",
     "signIn": "Sign in",
     "signOut": "Sign out"

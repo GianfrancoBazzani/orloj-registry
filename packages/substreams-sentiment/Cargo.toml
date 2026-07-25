@@ -1,0 +1,35 @@
+# Standalone Substreams crate — compiled to wasm32-unknown-unknown, NOT part of the
+# registry's Cargo build. `[workspace]` is empty on purpose: it declares this directory
+# its own workspace root so `cargo build` here never walks up into packages/registry.
+[workspace]
+
+[package]
+name = "substreams_sentiment"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+substreams = "0.7"
+substreams-ethereum = "0.11"
+substreams-database-change = "4"
+prost = "0.13"
+prost-types = "0.13"
+hex = "0.4"
+hex-literal = "0.4"
+# Required by the Abigen-generated bindings in src/abi/ — they call ethabi::decode
+# directly, so it must be a DIRECT dependency even though we never name it ourselves.
+ethabi = "18"
+# num-bigint/num-traits are deliberately absent: they are only needed for sqrtPriceX96
+# maths, and we compute no prices. substreams::scalar::BigInt covers everything here.
+
+[build-dependencies]
+substreams-ethereum = "0.11"
+prost-build = "0.13"
+
+[profile.release]
+lto = true
+opt-level = "s"
+strip = "debuginfo"

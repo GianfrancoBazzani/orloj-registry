@@ -1,0 +1,71 @@
+specVersion: v0.1.0
+
+package:
+  name: substreams_sentiment
+  version: v0.1.0
+  description: |
+    Onchain market sentiment source data. Decodes Uniswap V3 Swap events from the
+    dominant WETH/USDC (0.05%) and WBTC/USDC (0.30%) mainnet pools, labels each swap
+    BUY or SELL from the sign of its USDC leg, and sinks one row per swap to Postgres.
+    Aggregation is done in SQL downstream, not here — see README.md.
+
+imports:
+  # Only the DatabaseChanges protodefs. Do NOT also import substreams-sink-sql
+  # protodefs: both define sf.substreams.sink.sql.v1.Service, and the CLI already
+  # resolves that type for the `sink:` block below. Importing both fails at run time
+  # with: proto: file "sf/substreams/sink/sql/v1/deprecated.proto" has a name conflict
+  # over sf.substreams.sink.sql.v1.Service
+  database: https://github.com/streamingfast/substreams-sink-database-changes/releases/download/v4.0.0/substreams-sink-database-changes-v4.0.0.spkg
+
+protobuf:
+  files:
+    - sentiment.proto
+  importPaths:
+    - ./proto
+  excludePaths:
+    - sf/substreams
+    - google
+
+binaries:
+  default:
+    type: wasm/rust-v1
+    file: ./target/wasm32-unknown-unknown/release/substreams_sentiment.wasm
+
+network: mainnet
+
+modules:
+  # Both modules are `kind: map` with NO store. That is the load-bearing design choice:
+  # a store would force backfill from initialBlock ("Stores always need to be backfilled
+  # from their initial block to be usable"), so this package can start near chain head
+  # and stream immediately.
+  - name: map_swaps
+    kind: map
+    # Start near head, NOT at the pool's deployment block. Override at run time with
+    # `-s`; `-s -1000` resolves relative to head server-side.
+    initialBlock: 21000000
+    inputs:
+      - source: sf.ethereum.type.v2.Block
+    output:
+      type: proto:market.sentiment.v1.Swaps
+    doc: |
+      Decoded Uniswap V3 swaps for the two tracked pools, each labelled BUY/SELL with
+      an absolute USDC notional. The buy/sell decision is made here because this is
+      where per-pool token orientation is a known constant.
+
+  - name: db_out
+    kind: map
+    initialBlock: 21000000
+    inputs:
+      - map: map_swaps
+    output:
+      type: proto:sf.substreams.sink.database.v1.DatabaseChanges
+    doc: |
+      Rows for the `swap` table, keyed (tx_hash, log_index) to match the schema's
+      PRIMARY KEY so at-least-once cursor replay cannot double-count.
+
+sink:
+  module: db_out
+  type: sf.substreams.sink.sql.v1.Service
+  config:
+    schema: ./schema.sql
+    engine: postgres

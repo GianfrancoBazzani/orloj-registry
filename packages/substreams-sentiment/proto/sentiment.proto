@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package market.sentiment.v1;
+
+// One Uniswap V3 swap, already reduced to the fields the sentiment model needs.
+//
+// The BUY/SELL decision is made HERE, in the module, because that is where the
+// per-pool token orientation is a known constant. Downstream (SQL, MCP, UI) never
+// re-derives it and therefore cannot get it wrong.
+message Swap {
+  // Pool that emitted the event, 0x-prefixed lowercase hex.
+  string pool = 1;
+  // Human label, e.g. "WETH/USDC". Resolved from `pool` at map time.
+  string pair = 2;
+
+  uint64 block_number = 3;
+  // Kept for reorg reasoning and as part of a natural idempotency key.
+  string block_hash = 4;
+  // Unix seconds, from the block header.
+  uint64 timestamp = 5;
+
+  string tx_hash = 6;
+  // u32 in substreams_ethereum's Log; keep the widths aligned.
+  uint32 log_index = 7;
+
+  // NOTE: `sender` is the address that CALLED the pool — nearly always a router or
+  // settlement contract (UniversalRouter, 1inch, CowSwap), NOT the end trader.
+  // Anything counting "unique participants" from this is computing a lower bound.
+  string sender = 8;
+  string recipient = 9;
+
+  // Raw signed amounts as decimal strings. int256 does not fit any protobuf integer
+  // type; parsing these into i64 would silently truncate. Strings preserve them
+  // exactly and land in Postgres NUMERIC.
+  string amount0 = 10;
+  string amount1 = 11;
+
+  // "BUY" or "SELL" — of the non-USDC asset, from the trader's perspective.
+  string side = 12;
+  // Absolute USDC value of the swap, 6 decimals applied. Direction lives in `side`.
+  string usdc_notional = 13;
+}
+
+message Swaps {
+  repeated Swap swaps = 1;
+}
