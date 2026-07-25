@@ -11,12 +11,22 @@ const CHAIN_NAMES: Record<number, string> = {
   43114: "Avalanche",
 };
 
+// Chain-agnostic MCPs (e.g. uniswap) target a chain per tool call rather than being bound to
+// one, so the registry manifest reports `chainId: null` for them. They get their own chain
+// label instead of a numeric network — matching how the filter rail treats it as one more
+// selectable chain.
+const MULTICHAIN = "Multichain";
+
+// chainId 0 is the registry's own sentinel for the chain-agnostic row (see
+// DbPool::upsert_uniswap_entry), so it stands in for "no single chain" on our side too.
+const MULTICHAIN_ID = 0;
+
 const COLORS = ["verdigris", "brass", "wine", "blue"] as const;
 
 interface RegistryMcp {
   name: string;
   url: string;
-  chainId: number;
+  chainId: number | null;
   address: string | false;
   implementation: string | null | false;
   contractName: string;
@@ -27,14 +37,20 @@ interface RegistryMcp {
   decimals?: number;
 }
 
+function chainLabel(chainId: number | null): string {
+  if (chainId === null || chainId === MULTICHAIN_ID) return MULTICHAIN;
+  return CHAIN_NAMES[chainId] ?? `Chain ${chainId}`;
+}
+
 function mapToMcp(item: RegistryMcp, registryUrl: string): Mcp {
+  const chainId = item.chainId ?? MULTICHAIN_ID;
   return {
     id: item.name,
     name: item.contractName,
     author: typeof item.address === "string" ? item.address : item.name,
     summary: "",
-    chain: CHAIN_NAMES[item.chainId] ?? `Chain ${item.chainId}`,
-    chainId: item.chainId,
+    chain: chainLabel(item.chainId),
+    chainId,
     contract: typeof item.address === "string" ? item.address : "",
     mcpUrl: `${registryUrl}${item.url}`,
     tags: item.nativeToken ? ["Native Token"] : [],
@@ -44,7 +60,7 @@ function mapToMcp(item: RegistryMcp, registryUrl: string): Mcp {
     audits: [],
     verified: false,
     stars: 0,
-    color: COLORS[item.chainId % COLORS.length],
+    color: COLORS[chainId % COLORS.length],
   };
 }
 

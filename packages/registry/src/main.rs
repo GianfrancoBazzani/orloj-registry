@@ -23,6 +23,8 @@ async fn main() -> anyhow::Result<()> {
     eprintln!("[db] connecting to {db_url}");
     let db = Arc::new(DbPool::connect(&db_url).await?);
     db.ensure_tables().await?;
+    db.upsert_uniswap_entry().await?;
+    seed_networks(&db).await?;
 
     let registry = new_registry();
     registry.spawn_eviction_task();
@@ -33,5 +35,18 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
     eprintln!("[registry] listening on http://0.0.0.0:{port}");
     axum::serve(listener, app).await?;
+    Ok(())
+}
+
+// TEMPORARY — seeds the `networks` table (used by uniswap_mcp's `swap` to resolve an rpc_url
+// when the caller omits one) with Ethereum Mainnet + Sepolia. Fill in real rpc_url values
+// below, then delete this function and its call site in main() once done.
+//
+// This is for the uniswap mcp for easier use for agents to make requests
+async fn seed_networks(db: &DbPool) -> anyhow::Result<()> {
+    db.upsert_network(1, "Ethereum Mainnet", "https://rpc.flashbots.net", "ETH")
+        .await?;
+    db.upsert_network(11155111, "Sepolia", "https://eth-sepolia-testnet.api.pocket.network", "ETH")
+        .await?;
     Ok(())
 }

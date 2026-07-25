@@ -27,6 +27,7 @@ use crate::{
     mcps::{
         evm_mcp::{EvmMcpServer, build_tools},
         native_mcp::{NativeMcpServer, build_native_tools, chain_info},
+        uniswap_mcp::UniswapMcpServer,
     },
     registry::{McpEntry, McpMeta, Registry},
     sourcify::fetch_contract,
@@ -92,6 +93,20 @@ async fn list_mcp(State(state): State<SharedState>) -> Response {
     let items: Vec<Value> = rows
         .into_iter()
         .map(|row: ContractMetaRow| {
+            // uniswap-mcp is chain-agnostic — sentinel row (chain_id=0, address='uniswap',
+            // see DbPool::upsert_uniswap_entry) maps to its own fixed route, not the usual
+            // {chain_id}_{address} naming, and has no single chainId to report.
+            if row.address == "uniswap" {
+                return json!({
+                    "name": "uniswap",
+                    "chainId": Value::Null,
+                    "address": row.address,
+                    "implementation": row.implementation,
+                    "contractName": row.contract_name,
+                    "url": "/interface/uniswap/mcp",
+                });
+            }
+
             let name = if row.address == "native" {
                 native_entry_name(row.chain_id)
             } else {
@@ -461,6 +476,46 @@ async fn handle_mcp(
     Json(result).into_response()
 }
 
+/// POST /interface/uniswap/mcp
+/// Requires `Authorization: Bearer <token>`.
+///
+/// Fixed route for the chain-agnostic Uniswap MCP — not registry-backed. Unlike EVM contract
+/// and native-token MCPs, it has no ABI/address to fetch or cache (chainId is a per-tool-call
+/// argument instead, and rpc_url is resolved from the `networks` table by chainId — see
+/// mcps/uniswap_mcp.rs), so there's nothing to look up or lazily build: it's always available,
+/// built fresh per request from just the authenticated agent_id.
+async fn handle_uniswap_mcp(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let agent_id = match require_bearer(&headers, &state.db).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+
+    let body_json: Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("invalid JSON: {e}") })),
+            )
+                .into_response();
+        }
+    };
+
+    let result = UniswapMcpServer::new(Some(agent_id), Some(Arc::clone(&state.db)))
+        .dispatch(body_json)
+        .await;
+
+    if result.is_null() {
+        return StatusCode::ACCEPTED.into_response();
+    }
+
+    Json(result).into_response()
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -635,6 +690,7 @@ pub fn router(state: SharedState) -> Router {
         .route("/mcp", get(list_mcp))
         .route("/register", post(register))
         .route("/register-native", post(register_native))
+        .route("/interface/uniswap/mcp", post(handle_uniswap_mcp))
         .route("/interface/:name/mcp", post(handle_mcp))
         .layer(CorsLayer::permissive())
         .with_state(state)
