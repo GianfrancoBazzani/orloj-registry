@@ -3,14 +3,17 @@
  * Phase 1: HOLD → no write; REDUCE_LIQUIDITY → decrease_v3_position only.
  * Never plans claim immediately before/after decrease.
  * Tool name and argument keys are hardcoded — never taken from the model.
+ * chainId is pinned to Sepolia (`11155111`).
  */
+
+import { DEFAULT_CHAIN_ID, requireSepoliaChainId } from "./config.mjs";
 
 export const DECREASE_V3_POSITION_TOOL = "decrease_v3_position";
 
 /**
  * @typedef {object} ActionPlanContext
  * @property {string} nftTokenId validated Orloj/config NFT id (not AI-supplied)
- * @property {string} chainId Sepolia chain id from validated position/config
+ * @property {string} chainId must be Sepolia DEFAULT_CHAIN_ID
  */
 
 /**
@@ -46,9 +49,8 @@ export function planAction(decision, context) {
       "planAction context.nftTokenId must be an unsigned decimal integer string",
     );
   }
-  if (typeof context.chainId !== "string" || context.chainId.trim() === "") {
-    throw new Error("planAction context.chainId must be a non-empty string");
-  }
+  // Pin to Sepolia — reject mainnet "1" and any other chain.
+  requireSepoliaChainId(context.chainId);
 
   // Reject any attempt to pass AI-supplied tool routing through the decision.
   if (Object.hasOwn(decision, "toolName") || Object.hasOwn(decision, "mcpCall")) {
@@ -92,13 +94,14 @@ export function planAction(decision, context) {
         // Hardcoded tool — never from the model.
         toolName: DECREASE_V3_POSITION_TOOL,
         arguments: {
-          chainId: context.chainId,
+          chainId: DEFAULT_CHAIN_ID,
           nftTokenId: context.nftTokenId,
           liquidityPercentageToDecrease: pct,
         },
       },
       notes: [
         "Maps only to decrease_v3_position with validated NFT id and percentage",
+        `chainId pinned to Sepolia ${DEFAULT_CHAIN_ID}`,
         "decrease_v3_position also collects accrued fees; returned amounts are principal-only",
         "Do not plan claim_v3_fees immediately before or after decrease",
       ],

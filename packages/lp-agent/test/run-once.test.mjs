@@ -209,7 +209,7 @@ describe("run-once pipeline", () => {
     assert.equal(trace.execution.proposedCall.toolName, "decrease_v3_position");
   });
 
-  it("execute mode marks proposed write pending (no real MCP write)", async () => {
+  it("execute mode marks REDUCE proposed write pending (no real MCP write)", async () => {
     const trace = await runOnce({
       config: { ...CONFIG, agentMode: "execute" },
       getPosition: async () => POSITION,
@@ -218,8 +218,25 @@ describe("run-once pipeline", () => {
       requestDecisionFn: async () => reduceDecision(),
     });
     assert.equal(trace.execution.status, "pending");
+    assert.equal(trace.execution.kind, "proposed_write");
     assert.match(trace.execution.message, /not enabled/);
     assert.equal(trace.execution.wouldCall.toolName, "decrease_v3_position");
+  });
+
+  it("execute mode HOLD reports held/no_write — never pending", async () => {
+    const trace = await runOnce({
+      config: { ...CONFIG, agentMode: "execute" },
+      getPosition: async () => POSITION,
+      fetchMarket: async () => MARKET,
+      extractFeaturesFn: () => FEATURES,
+      requestDecisionFn: async () => holdDecision(),
+    });
+    assert.equal(trace.execution.status, "held");
+    assert.equal(trace.execution.kind, "no_write");
+    assert.equal(trace.execution.wouldCall, null);
+    assert.equal(trace.execution.proposedCall, null);
+    assert.notEqual(trace.execution.status, "pending");
+    assert.match(trace.execution.message, /nothing pending/i);
   });
 
   it("fails closed when pairContextFromMarket is null", async () => {

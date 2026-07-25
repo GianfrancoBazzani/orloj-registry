@@ -115,16 +115,42 @@ describe("action-planner", () => {
     );
   });
 
-  it("uses context NFT id, not any AI-supplied id", () => {
+  it("rejects non-Sepolia chainId including mainnet 1", () => {
+    assert.throws(
+      () =>
+        planAction(
+          {
+            action: "REDUCE_LIQUIDITY",
+            liquidityPercentageToDecrease: 10,
+            summary: "x",
+          },
+          { nftTokenId: "42", chainId: "1" },
+        ),
+      /11155111/,
+    );
+    assert.throws(
+      () =>
+        planAction(
+          {
+            action: "HOLD",
+            liquidityPercentageToDecrease: null,
+            summary: "x",
+          },
+          { nftTokenId: "42", chainId: "1" },
+        ),
+      /11155111/,
+    );
+  });
+
+  it("pins REDUCE mcpCall.arguments.chainId to Sepolia", () => {
     const plan = planAction(
       {
         action: "REDUCE_LIQUIDITY",
-        liquidityPercentageToDecrease: 50,
+        liquidityPercentageToDecrease: 15,
         summary: "x",
-        nftTokenId: "999",
       },
-      { nftTokenId: "7", chainId: "11155111" },
+      { nftTokenId: "42", chainId: "11155111" },
     );
-    assert.equal(plan.mcpCall.arguments.nftTokenId, "7");
+    assert.equal(plan.mcpCall.arguments.chainId, "11155111");
   });
 });

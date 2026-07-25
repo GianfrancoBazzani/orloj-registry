@@ -10,7 +10,7 @@
  */
 
 import { pathToFileURL } from "node:url";
-import { loadConfig, DEFAULT_CHAIN_ID } from "./config.mjs";
+import { loadConfig } from "./config.mjs";
 import { getV3Position } from "./orloj-mcp-client.mjs";
 import { fetchPoolMarketContext } from "./graph-client.mjs";
 import { extractFeatures } from "./features.mjs";
@@ -88,25 +88,43 @@ export async function runOnce(deps = {}) {
 
   const plan = planActionFn(decision, {
     nftTokenId: position.nftTokenId,
-    chainId: position.chainId ?? config.chainId ?? DEFAULT_CHAIN_ID,
+    chainId: position.chainId ?? config.chainId,
   });
 
   /** @type {Record<string, unknown>} */
-  const execution =
-    config.agentMode === "execute"
-      ? {
-          status: "pending",
-          mode: "execute",
-          message:
-            "Phase 1: proposed MCP call is pending — real on-chain writes are not enabled yet",
-          wouldCall: plan.mcpCall,
-        }
-      : {
-          status: "observe",
-          mode: "observe",
-          message: "Dry-run complete — no MCP write performed",
-          proposedCall: plan.mcpCall,
-        };
+  let execution;
+  if (plan.kind === "no_write" || plan.mcpCall === null) {
+    // HOLD: never "pending" — even in execute mode.
+    execution = {
+      status: config.agentMode === "execute" ? "held" : "observe",
+      kind: "no_write",
+      mode: config.agentMode,
+      message:
+        config.agentMode === "execute"
+          ? "HOLD — no write planned; nothing pending"
+          : "Dry-run complete — HOLD; no MCP write performed",
+      proposedCall: null,
+      wouldCall: null,
+    };
+  } else if (config.agentMode === "execute") {
+    // Only a non-null REDUCE MCP proposal is pending.
+    execution = {
+      status: "pending",
+      kind: "proposed_write",
+      mode: "execute",
+      message:
+        "Phase 1: proposed MCP call is pending — real on-chain writes are not enabled yet",
+      wouldCall: plan.mcpCall,
+    };
+  } else {
+    execution = {
+      status: "observe",
+      kind: "proposed_write",
+      mode: "observe",
+      message: "Dry-run complete — no MCP write performed",
+      proposedCall: plan.mcpCall,
+    };
+  }
 
   const trace = {
     status: "ok",

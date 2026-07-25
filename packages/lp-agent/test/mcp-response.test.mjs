@@ -366,4 +366,116 @@ describe("mcp-response", () => {
     assert.equal(calls[1].params.name, "decrease_v3_position");
     assert.equal(calls[1].params.arguments.liquidityPercentageToDecrease, 25);
   });
+
+  it("fail closed: timeout during fetch", async () => {
+    await assert.rejects(
+      () =>
+        callMcpTool(
+          {
+            url: "http://mcp.test/mcp",
+            apiKey: "mcp_timeout_key",
+            timeoutMs: 20,
+            fetchImpl: async (_url, init) => {
+              await new Promise((_, reject) => {
+                init.signal.addEventListener("abort", () => {
+                  const err = new Error("The operation was aborted");
+                  err.name = "AbortError";
+                  reject(err);
+                });
+              });
+            },
+          },
+          "get_v3_position",
+          { chainId: "11155111", nftTokenId: "1" },
+        ),
+      /MCP request timed out after 20ms/,
+    );
+  });
+
+  it("fail closed: timeout remains active through body read", async () => {
+    await assert.rejects(
+      () =>
+        callMcpTool(
+          {
+            url: "http://mcp.test/mcp",
+            apiKey: "mcp_body_timeout_key",
+            timeoutMs: 25,
+            fetchImpl: async () => ({
+              ok: true,
+              status: 200,
+              text: async () => {
+                await new Promise((resolve) => setTimeout(resolve, 200));
+                return "{}";
+              },
+            }),
+          },
+          "get_v3_position",
+          { chainId: "11155111", nftTokenId: "1" },
+        ),
+      /MCP request timed out after 25ms/,
+    );
+  });
+
+  it("fail closed: body-read errors are redacted", async () => {
+    const apiKey = "mcp_body_read_secret_xyz";
+    await assert.rejects(
+      () =>
+        callMcpTool(
+          {
+            url: "http://mcp.test/mcp",
+            apiKey,
+            timeoutMs: 5_000,
+            fetchImpl: async () => ({
+              ok: true,
+              status: 200,
+              text: async () => {
+                throw new Error(`socket fail Bearer ${apiKey}`);
+              },
+            }),
+          },
+          "get_v3_position",
+          { chainId: "11155111", nftTokenId: "1" },
+        ),
+      (err) => {
+        assert.match(String(err.message), /MCP HTTP body read failed/);
+        assert.equal(String(err.message).includes(apiKey), false);
+        return true;
+      },
+    );
+  });
+
+  it("rejects invalid timeoutMs", async () => {
+    await assert.rejects(
+      () =>
+        callMcpTool(
+          {
+            url: "http://mcp.test/mcp",
+            apiKey: "k",
+            timeoutMs: 0,
+            fetchImpl: async () => {
+              throw new Error("should not fetch");
+            },
+          },
+          "get_v3_position",
+          { chainId: "11155111", nftTokenId: "1" },
+        ),
+      /timeoutMs must be a positive finite number/,
+    );
+    await assert.rejects(
+      () =>
+        callMcpTool(
+          {
+            url: "http://mcp.test/mcp",
+            apiKey: "k",
+            timeoutMs: -5,
+            fetchImpl: async () => {
+              throw new Error("should not fetch");
+            },
+          },
+          "get_v3_position",
+          { chainId: "11155111", nftTokenId: "1" },
+        ),
+      /timeoutMs must be a positive finite number/,
+    );
+  });
 });
