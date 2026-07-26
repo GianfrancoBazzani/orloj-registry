@@ -1,0 +1,14 @@
+{
+  "name": "substreams-sentiment",
+  "private": true,
+  "description": "Onchain market sentiment Substreams module — Docker helpers",
+  "scripts": {
+    "start": "docker compose -f ../../docker-compose.yml up -d && docker compose -f ../../docker-compose.yml ps",
+    "stop": "docker compose -f ../../docker-compose.yml down",
+    "reset": "docker compose -f ../../docker-compose.yml down -v && docker compose -f ../../docker-compose.yml up -d",
+    "logs": "docker compose -f ../../docker-compose.yml logs -f postgres",
+    "status": "docker compose -f ../../docker-compose.yml ps",
+    "build": "./setup.sh --docker",
+    "build:native": "./setup.sh"
+  }
+}
