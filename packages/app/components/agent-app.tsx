@@ -13,8 +13,15 @@ import { useT } from "./i18n-context";
 import { InstallAppModal, type InstallOutcome } from "./install-app-modal";
 import { Btn } from "./ornaments";
 
+interface PromptChoice {
+  outcome: "accepted" | "dismissed";
+}
+
 interface BeforeInstallPromptEvent extends Event {
-  prompt: () => Promise<{ outcome: "accepted" | "dismissed" }>;
+  // Chrome once resolved `prompt()` with nothing and carried the answer on `userChoice`; it now
+  // resolves with the choice itself. Both shapes are still in the wild, so accept either.
+  prompt: () => Promise<PromptChoice | undefined>;
+  userChoice?: Promise<PromptChoice>;
 }
 
 // How long to wait for the browser to re-offer a prompt after the manifest changes. Chrome
@@ -94,9 +101,7 @@ export function AgentAppBar({
   const installed = useMediaQuery(STANDALONE) || justInstalled;
   const mobile = useMediaQuery(MOBILE);
   const promptRef = useRef<BeforeInstallPromptEvent | null>(null);
-  const waiterRef = useRef<((event: BeforeInstallPromptEvent) => void) | null>(
-    null,
-  );
+  const waiterRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     const beforeInstall = (event: Event) => {
@@ -105,7 +110,7 @@ export function AgentAppBar({
       setCanPrompt(true);
       const waiter = waiterRef.current;
       waiterRef.current = null;
-      waiter?.(event as BeforeInstallPromptEvent);
+      waiter?.();
     };
     const onInstalled = () => {
       promptRef.current = null;
@@ -124,32 +129,41 @@ export function AgentAppBar({
   // A browser parses the manifest once per page load, so installing straight after a branding
   // save would carry the previous name and icon. Changing the link's href makes it re-fetch the
   // manifest and re-run its installability check, which re-fires `beforeinstallprompt` — this
-  // time describing the app the owner just saved.
-  const install = async (): Promise<InstallOutcome> => {
+  // time describing the app the owner just saved. Resolves to whether a prompt is in hand;
+  // browsers that never offer one (Safari) leave us with nothing to raise.
+  const refreshManifest = async (): Promise<boolean> => {
     setManifestVersion((version) => version + 1);
-    const refreshed = await new Promise<BeforeInstallPromptEvent | null>(
-      (resolve) => {
-        waiterRef.current = resolve;
-        window.setTimeout(() => {
-          if (waiterRef.current !== resolve) return;
-          waiterRef.current = null;
-          resolve(null);
-        }, PROMPT_REFRESH_MS);
-      },
-    );
-    // Falling back to the pre-save event keeps the install working on browsers that do not
-    // re-offer one; it just describes the app as it was a moment ago.
-    const event = refreshed ?? promptRef.current;
-    if (!event) return "unavailable";
+    await new Promise<void>((resolve) => {
+      waiterRef.current = resolve;
+      window.setTimeout(() => {
+        if (waiterRef.current !== resolve) return;
+        waiterRef.current = null;
+        resolve();
+      }, PROMPT_REFRESH_MS);
+    });
+    return promptRef.current !== null;
+  };
+
+  // Runs on the tap that asks to install, and must reach `prompt()` before yielding: a browser
+  // only raises the install dialog while the page still holds the user activation from that
+  // gesture, and a save round-trip or a manifest re-read outlives it. Everything slow belongs
+  // to `refreshManifest`, on the tap before this one.
+  const promptInstall = (): Promise<InstallOutcome> => {
+    const event = promptRef.current;
+    if (!event) return Promise.resolve<InstallOutcome>("unavailable");
+    // Single-use: a browser rejects a second `prompt()` on the same event.
     promptRef.current = null;
-    setCanPrompt(false);
+    let pending: Promise<PromptChoice | undefined> | undefined;
     try {
-      const { outcome } = await event.prompt();
-      return outcome;
+      pending = event.prompt();
     } catch {
-      // A prompt already consumed, or no longer installable.
-      return "unavailable";
+      return Promise.resolve<InstallOutcome>("unavailable");
     }
+    setCanPrompt(false);
+    return Promise.resolve(pending)
+      .then((choice) => choice ?? event.userChoice)
+      .then<InstallOutcome>((choice) => choice?.outcome ?? "unavailable")
+      .catch<InstallOutcome>(() => "unavailable");
   };
 
   const manifestHref =
@@ -218,7 +232,8 @@ export function AgentAppBar({
           hasCustomIcon={hasCustomIcon}
           canPrompt={canPrompt}
           onCloseAction={() => setOpen(false)}
-          onInstallAction={install}
+          onRefreshManifestAction={refreshManifest}
+          onInstallAction={promptInstall}
           onSavedAction={() => setIconVersion((version) => version + 1)}
         />
       )}

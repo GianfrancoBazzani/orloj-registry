@@ -167,6 +167,7 @@
     "saveAndInstall": "Save & install",
     "saving": "Saving…",
     "installing": "Installing…",
+    "installReady": "Saved. Tap Install app to add it to your home screen.",
     "saveFailed": "Could not save branding",
     "installFallback": "Your browser installs from its own menu: choose Install app, or Share → Add to Home Screen."
   },

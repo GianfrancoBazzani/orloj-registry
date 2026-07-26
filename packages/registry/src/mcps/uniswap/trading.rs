@@ -563,6 +563,12 @@ impl UniswapMcpServer {
             .await
             .context("signing/broadcasting swap transaction failed")?;
 
+        // Wait for confirmation before returning — callers (e.g. LP rebalance create)
+        // must not proceed until output tokens are settled (or the revert is observed).
+        wait_for_receipt(&provider, hash, "swap")
+            .await
+            .context("swap transaction did not confirm")?;
+
         Ok(json!({ "hash": format!("{hash:#x}") }).to_string())
     }
 }

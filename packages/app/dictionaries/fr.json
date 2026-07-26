@@ -167,6 +167,7 @@
     "saveAndInstall": "Enregistrer et installer",
     "saving": "Enregistrement…",
     "installing": "Installation…",
+    "installReady": "Enregistré. Touchez Installer l’app pour l’ajouter à votre écran d’accueil.",
     "saveFailed": "Impossible d’enregistrer l’identité",
     "installFallback": "Votre navigateur installe depuis son propre menu : choisissez Installer l’app ou Partager → Ajouter à l’écran d’accueil."
   },

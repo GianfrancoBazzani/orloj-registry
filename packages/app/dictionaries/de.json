@@ -167,6 +167,7 @@
     "saveAndInstall": "Speichern & installieren",
     "saving": "Wird gespeichert…",
     "installing": "Wird installiert…",
+    "installReady": "Gespeichert. Tippe auf App installieren, um sie zum Startbildschirm hinzuzufügen.",
     "saveFailed": "Identität konnte nicht gespeichert werden",
     "installFallback": "Ihr Browser installiert über sein eigenes Menü: wählen Sie App installieren oder Teilen → Zum Startbildschirm."
   },

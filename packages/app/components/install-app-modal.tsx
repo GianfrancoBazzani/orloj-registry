@@ -16,6 +16,7 @@ export function InstallAppModal({
   hasCustomIcon,
   canPrompt,
   onCloseAction,
+  onRefreshManifestAction,
   onInstallAction,
   onSavedAction,
 }: {
@@ -25,7 +26,12 @@ export function InstallAppModal({
   hasCustomIcon: boolean;
   canPrompt: boolean;
   onCloseAction: () => void;
-  /** Refreshes the manifest, then raises the browser's install prompt against it. */
+  /** Re-reads the manifest after a save; resolves to whether an install prompt is in hand. */
+  onRefreshManifestAction: () => Promise<boolean>;
+  /**
+   * Raises the browser's install dialog. Must be reached without awaiting anything first — the
+   * dialog only opens while the page still holds the user activation from the tap.
+   */
   onInstallAction: () => Promise<InstallOutcome>;
   /** Branding was written; anything rendering the icon by URL has to re-fetch it. */
   onSavedAction?: () => void;
@@ -42,6 +48,11 @@ export function InstallAppModal({
   const [error, setError] = useState<string | null>(null);
   // The browser-menu route is only worth explaining once we know no prompt is coming.
   const [showFallback, setShowFallback] = useState(!canPrompt);
+  // What the server holds, tracked locally so a save flips the button to "install" straight
+  // away rather than waiting on `router.refresh()` to feed the props back down.
+  const [savedName, setSavedName] = useState(savedAppName ?? "");
+  const [savedHasIcon, setSavedHasIcon] = useState(hasCustomIcon);
+  const [armed, setArmed] = useState(false);
 
   useEffect(
     () => () => {
@@ -50,9 +61,13 @@ export function InstallAppModal({
     [],
   );
 
-  const savedIcon = hasCustomIcon && !clearIcon;
+  const savedIcon = savedHasIcon && !clearIcon;
   const shownIcon =
     previewUrl ?? (savedIcon ? `/api/agents/${agentId}/icon` : "/logo.png");
+  // Branding the manifest does not describe yet. Nothing pending means the app on the server is
+  // already the app being installed, so the tap can go straight to the dialog.
+  const dirty =
+    appName.trim() !== savedName || icon !== null || (clearIcon && savedHasIcon);
 
   // The blob URL is minted here rather than in an effect so the preview swaps in the same
   // render as the file, with the ref keeping the previous one alive only long enough to revoke.
@@ -102,34 +117,66 @@ export function InstallAppModal({
     }
   };
 
-  const saveAndInstall = async () => {
-    if (busy !== "idle") return;
+  // Saving is a network round-trip and re-reading the manifest takes a beat more; both outlive
+  // the user activation the install dialog needs. So this tap only gets the app ready, and the
+  // next one — see `install` — raises the dialog while its own gesture is still live.
+  const saveBranding = async () => {
     setBusy("saving");
     setError(null);
     if (!(await save())) {
       setBusy("idle");
       return;
     }
+    setSavedName(appName.trim());
+    setSavedHasIcon(icon !== null || (savedHasIcon && !clearIcon));
+    setIcon(null);
+    setClearIcon(false);
+    if (iconInput.current) iconInput.current.value = "";
     // Pulls the stored name and icon back down, so reopening this modal shows what was saved
     // even if the install itself is declined.
     router.refresh();
     onSavedAction?.();
 
-    setBusy("installing");
-    const outcome = await onInstallAction();
-    if (outcome === "accepted") {
-      onCloseAction();
-      return;
-    }
+    const ready = await onRefreshManifestAction();
     setBusy("idle");
-    if (outcome === "unavailable") setShowFallback(true);
+    setArmed(ready);
+    if (!ready) setShowFallback(true);
   };
 
-  const label = {
-    idle: t("agentApp.saveAndInstall"),
-    saving: t("agentApp.saving"),
-    installing: t("agentApp.installing"),
-  }[busy];
+  // Deliberately not async: `onInstallAction` has to be called before this handler yields, or
+  // the browser has already dropped the gesture that lets it open the dialog.
+  const install = () => {
+    const outcomes = onInstallAction();
+    setBusy("installing");
+    setError(null);
+    void outcomes.then((outcome) => {
+      if (outcome === "accepted") {
+        onCloseAction();
+        return;
+      }
+      setBusy("idle");
+      setArmed(false);
+      if (outcome === "unavailable") setShowFallback(true);
+    });
+  };
+
+  const primary = () => {
+    if (busy !== "idle") return;
+    if (dirty) {
+      void saveBranding();
+      return;
+    }
+    install();
+  };
+
+  const label =
+    busy === "saving"
+      ? t("agentApp.saving")
+      : busy === "installing"
+        ? t("agentApp.installing")
+        : dirty
+          ? t("agentApp.saveAndInstall")
+          : t("agentApp.install");
 
   return (
     <div
@@ -297,6 +344,18 @@ export function InstallAppModal({
               {error}
             </p>
           )}
+          {armed && !dirty && busy === "idle" && (
+            <p
+              style={{
+                marginTop: 14,
+                fontSize: 11,
+                lineHeight: 1.4,
+                color: "var(--brass-deep)",
+              }}
+            >
+              {t("agentApp.installReady")}
+            </p>
+          )}
           {showFallback && (
             <p
               style={{
@@ -321,7 +380,7 @@ export function InstallAppModal({
             <Btn kind="ghost" disabled={busy !== "idle"} onClick={onCloseAction}>
               {t("agentApp.cancel")}
             </Btn>
-            <Btn kind="brass" disabled={busy !== "idle"} onClick={saveAndInstall}>
+            <Btn kind="brass" disabled={busy !== "idle"} onClick={primary}>
               {label}
             </Btn>
           </div>
