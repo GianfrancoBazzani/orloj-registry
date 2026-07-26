@@ -9,8 +9,18 @@ const nextConfig: NextConfig = {
   // trace. This is the only knob needed: Next mirrors it into `turbopack.root`, and setting
   // both is an error unless they are identical.
   outputFileTracingRoot: path.join(__dirname, "..", ".."),
-  // Workspace ESM package (@orloj/lp-agent) must be transpiled for the App Router.
-  transpilePackages: ["@orloj/lp-agent"],
+
+  // Both are repo-local packages shipping ESM/TypeScript source, so the App Router has to
+  // transpile them. Both are linked with `link:../<pkg>` rather than `workspace:^` — this
+  // package has its own pnpm-lock.yaml and its pnpm-workspace.yaml declares no `packages:`,
+  // so an install run from here cannot resolve the workspace protocol.
+  transpilePackages: ["@orloj/lp-agent", "@orloj/skills-marketplace"],
+
+  // The skills marketplace's 0G/ethers deps are CommonJS web3 libraries that must not be
+  // bundled. Naming different packages than transpilePackages, so the two do not conflict.
+  // They resolve from the monorepo root store via the symlink, which is also why
+  // outputFileTracingRoot above has to stay at the repo root.
+  serverExternalPackages: ["@0gfoundation/0g-storage-ts-sdk", "ethers"],
 };
 
 export default nextConfig;

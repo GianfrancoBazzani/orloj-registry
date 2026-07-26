@@ -285,6 +285,18 @@
     "errorRegistry": "注册表无法访问，因此无法列出任何 MCP。",
     "mcpsDropped": "该代理有 {n} 个 MCP 已不在注册表中，已从其工具中移除。",
     "mcpsAllGone": "该代理的 MCP 均已不在注册表中。请选择它应使用的 MCP 以继续。",
-    "mcpsDroppedDismiss": "知道了"
+    "mcpsDroppedDismiss": "知道了",
+    "skillsPanelToggle": "技能",
+    "skillsCount": "{n} 个技能",
+    "skillsFilterPlaceholder": "筛选技能",
+    "skillsLoading": "正在加载技能…",
+    "skillsCatalogEmpty": "没有可用技能 — 无法连接 0G Storage。",
+    "skillsDownloadNote": "已选 {n} 个 · 从 0G 下载 {size}",
+    "skillsProvenance": "{n} 个技能 · 索引 {root} · {network}",
+    "skillsPublishedBy": "发布者 {addr}",
+    "skillsIndexTx": "索引交易",
+    "skillsDropped": "{n} 个已选技能不再发布，已被移除。",
+    "errorZgUnreachable": "无法连接 0G Storage，因此无法列出技能。",
+    "errorSkillVerification": "某个技能未通过校验，未被安装。"
   }
 }

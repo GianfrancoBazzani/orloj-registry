@@ -1,4 +1,6 @@
 import { headers } from "next/headers";
+import { GatewayError } from "@orloj/skills-marketplace/gateway";
+import { SkillPlanError } from "@orloj/skills-marketplace/install-plan";
 import { auth } from "@/lib/auth";
 import { assertAgentOwner } from "@/lib/agent-ownership";
 import { NoActiveTokenError } from "@/lib/session/registry";
@@ -45,6 +47,30 @@ export const errorResponse = (err: unknown): Response => {
       },
       { status: 422 },
     );
+  }
+  // The index named something we refuse to write. 422 rather than 502: the fetch succeeded,
+  // so retrying is pointless — the published skill itself is the problem.
+  if (err instanceof SkillPlanError) {
+    return Response.json(
+      {
+        error: "Skill rejected by validation",
+        code: "verification_failed",
+        problems: err.problems,
+      },
+      { status: 422 },
+    );
+  }
+  if (err instanceof GatewayError) {
+    console.error("[session] 0G gateway", err);
+    return err.kind === "verification"
+      ? Response.json(
+          { error: "Skill failed verification", code: "verification_failed" },
+          { status: 422 },
+        )
+      : Response.json(
+          { error: "0G Storage unreachable", code: "zg_unreachable" },
+          { status: 502 },
+        );
   }
   if (err instanceof NoActiveTokenError) {
     return Response.json({ error: "Agent has no active API key" }, { status: 409 });

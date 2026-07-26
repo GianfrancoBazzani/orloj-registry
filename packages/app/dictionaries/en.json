@@ -285,6 +285,18 @@
     "errorRegistry": "The registry is unreachable, so no MCPs can be listed.",
     "mcpsDropped": "{n} of this agent's MCPs are no longer in the registry and were removed from its tools.",
     "mcpsAllGone": "None of this agent's MCPs are in the registry any more. Pick the ones it should use to carry on.",
-    "mcpsDroppedDismiss": "Got it"
+    "mcpsDroppedDismiss": "Got it",
+    "skillsPanelToggle": "Skills",
+    "skillsCount": "{n} skills",
+    "skillsFilterPlaceholder": "Filter skills",
+    "skillsLoading": "Loading skills…",
+    "skillsCatalogEmpty": "No skills available — 0G Storage is unreachable.",
+    "skillsDownloadNote": "{n} selected · {size} from 0G",
+    "skillsProvenance": "{n} skills · index {root} · {network}",
+    "skillsPublishedBy": "Published by {addr}",
+    "skillsIndexTx": "index tx",
+    "skillsDropped": "{n} selected skills are no longer published and were removed.",
+    "errorZgUnreachable": "0G Storage is unreachable, so no skills can be listed.",
+    "errorSkillVerification": "A skill failed verification and was not installed."
   }
 }

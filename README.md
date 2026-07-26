@@ -1,6 +1,6 @@
 # Orloj Registry
 
-> *Orloj* (Czech for "astronomical clock") — started at **ETHPrague Hackathon 2026**, extended at **ETH Global Lisboa 2026**.
+> *Orloj* (Czech for "astronomical clock") — a nod to Prague's iconic timepiece, built for **ETHPrague Hackathon 2026** and continued at **ETHGlobal Lisbon 2026**.
 
 Orloj exposes on-chain capabilities to AI agents as **MCP (Model Context Protocol) servers**. Sourcify-verified contracts become typed MCP tools; signing stays in a **pluggable KMS** (1Claw or SpaceComputer Orbitport). Agents use bearer tokens — they never hold keys, pick RPCs, or pay gas themselves.
 
@@ -8,29 +8,31 @@ At Lisboa we added a second layer: a **Graph-powered Uniswap V3 LP manager** tha
 
 ## Highlights
 
-- **Sourcify ABI → typed MCP server, dynamically generated.** Every function in a verified contract becomes an MCP tool (alloy `JsonAbi` / `DynSolValue`), including proxy ABIs via Sourcify `proxyResolution`.
-- **Hardware-rooted, pluggable KMS.** Orbitport (orbital HSM + SpaceTEE) or 1Claw (HSM + TEE). Same agent surface either way; keys never leave the enclave.
-- **Agents never hold a key.** Registry builds EIP-1559 txs, signs digests via KMS, broadcasts. Compromised host cannot forge beyond authorized digests.
-- **Per-agent bearer tokens.** `mcpk_live_*` keys, constant-time checked against Postgres; revocation is a row update.
-- **Hand-written Uniswap MCP (Sepolia LP + trading).** `quote` / `swap`, plus V3 liquidity tools (`list_v3_positions`, `get_v3_position`, ergonomic `create_v3_position`, `decrease_v3_position`, `claim_v3_fees`, pool reads).
-- **Graph LP Manager (`@orloj/lp-agent`).** Live Uniswap V3 subgraph evidence → deterministic features → specialized 0G inference (`HOLD` | `REDUCE_LIQUIDITY` | `REBALANCE`) → guarded Orloj Uniswap MCP plans, with stateful rebalance recovery.
+- **Sourcify ABI → typed MCP server, dynamically generated.** Every function in a verified contract becomes an MCP tool (alloy `JsonAbi` / `DynSolValue`), including proxy ABIs via Sourcify `proxyResolution`. Zero per-contract integration: the moment a contract is verified on Sourcify, it is callable by an agent.
+- **Hardware-rooted, pluggable KMS.** Orbitport (orbital HSM + SpaceTEE, `ETHEREUM` scheme for wallet signing and `TRANSIT` for envelope-encrypted secrets) or 1Claw (HSM + TEE intent signing). Both run through the same `signTransaction` path, so the agent surface is identical either way; keys never leave the enclave.
+- **Agents never hold a key.** Registry builds EIP-1559 txs with viem, signs digests via KMS, reassembles `(r, s, yParity)`, broadcasts. A compromised host cannot forge beyond the digests it is already authorized to request.
+- **Per-agent bearer tokens with grant-based authorization.** `mcpk_live_*` keys, constant-time checked against Postgres, plus a per-vault grant carrying `permissions`, optional `secret_path_pattern`, and optional `expires_at`. Revocation is a row update; keys never move.
+- **Private personal agents, spawned on demand.** Opening a chat spawns that user's own **ZeroClaw** process with an isolated config dir and workspace, wired to the agent's selected MCPs at spawn time. Inference runs on **0G Compute** through the 0G router (`qwen3.7-max`).
+- **Immutable curated skills marketplace on 0G Storage.** The skills in [packages/skills-marketplace/](packages/skills-marketplace/) are published to **0G Storage**, addressed by Merkle root hash with the upload registered on 0G Chain, and fetched + hash-verified into an agent's workspace at pick time — teaching a running agent a new capability without redeploying anything.
+- **Hand-written Uniswap MCP (Sepolia LP + trading).** Multichain `quote` / `swap` over the **Uniswap Trading API** on any registered chain, plus V3 liquidity tools over the Uniswap Liquidity API (`list_v3_positions`, `get_v3_position`, ergonomic `create_v3_position`, `decrease_v3_position`, `claim_v3_fees`, pool reads).
+- **Graph LP Manager (`@orloj/lp-agent`).** Live Uniswap V3 subgraph evidence → deterministic features → specialized 0G inference (`HOLD` | `REDUCE_LIQUIDITY` | `REBALANCE`, strictly cited, fully audit-traced) → guarded Orloj Uniswap MCP plans, with stateful rebalance recovery.
 - **Chat bridge.** App-hosted `POST /api/lp-agent/mcp` exposes `orloj-lp-manager` in the MCP picker. ZeroClaw supervises; `runOnce()` remains the specialist. Execute is server-gated (`LP_AGENT_CHAT_EXECUTE_ENABLED`).
 
 ## Hackathon tracks / bounties
 
-**ETHPrague 2026 (foundation)**
+### ETH Prague 2026 (foundation)
 
-- Ethereum Core — [`ETHEREUM-CORE.md`](ETHEREUM-CORE.md)
-- Network Economy — [`NETWORK-ECONOMY.md`](NETWORK-ECONOMY.md)
-- [Sourcify](https://ducttapeevents.notion.site/Sourcify-2fe1a305cfe7805c87a7ce855ae2bde6) — [`SOURCIFY.md`](SOURCIFY.md)
-- [SpaceComputer](https://ducttapeevents.notion.site/SpaceComputer-3101a305cfe7801ca388f3bc292f148d) — [`SPACECOMPUTER.md`](SPACECOMPUTER.md)
+- Ethereum Core — see [`ETHEREUM-CORE.md`](ETHEREUM-CORE.md) for our integration writeup
+- Network Economy — see [`NETWORK-ECONOMY.md`](NETWORK-ECONOMY.md) for our integration writeup
+- [Sourcify Bounty](https://ducttapeevents.notion.site/Sourcify-2fe1a305cfe7805c87a7ce855ae2bde6) — see [`SOURCIFY.md`](SOURCIFY.md) for our integration writeup
+- [SpaceComputer Bounty](https://ducttapeevents.notion.site/SpaceComputer-3101a305cfe7801ca388f3bc292f148d) — see [`SPACECOMPUTER.md`](SPACECOMPUTER.md) for our integration writeup
 - Best UX Flow
 
-**ETH Global Lisboa 2026 (this worktree)**
+### ETH Lisbon 2026
 
-- The Graph — live subgraph evidence for LP decisions (no RPC market fallback)
-- Uniswap — Sepolia V3 LP + Trading API via Orloj MCP
-- Agent UX — ZeroClaw chat → Graph LP Manager MCP → one audited cycle
+- 0G — 🚀 Keep Building on 0G — see [`0G.md`](0G.md) for our integration writeup
+- Uniswap Foundation — 🤖 Best Uniswap API Integration — see [`UNISWAP.md`](UNISWAP.md) for our integration writeup
+- The Graph — 🏆 Best AI Use Case of The Graph (Continuity) — see [`THE-GRAPH.md`](THE-GRAPH.md) for our integration writeup
 
 ## The Problem It Solves
 
@@ -77,11 +79,17 @@ discover active positions (list_v3_positions)
 
 **Registry** ([packages/registry/](packages/registry/)) — Rust, axum, rmcp, alloy, sqlx; Uniswap Trading + Liquidity APIs.
 
-**App** ([packages/app/](packages/app/)) — Next.js 16, React 19, Better-Auth (SIWE + magic link), ZeroClaw ACP sessions, internal LP Manager MCP route.
+**App** ([packages/app/](packages/app/)) — Next.js 16, React 19, Tailwind CSS v4, TypeScript, Better-Auth (SIWE + magic link, ENS via viem), ZeroClaw ACP sessions, internal LP Manager MCP route.
 
 **LP agent** ([packages/lp-agent/](packages/lp-agent/)) — Node ≥24.15, zero runtime npm deps, The Graph gateway (Bearer), OpenAI-compatible chat completions (0G).
 
-**On-chain & data** — Sourcify, 1Claw, Orbitport, viem, Uniswap v3 (Sepolia), [The Graph](https://thegraph.com/) Uniswap V3 Sepolia subgraph.
+**Skills marketplace** ([packages/skills-marketplace/](packages/skills-marketplace/)) — Node `node --test` suite, [0G Storage](https://0g.ai/) SDK (`@0gfoundation/0g-storage-ts-sdk`) + ethers; publish side plus the Merkle-verified read side the app consumes.
+
+**Agent runtime** ([packages/zeroclaw-agents/](packages/zeroclaw-agents/)) — ZeroClaw, one private process per user spawned over ACP from a template `config.toml` into an isolated per-agent config dir + workspace; inference on [0G Compute](https://0g.ai/) (`qwen3.7-max` via the 0G router `https://router-api.0g.ai/v1`).
+
+**On-chain & data** — [Sourcify](https://sourcify.dev/) (verified ABIs), [1Claw](https://1claw.xyz/) (HSM/TEE intent signing), [SpaceComputer Orbitport](https://docs.spacecomputer.io/) (`@spacecomputer-io/orbitport-sdk-ts` — secp256k1 signing + AES-256-GCM envelope keys), [0G Storage](https://0g.ai/) (immutable skill hosting, addressed by Merkle root, registered on 0G Chain), viem, Postgres (vault + agent ownership, MCP API keys, Orbitport vault metadata + envelope-encrypted secrets), Uniswap v3 (Sepolia), [The Graph](https://thegraph.com/) Uniswap V3 Sepolia subgraph.
+
+**Tooling** — Claude Code (development), Claude Design (UI/design exploration).
 
 ## Run It Locally
 
