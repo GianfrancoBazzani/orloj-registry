@@ -93,6 +93,18 @@ The provider is recorded per vault, so a single deployment can run both side-by-
 
 ## Run It Locally
 
+```bash
+./dev.sh
+```
+
+Starts Postgres (Docker), the registry on `:3001`, and the app on `:3000`, creating
+`.env` files from the examples on first run. Idempotent — anything already running is
+reused, so it is safe to re-run. Pass `--no-docker` to use a Postgres you started
+yourself. Fill in the generated `.env` files with your own secrets before the
+KMS-backed flows will work.
+
+The rest of this section is the manual equivalent.
+
 The registry reads `.env`; the app reads `.env.local`. Copy the examples and fill in secrets before starting:
 
 ```bash
