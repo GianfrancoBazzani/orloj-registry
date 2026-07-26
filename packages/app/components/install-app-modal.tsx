@@ -17,6 +17,7 @@ export function InstallAppModal({
   canPrompt,
   onCloseAction,
   onInstallAction,
+  onSavedAction,
 }: {
   agentId: string;
   agentName: string;
@@ -26,6 +27,8 @@ export function InstallAppModal({
   onCloseAction: () => void;
   /** Refreshes the manifest, then raises the browser's install prompt against it. */
   onInstallAction: () => Promise<InstallOutcome>;
+  /** Branding was written; anything rendering the icon by URL has to re-fetch it. */
+  onSavedAction?: () => void;
 }) {
   const t = useT();
   const router = useRouter();
@@ -110,6 +113,7 @@ export function InstallAppModal({
     // Pulls the stored name and icon back down, so reopening this modal shows what was saved
     // even if the install itself is declined.
     router.refresh();
+    onSavedAction?.();
 
     setBusy("installing");
     const outcome = await onInstallAction();

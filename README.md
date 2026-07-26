@@ -1,6 +1,6 @@
 # Orloj Registry
 
-> *Orloj* (Czech for "astronomical clock") — a nod to Prague's iconic timepiece, built for **ETHPrague Hackathon 2026**.
+> *Orloj* (Czech for "astronomical clock") — a nod to Prague's iconic timepiece, built for **ETHPrague Hackathon 2026** and continued at **ETHGlobal Lisbon 2026**.
 
 Orloj is a registry that exposes smart-contract interfaces to AI agents as **MCP (Model Context Protocol) servers**. MCPs are generated dynamically from [Sourcify](https://sourcify.dev/)-verified contract metadata, and signing is delegated to a **pluggable KMS layer** — pick **1Claw** (HSM + TEE) or **SpaceComputer Orbitport** (orbital HSM + SpaceTEE) per vault. Each registered contract is served as its own MCP endpoint by a single hot-pluggable registry process, gated by per-agent bearer tokens — agents never touch keys, RPCs, or gas.
 
@@ -10,14 +10,25 @@ Orloj is a registry that exposes smart-contract interfaces to AI agents as **MCP
 - **Hardware-rooted, pluggable KMS — keys never leave the enclave.** Each vault picks its signing backend: SpaceComputer Orbitport (orbital HSM + SpaceTEE; signing happens entirely inside the enclave on a 32-byte digest, with both `ETHEREUM` and `TRANSIT` schemes used in the same product surface for wallet signing *and* envelope-encrypted secret storage) or 1Claw (HSM + TEE intent signing). Both backends are wired into the same `signTransaction` path, so the agent surface is identical regardless of where the key lives.
 - **Agents never hold a key, never see a transaction.** The registry constructs every EIP-1559 tx with viem, hashes it, asks the chosen KMS to sign the digest, reassembles `(r, s, yParity)`, and broadcasts. A compromised registry host cannot forge transactions — it can only request signatures it is already authorized to request, on a digest, against a key it does not hold.
 - **Per-agent bearer tokens with grant-based authorization.** Each agent has a `mcpk_live_*` token (constant-time-checked against Postgres) and a per-vault grant carrying `permissions`, optional `secret_path_pattern`, and optional `expires_at`. The registry resolves the active grant on every MCP call and routes the signature to the matching KMS key. Revocation is a row update; keys never move.
+- **Private personal agents, spawned on demand and wired straight into the Orloj MCPs.** Opening a chat spawns that user's own **ZeroClaw** process with an isolated config dir and workspace. At spawn time the agent's selected MCPs are connected to the agent. Inference runs on **0G Compute** through the 0G router using the **`qwen3.7-max`** model.
+- **Immutable curated skills marketplace on 0G Storage.** The curated agent skills in [packages/skills-marketplace/](packages/skills-marketplace/) are published to **0G Storage** and addressed by their Merkle root hash, with the upload registered on 0G Chain. Orloj agents load them **dynamically**: pick a skill from the marketplace and it is fetched by root hash into that agent's workspace, teaching a running personal agent a new capability without redeploying anything.
+- **Direct agent access to the Uniswap API — swap, quote, and manage liquidity.** An extra special MCP at gives the agent multichain `quote` and `swap` functionality over the **Uniswap API** on any registered chain, plus **Uniswap V3** liquidity management over the Uniswap Liquidity API.
 
 ## Tracks Applied
+
+### ETH Prague 2026
 
 - Ethereum Core — see [`ETHEREUM-CORE.md`](ETHEREUM-CORE.md) for our integration writeup
 - Network Economy — see [`NETWORK-ECONOMY.md`](NETWORK-ECONOMY.md) for our integration writeup
 - [Sourcify Bounty](https://ducttapeevents.notion.site/Sourcify-2fe1a305cfe7805c87a7ce855ae2bde6) — see [`SOURCIFY.md`](SOURCIFY.md) for our integration writeup
 - [SpaceComputer Bounty](https://ducttapeevents.notion.site/SpaceComputer-3101a305cfe7801ca388f3bc292f148d) — see [`SPACECOMPUTER.md`](SPACECOMPUTER.md) for our integration writeup
 - Best UX Flow
+
+### ETH Lisbon 2026
+
+- 0G — 🚀 Keep Building on 0G — see [`0G.md`](0G.md) for our integration writeup
+- Uniswap Foundation — 🤖 Best Uniswap API Integration — see [`UNISWAP.md`](UNISWAP.md) for our integration writeup
+- The Graph — 🏆 Best AI Use Case of The Graph (Continuity) — see [`THE-GRAPH.md`](THE-GRAPH.md) for our integration writeup
 
 ## The Problem It Solves
 
@@ -78,6 +89,11 @@ The provider is recorded per vault, so a single deployment can run both side-by-
 - Next.js 16, React 19, Tailwind CSS v4, TypeScript
 - Better-Auth with magic-link (Resend) + SIWE, ENS lookups via viem
 - Postgres (vault ownership, agent ownership, MCP API keys, Orbitport vault metadata + envelope-encrypted secrets)
+
+**Agent runtime** ([packages/zeroclaw-agents/](packages/zeroclaw-agents/))
+
+- ZeroClaw — one private agent process per user, spawned over ACP from a template `config.toml` into an isolated per-agent config dir + workspace
+- [0G Compute](https://0g.ai/) — decentralized inference for those agents: model `qwen3.7-max` via the 0G router (`https://router-api.0g.ai/v1`)
 
 **On-chain & infra**
 
