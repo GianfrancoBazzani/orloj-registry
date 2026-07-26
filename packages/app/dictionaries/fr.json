@@ -285,6 +285,18 @@
     "errorRegistry": "Le registre est inaccessible, aucun MCP ne peut être listé.",
     "mcpsDropped": "{n} MCP de cet agent ne sont plus dans le registre et ont été retirés de ses outils.",
     "mcpsAllGone": "Aucun MCP de cet agent n'est encore dans le registre. Choisissez ceux qu'il doit utiliser pour continuer.",
-    "mcpsDroppedDismiss": "Compris"
+    "mcpsDroppedDismiss": "Compris",
+    "skillsPanelToggle": "Compétences",
+    "skillsCount": "{n} compétences",
+    "skillsFilterPlaceholder": "Filtrer les compétences",
+    "skillsLoading": "Chargement des compétences…",
+    "skillsCatalogEmpty": "Aucune compétence disponible — 0G Storage est injoignable.",
+    "skillsDownloadNote": "{n} sélectionnées · {size} depuis 0G",
+    "skillsProvenance": "{n} compétences · index {root} · {network}",
+    "skillsPublishedBy": "Publié par {addr}",
+    "skillsIndexTx": "tx de l'index",
+    "skillsDropped": "{n} compétences sélectionnées ne sont plus publiées et ont été retirées.",
+    "errorZgUnreachable": "0G Storage est injoignable, aucune compétence ne peut être listée.",
+    "errorSkillVerification": "Une compétence a échoué à la vérification et n'a pas été installée."
   }
 }

@@ -18,6 +18,7 @@ export function InstallAppModal({
   onCloseAction,
   onRefreshManifestAction,
   onInstallAction,
+  onSavedAction,
 }: {
   agentId: string;
   agentName: string;
@@ -32,6 +33,8 @@ export function InstallAppModal({
    * dialog only opens while the page still holds the user activation from the tap.
    */
   onInstallAction: () => Promise<InstallOutcome>;
+  /** Branding was written; anything rendering the icon by URL has to re-fetch it. */
+  onSavedAction?: () => void;
 }) {
   const t = useT();
   const router = useRouter();
@@ -132,6 +135,7 @@ export function InstallAppModal({
     // Pulls the stored name and icon back down, so reopening this modal shows what was saved
     // even if the install itself is declined.
     router.refresh();
+    onSavedAction?.();
 
     const ready = await onRefreshManifestAction();
     setBusy("idle");

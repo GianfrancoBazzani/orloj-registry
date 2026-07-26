@@ -17,6 +17,9 @@ importers:
       '@ai-sdk/react':
         specifier: 4.0.40
         version: 4.0.40(react@19.2.4)(zod@4.4.3)
+      '@orloj/skills-marketplace':
+        specifier: link:../skills-marketplace
+        version: link:../skills-marketplace
       '@spacecomputer-io/orbitport-sdk-ts':
         specifier: 0.2.1
         version: 0.2.1(typescript@5.9.3)

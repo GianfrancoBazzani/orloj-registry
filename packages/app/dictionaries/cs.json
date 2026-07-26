@@ -285,6 +285,18 @@
     "errorRegistry": "Registr je nedostupný, takže nelze vypsat žádné MCP.",
     "mcpsDropped": "{n} MCP tohoto agenta už v registru není a bylo odebráno z jeho nástrojů.",
     "mcpsAllGone": "Žádné MCP tohoto agenta už v registru není. Vyberte ta, která má používat, a pokračujte.",
-    "mcpsDroppedDismiss": "Rozumím"
+    "mcpsDroppedDismiss": "Rozumím",
+    "skillsPanelToggle": "Dovednosti",
+    "skillsCount": "{n} dovedností",
+    "skillsFilterPlaceholder": "Filtrovat dovednosti",
+    "skillsLoading": "Načítání dovedností…",
+    "skillsCatalogEmpty": "Žádné dovednosti nejsou k dispozici — 0G Storage je nedostupné.",
+    "skillsDownloadNote": "{n} vybráno · {size} z 0G",
+    "skillsProvenance": "{n} dovedností · index {root} · {network}",
+    "skillsPublishedBy": "Publikoval {addr}",
+    "skillsIndexTx": "tx indexu",
+    "skillsDropped": "{n} vybraných dovedností již není publikováno a byly odebrány.",
+    "errorZgUnreachable": "0G Storage je nedostupné, takže nelze vypsat žádné dovednosti.",
+    "errorSkillVerification": "Dovednost neprošla ověřením a nebyla nainstalována."
   }
 }

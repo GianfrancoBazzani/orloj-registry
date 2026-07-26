@@ -91,6 +91,9 @@ export function AgentAppBar({
 }) {
   const t = useT();
   const [manifestVersion, setManifestVersion] = useState(0);
+  // Busts the bar's icon after a branding save. Replacing one PNG with another leaves the URL
+  // untouched, so React would keep showing the bitmap it already painted.
+  const [iconVersion, setIconVersion] = useState(0);
   const [canPrompt, setCanPrompt] = useState(false);
   const [justInstalled, setJustInstalled] = useState(false);
   const [open, setOpen] = useState(false);
@@ -197,6 +200,29 @@ export function AgentAppBar({
             {t("agentApp.install")}
           </Btn>
         )}
+        {/* The app's own face, at the corner where a phone shows it. Only on mobile, where the
+            installed app is a real possibility, and only once the owner has uploaded something:
+            with no upload the manifest icon *is* the Orloj mark already sitting on the left.
+            Plain img — next/image cannot optimise a private, credentialed API route. */}
+        {mobile && hasCustomIcon && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={`/api/agents/${encodeURIComponent(agentId)}/icon?v=${iconVersion}`}
+            alt={t("agentApp.appIcon")}
+            width={32}
+            height={32}
+            style={{
+              width: 32,
+              height: 32,
+              objectFit: "cover",
+              // Uploads are validated square, so the circular mask the home screen applies is
+              // safe to mirror here.
+              borderRadius: "50%",
+              border: "1px solid var(--line)",
+              flex: "0 0 auto",
+            }}
+          />
+        )}
       </div>
       {open && (
         <InstallAppModal
@@ -208,6 +234,7 @@ export function AgentAppBar({
           onCloseAction={() => setOpen(false)}
           onRefreshManifestAction={refreshManifest}
           onInstallAction={promptInstall}
+          onSavedAction={() => setIconVersion((version) => version + 1)}
         />
       )}
     </>

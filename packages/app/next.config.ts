@@ -9,6 +9,18 @@ const nextConfig: NextConfig = {
   // trace. This is the only knob needed: Next mirrors it into `turbopack.root`, and setting
   // both is an error unless they are identical.
   outputFileTracingRoot: path.join(__dirname, "..", ".."),
+
+  // Linked with `link:../skills-marketplace`, not `workspace:^` — this package has its own
+  // pnpm-lock.yaml and its pnpm-workspace.yaml declares no `packages:`, so the workspace
+  // protocol cannot resolve here. The linked package ships TypeScript source, hence the
+  // transpile.
+  transpilePackages: ["@orloj/skills-marketplace"],
+
+  // Its 0G/ethers deps are CommonJS web3 libraries that must not be bundled. Naming
+  // different packages than transpilePackages, so the two do not conflict. They resolve from
+  // the monorepo root store via the symlink, which is also why outputFileTracingRoot above
+  // has to stay at the repo root.
+  serverExternalPackages: ["@0gfoundation/0g-storage-ts-sdk", "ethers"],
 };
 
 export default nextConfig;
