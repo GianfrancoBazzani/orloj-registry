@@ -101,6 +101,25 @@ cp packages/registry/.env.example packages/registry/.env
 cp packages/app/.env.example      packages/app/.env.local
 ```
 
+### Database
+
+Both services create their own tables on first connection, so any empty Postgres works.
+The quickest way to get one:
+
+```bash
+docker compose up -d          # postgres on 127.0.0.1:5432, db `orloj`
+```
+
+Then set this in **both** `.env` files:
+
+```
+DATABASE_URL="postgres://postgres:postgres@127.0.0.1:5432/orloj?sslmode=disable"
+```
+
+`docker compose down` stops it and keeps your data; `docker compose down -v` wipes it for
+a clean slate. An existing local or hosted Postgres works just as well — point
+`DATABASE_URL` at it and skip the container.
+
 Fill in at least:
 
 - **`packages/registry/.env`** — `DATABASE_URL` (same Postgres as the app), and either `ONECLAW_API_KEY` + `ONECLAW_BASE_URL` or `ORBITPORT_CLIENT_ID` + `ORBITPORT_CLIENT_SECRET` depending on which vault provider you'll sign with.

@@ -1,0 +1,42 @@
+# Ephemeral Postgres for local development.
+#
+#   docker compose up -d      # start
+#   docker compose down       # stop, keep data
+#   docker compose down -v    # stop and WIPE (the "ephemeral" part)
+#
+# Both the registry (src/db.rs) and the app (lib/db.ts) create their tables with
+# CREATE TABLE IF NOT EXISTS on first connection, so an empty database is all this
+# needs to provide. Nothing to migrate, nothing to seed.
+#
+# Then in BOTH packages/registry/.env and packages/app/.env.local:
+#   DATABASE_URL="postgres://postgres:postgres@127.0.0.1:5432/orloj?sslmode=disable"
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: orloj-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: orloj
+    ports:
+      # Bound to loopback, not 0.0.0.0 — trust auth on an all-interfaces port would
+      # expose this database to anything that can route to the host.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      # Named volume, so `down` alone keeps your data and `down -v` discards it.
+      # Drop this line entirely if you want every restart to start clean.
+      - orloj-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # `cargo run` immediately after `up` would otherwise race the server's
+      # first-connection schema creation; depends_on + this makes that ordering real
+      # for anything that waits on it.
+      test: ["CMD-SHELL", "pg_isready -U postgres -d orloj"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+
+volumes:
+  orloj-pgdata:
