@@ -1,0 +1,107 @@
+{
+  "schemaVersion": 1,
+  "network": {
+    "chainId": 16661,
+    "name": "0g-aristotle-mainnet"
+  },
+  "skills": [
+    {
+      "name": "cash-emergency-fund",
+      "description": "Help users design and build a proper cash emergency fund using yield-bearing stablecoins (USDY/rUSDY) on Ondo Finance before they start investing. Use this skill when users ask about emergency funds, safety nets, \"how much cash should I keep\", \"should I have savings before investing\", rainy day fund, cash reserves, or when portfolio allocation reveals they don't have an emergency fund. Also trigger when users ask about keeping money safe, liquid savings, or how to protect against unexpected expenses. This skill should be used BEFORE any investment strategy — never let a user invest without an emergency fund.",
+      "contentHash": "0xfabea49e14a6e08f9b409100b547404cdaf8f5297e49e55bcb562871952b879d",
+      "sizeBytes": 6730,
+      "publishedAt": "2026-07-26T04:21:19.669Z",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "rootHash": "0xeb6fa8ef8f0067f9f56c2ca89d187f78cbb7e3bdf0c60d78065102d3dda5e656",
+          "sizeBytes": 6730
+        }
+      ]
+    },
+    {
+      "name": "fire-calculator",
+      "description": "Calculate the user's path to Financial Independence and Retiring Early (FIRE) using Ondo Finance assets. Use this skill when users mention FIRE, financial independence, early retirement, \"when can I retire\", \"how much do I need to retire\", \"retirement calculator\", \"4% rule\", \"25x expenses\", the Trinity study, LeanFIRE, FatFIRE, or ask questions like \"how long until I'm financially free\", \"what's my FIRE number\", or \"can I retire early with my current savings\". Also trigger when users want to calculate how long it takes to reach financial independence at their current savings rate.",
+      "contentHash": "0xf63e61e2b57b9a6f0f8f99342b858f52b62168ac001aa1af57e4e8da59cedc6d",
+      "sizeBytes": 7303,
+      "publishedAt": "2026-07-26T04:21:19.669Z",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "rootHash": "0xc26dd43ffffb1d5854fc0777d3df6a83a0cf7b4412ca3116441532ce6a320a13",
+          "sizeBytes": 7303
+        }
+      ]
+    },
+    {
+      "name": "investing-fundamentals",
+      "description": "Teach users the foundational concepts of investing, including what stocks, cash (bonds/T-bills), and index funds are, how they map to blockchain equivalents (bCSPX, bIB01, USDY, WETH), the Rule of 72, compounding, diversification, and why passive investing beats active management. Use this skill whenever a user asks basic investing questions like \"what is a stock\", \"what is a bond\", \"what is cash\", \"what are index funds\", \"how does investing work\", \"what is an ETF\", \"explain investing basics\", \"what is diversification\", \"what is compounding\", or anything about TradFi concepts and their DeFi equivalents. Also trigger when users seem new to investing or ask beginner-level financial questions.",
+      "contentHash": "0xe3dc65583b3e5270ed0866aaafa54173d919cc51227c8d781fb4f91fb1aea6da",
+      "sizeBytes": 6353,
+      "publishedAt": "2026-07-26T04:21:19.669Z",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "rootHash": "0x43290fe3f2edf16c0d9a48a09a63d6d01a261b0c3d8652b82551eecb09e54749",
+          "sizeBytes": 6353
+        }
+      ]
+    },
+    {
+      "name": "investment-strategy",
+      "description": "Teach users investment deployment strategies (DCA, Lump Sum, or Hybrid) and help them configure a personalized plan. Use this skill when users ask about DCA, dollar-cost averaging, recurring investments, automatic investing, investing monthly, regular buying schedule, \"how often should I invest\", \"how much should I invest each month\", lump sum investing, \"I have X amount to invest\", \"should I invest all at once\", \"lump sum vs DCA\", receiving a windfall (inheritance, bonus, sale), or want to set up any systematic investment plan.",
+      "contentHash": "0xea557e9eedd0845ced6d976248b23914730a094c0ba0c7e34bc49beacdd30eef",
+      "sizeBytes": 6936,
+      "publishedAt": "2026-07-26T04:21:19.669Z",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "rootHash": "0x0f29e372527e6b86436ffd9c07fe149e650b03ef05776f712b0847efc781ab35",
+          "sizeBytes": 6936
+        }
+      ]
+    },
+    {
+      "name": "portfolio-allocation",
+      "description": "Design a personalized investment portfolio using tokenized assets based on the user's risk tolerance, time horizon, and financial goals. Use this skill whenever a user asks about portfolio design, asset allocation, how to split their investments, what percentage to put in stocks vs cash vs crypto, risk tolerance, conservative vs aggressive portfolios, or how to structure their crypto portfolio. Also trigger when users say things like \"help me build a portfolio\", \"how should I invest my money\", \"what allocation should I use\", \"I want to start investing\", or ask about core-satellite strategy, barbell strategy, or yield laddering. This is the primary portfolio design skill — use it before any strategy skill.",
+      "contentHash": "0x1f17dc56069ef6384cd9ad66520c23e6e619fae665ff107af997a1e16dabc116",
+      "sizeBytes": 7105,
+      "publishedAt": "2026-07-26T04:21:19.669Z",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "rootHash": "0xcc35b42db27e735e326fc30efd2a9e7be24cf4e5a99878ac7adfa2d9254f9c01",
+          "sizeBytes": 7105
+        }
+      ]
+    },
+    {
+      "name": "risk-mindset",
+      "description": "Prepare users psychologically for market volatility and help them understand the specific risks of on-chain investing with Ondo Finance assets. Use this skill when users express fear about market drops, ask about investment risks, mention panic selling, worry about losing money, ask \"is it safe to invest\", \"what if the market crashes\", \"should I sell during a dip\", or show signs of emotional decision-making. Also trigger when users ask about smart contract risk, crypto volatility, inflation impact, counterparty risk, or need encouragement to stay the course during turbulent markets. Use this skill proactively when a user seems anxious about their investments.",
+      "contentHash": "0xa3dda2cfb4f63391cab82b9691cd689aa47d8ffc42c6b4ff05a723c584bf67de",
+      "sizeBytes": 6476,
+      "publishedAt": "2026-07-26T04:21:19.669Z",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "rootHash": "0x45023c12aec97339796c703c978f6c37f2bd40860384e255dcc6e89100ac6f5a",
+          "sizeBytes": 6476
+        }
+      ]
+    },
+    {
+      "name": "understanding-costs",
+      "description": "Teach users why minimizing investment fees and costs is critical for long-term wealth building, covering both TradFi expense ratios and DeFi-specific costs like gas fees, swap fees, and protocol fees. Use this skill when users ask about fees, costs, expense ratios, gas fees, swap fees, protocol fees, \"how much does it cost to invest\", \"are there hidden fees\", total cost of ownership, or when comparing the cost of using Ondo Finance vs traditional brokers. Also trigger when users seem unaware of how fees compound against returns over time.",
+      "contentHash": "0xf5d5a61b87f0b3bdba30091f093ca3e2855ed63486dc89c12b0f9ee7986f5021",
+      "sizeBytes": 5258,
+      "publishedAt": "2026-07-26T04:21:19.669Z",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "rootHash": "0x45d5d1e9f99519adc924afb83ce7798230a5b9f9f7d248ec3feb5f78e751faa0",
+          "sizeBytes": 5258
+        }
+      ]
+    }
+  ]
+}
