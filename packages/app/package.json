@@ -12,6 +12,7 @@
     "@1claw/sdk": "0.20.4",
     "@agentclientprotocol/sdk": "1.3.0",
     "@ai-sdk/react": "4.0.40",
+    "@orloj/lp-agent": "workspace:^",
     "@spacecomputer-io/orbitport-sdk-ts": "0.2.1",
     "ai": "7.0.37",
     "better-auth": "1.6.9",

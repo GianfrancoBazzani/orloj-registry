@@ -9,6 +9,8 @@ const nextConfig: NextConfig = {
   // trace. This is the only knob needed: Next mirrors it into `turbopack.root`, and setting
   // both is an error unless they are identical.
   outputFileTracingRoot: path.join(__dirname, "..", ".."),
+  // Workspace ESM package (@orloj/lp-agent) must be transpiled for the App Router.
+  transpilePackages: ["@orloj/lp-agent"],
 };
 
 export default nextConfig;
