@@ -1,7 +1,7 @@
 {
-  "name": "orloj-registry",
+  "name": "sentiment",
   "private": true,
-  "description": "MCPs contracts interfaces for AI agents",
+  "description": "sentiment script",
   "scripts": {
     "start": "./dev.sh",
     "start:no-docker": "./dev.sh --no-docker",
