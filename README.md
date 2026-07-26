@@ -13,7 +13,7 @@ Orloj is a registry that exposes smart-contract interfaces to AI agents as **MCP
 - **Private personal agents, spawned on demand and wired straight into the Orloj MCPs.** Opening a chat spawns that user's own **ZeroClaw** process with an isolated config dir and workspace. At spawn time the agent's selected MCPs are connected to the agent. Inference runs on **0G Compute** through the 0G router using the **`qwen3.7-max`** model.
 - **Immutable curated skills marketplace on 0G Storage.** The curated agent skills in [packages/skills-marketplace/](packages/skills-marketplace/) are published to **0G Storage** and addressed by their Merkle root hash, with the upload registered on 0G Chain. Orloj agents load them **dynamically**: pick a skill from the marketplace and it is fetched by root hash into that agent's workspace, teaching a running personal agent a new capability without redeploying anything.
 - **Direct agent access to the Uniswap API — swap, quote, and manage liquidity.** An extra special MCP at gives the agent multichain `quote` and `swap` functionality over the **Uniswap API** on any registered chain, plus **Uniswap V3** liquidity management over the Uniswap Liquidity API.
-- TODO the graph
+- **Graph-powered LP manager — live subgraph data turned into liquidity decisions.** An internal `orloj-lp-manager` MCP ([packages/lp-agent/](packages/lp-agent/)) discovers the agent's own Uniswap V3 positions, queries the **Uniswap V3 subgraph on The Graph** for live pool, fee, and volume data, extracts deterministic range/activity features, and produces a strictly cited **HOLD / REDUCE_LIQUIDITY / REBALANCE** decision with a full audit trace. 
 
 ## Tracks Applied
 
@@ -101,6 +101,7 @@ The provider is recorded per vault, so a single deployment can run both side-by-
 - [Sourcify](https://sourcify.dev/) — verified contract metadata / ABIs (source of truth for MCP generation)
 - [1Claw](https://1claw.xyz/) — key vaults, intent-based signing, HSM-backed keys, TEE signing
 - [SpaceComputer Orbitport](https://docs.spacecomputer.io/) — orbital HSM-backed KMS (`@spacecomputer-io/orbitport-sdk-ts`) for secp256k1 signing keys + AES-256-GCM envelope-encryption keys
+- [0G Storage](https://0g.ai/) — immutable hosting for the curated skills marketplace ([packages/skills-marketplace/](packages/skills-marketplace/)): skill bundles are uploaded to 0G Storage, addressed by Merkle root hash with the upload registered on 0G Chain, and fetched + hash-verified at runtime into an agent's workspace
 - viem — local tx construction, digest hashing, signature recovery, broadcasting
 
 **Tooling**
