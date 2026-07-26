@@ -1,4 +1,4 @@
-# Orloj Registry
+# Orloj Registry [app.orloj.xyz](app.orloj.xyz)
 
 > *Orloj* (Czech for "astronomical clock") — a nod to Prague's iconic timepiece, built for **ETHPrague Hackathon 2026** and continued at **ETHGlobal Lisbon 2026**.
 
