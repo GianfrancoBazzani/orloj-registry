@@ -27,7 +27,12 @@ services:
     volumes:
       # Named volume, so `down` alone keeps your data and `down -v` discards it.
       # Drop this line entirely if you want every restart to start clean.
-      - orloj-pgdata:/var/lib/postgresql/data
+      #
+      # Mount point is /var/lib/postgresql, NOT the old /var/lib/postgresql/data:
+      # Postgres 18 images moved the data dir to a version-specific subdirectory
+      # (/var/lib/postgresql/18/docker) and refuse to start if you mount over the
+      # legacy path. See docker-library/postgres#37.
+      - orloj-pgdata:/var/lib/postgresql
     healthcheck:
       # `cargo run` immediately after `up` would otherwise race the server's
       # first-connection schema creation; depends_on + this makes that ordering real
