@@ -68,6 +68,8 @@ export {
   upsertInProgressRebalance,
   clearInProgressRebalance,
   newCycleId,
+  validateInProgressRecord,
+  ownedNftIdsFromList,
 } from "./state-store.mjs";
 export {
   formatHumanAmount,
@@ -76,12 +78,14 @@ export {
   budgetsAfterSwapQuote,
   validateCreateSuccessResponse,
   validateSwapSuccessResponse,
+  validateDecreaseSuccessResponse,
   parseQuoteOutputAmount,
 } from "./amounts.mjs";
 export {
   recoverInProgressRebalance,
   executeOrObserveRebalance,
   reconcileCreateFromListedPositions,
+  assertPositionMatchesRebalanceRecord,
 } from "./rebalance.mjs";
 export { runOnce } from "./run-once.mjs";
 export {

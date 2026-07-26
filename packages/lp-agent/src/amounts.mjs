@@ -139,6 +139,50 @@ export function parseQuoteOutputAmount(quoteResponse) {
 }
 
 /**
+ * Strict decrease_v3_position success gate before funding/create.
+ * @param {unknown} decreaseResponse
+ * @param {{
+ *   nftTokenId: string,
+ *   liquidityPercentageToDecrease: number,
+ *   token0: string,
+ *   token1: string,
+ * }} expected
+ * @returns {{ ok: true, hash: string } | { ok: false, reason: string }}
+ */
+export function validateDecreaseSuccessResponse(decreaseResponse, expected) {
+  if (
+    decreaseResponse === null ||
+    typeof decreaseResponse !== "object" ||
+    Array.isArray(decreaseResponse)
+  ) {
+    return { ok: false, reason: "decrease_response_not_object" };
+  }
+  const r = /** @type {Record<string, unknown>} */ (decreaseResponse);
+  if (typeof r.hash !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(r.hash)) {
+    return { ok: false, reason: "decrease_response_missing_valid_hash" };
+  }
+  if (typeof r.nftTokenId !== "string" || r.nftTokenId !== expected.nftTokenId) {
+    return { ok: false, reason: "decrease_response_nftTokenId_mismatch" };
+  }
+  if (r.liquidityPercentageToDecrease !== expected.liquidityPercentageToDecrease) {
+    return {
+      ok: false,
+      reason: "decrease_response_liquidityPercentageToDecrease_mismatch",
+    };
+  }
+  try {
+    requireTokenSide(r.token0, expected.token0, "token0");
+    requireTokenSide(r.token1, expected.token1, "token1");
+  } catch (err) {
+    return {
+      ok: false,
+      reason: err instanceof Error ? err.message : String(err),
+    };
+  }
+  return { ok: true, hash: r.hash };
+}
+
+/**
  * Strict create_v3_position success gate — required before clearing rebalance state.
  * @param {unknown} createResponse
  * @returns {{ ok: true, hash: string, nftTokenId: string } | { ok: false, reason: string }}

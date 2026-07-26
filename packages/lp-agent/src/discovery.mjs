@@ -97,9 +97,15 @@ export async function discoverManagedPositions(client, config, deps = {}) {
   }
 
   if (active.length === 0) {
-    throw new Error(
-      "list_v3_positions returned no active (non-zero liquidity) positions to manage",
-    );
+    return {
+      source: "list_v3_positions",
+      truncated: false,
+      count: 0,
+      totalOwned:
+        typeof listed.totalOwned === "number" ? listed.totalOwned : null,
+      nftTokenIds: [],
+      positions: [],
+    };
   }
 
   return {

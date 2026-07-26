@@ -13,13 +13,18 @@ import {
   parseQuoteOutputAmount,
   validateCreateSuccessResponse,
   validateSwapSuccessResponse,
+  validateDecreaseSuccessResponse,
 } from "./amounts.mjs";
 import {
   getInProgressRebalance,
   upsertInProgressRebalance,
   clearInProgressRebalance,
   newCycleId,
+  ownedNftIdsFromList,
 } from "./state-store.mjs";
+
+const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+const UNSIGNED_DECIMAL_RE = /^(0|[1-9]\d*)$/;
 
 /**
  * @param {object} record
@@ -53,12 +58,25 @@ export function createNeedsAttention(record) {
 
 /**
  * Attempt to adopt a new NFT via list_v3_positions after decrease (no auto-mint).
+ * Replacement must be: truncated=false enumeration, active, same pool, not old NFT,
+ * and not present in the pre-rebalance ownedNftIdsBaseline.
+ *
  * @returns {{ ok: true, newNftTokenId: string } | { ok: false, reason: string, candidates?: string[] }}
  */
 export function reconcileCreateFromListedPositions(listed, record) {
-  if (!listed || !Array.isArray(listed.positions)) {
+  if (!listed || typeof listed !== "object" || Array.isArray(listed)) {
     return { ok: false, reason: "list_positions_unavailable" };
   }
+  if (listed.truncated !== false) {
+    return { ok: false, reason: "list_truncated_must_be_false" };
+  }
+  if (!Array.isArray(listed.positions)) {
+    return { ok: false, reason: "list_positions_unavailable" };
+  }
+  if (!Array.isArray(record.ownedNftIdsBaseline)) {
+    return { ok: false, reason: "missing_ownedNftIdsBaseline" };
+  }
+  const baseline = new Set(record.ownedNftIdsBaseline);
   const pool = String(record.poolAddress || "").toLowerCase();
   const oldId = String(record.oldNftTokenId);
   /** @type {string[]} */
@@ -68,10 +86,12 @@ export function reconcileCreateFromListedPositions(listed, record) {
     const id = /** @type {any} */ (p).nftTokenId;
     const liq = /** @type {any} */ (p).liquidity;
     const pPool = String(/** @type {any} */ (p).poolAddress || "").toLowerCase();
-    if (typeof id !== "string") continue;
+    if (typeof id !== "string" || !UNSIGNED_DECIMAL_RE.test(id)) continue;
     if (id === oldId) continue;
-    if (pool && pPool && pPool !== pool) continue;
+    if (baseline.has(id)) continue; // already existed before rebalance
+    if (!pool || !pPool || pPool !== pool) continue;
     if (typeof liq === "string" && liq === "0") continue;
+    if (typeof liq !== "string") continue; // require explicit active liquidity
     candidates.push(id);
   }
   if (candidates.length === 1) {
@@ -88,6 +108,45 @@ export function reconcileCreateFromListedPositions(listed, record) {
 }
 
 /**
+ * Fresh get_v3_position must still describe the same pair/pool as the rebalance record
+ * (position may be zero-liquidity after decrease).
+ * @param {unknown} position
+ * @param {object} record
+ */
+export function assertPositionMatchesRebalanceRecord(position, record) {
+  if (position === null || typeof position !== "object" || Array.isArray(position)) {
+    throw new Error("get_v3_position returned non-object");
+  }
+  const p = /** @type {Record<string, unknown>} */ (position);
+  if (String(p.nftTokenId) !== String(record.oldNftTokenId)) {
+    throw new Error(
+      `get_v3_position nftTokenId ${JSON.stringify(p.nftTokenId)} !== state ${record.oldNftTokenId}`,
+    );
+  }
+  if (
+    typeof p.poolAddress !== "string" ||
+    !ADDRESS_RE.test(p.poolAddress) ||
+    p.poolAddress.toLowerCase() !== String(record.poolAddress).toLowerCase()
+  ) {
+    throw new Error("get_v3_position poolAddress does not match rebalance state");
+  }
+  if (
+    typeof p.token0 !== "string" ||
+    !ADDRESS_RE.test(p.token0) ||
+    p.token0.toLowerCase() !== String(record.token0).toLowerCase()
+  ) {
+    throw new Error("get_v3_position token0 does not match rebalance state");
+  }
+  if (
+    typeof p.token1 !== "string" ||
+    !ADDRESS_RE.test(p.token1) ||
+    p.token1.toLowerCase() !== String(record.token1).toLowerCase()
+  ) {
+    throw new Error("get_v3_position token1 does not match rebalance state");
+  }
+}
+
+/**
  * Process one in-progress record without AI / without depending on discovery.
  */
 export async function recoverInProgressRebalance(args) {
@@ -100,8 +159,7 @@ export async function recoverInProgressRebalance(args) {
     stateFilePath,
     createPosition,
     listPositions,
-    quoteTrade,
-    swapTokens,
+    getPosition,
   } = args;
 
   const base = {
@@ -214,7 +272,6 @@ export async function recoverInProgressRebalance(args) {
           },
         };
       }
-      // Keep candidates on the recovery object for operators.
       record.reconciliation = reconciled;
       upsertInProgressRebalance(state, record);
       saveStateFn(stateFilePath, state);
@@ -237,17 +294,47 @@ export async function recoverInProgressRebalance(args) {
         status: "needs_reconciliation",
         mode: "execute",
         message:
-          "Decrease succeeded but create is not confirmed. Will not auto-remint (duplicate risk). Reconcile via list_v3_positions or set LP_AGENT_ALLOW_CREATE_RETRY=true for an explicit operator-approved create retry.",
+          "Decrease succeeded but create is not confirmed. Will not auto-remint (duplicate risk). Reconcile via list_v3_positions or set LP_AGENT_ALLOW_CREATE_RETRY=true (one-shot; optional LP_AGENT_ALLOW_CREATE_RETRY_CYCLE_ID).",
         recovery: record,
         reconciliation: record.reconciliation ?? null,
       },
     };
   }
 
-  // Explicit operator-approved create retry only when budgets are known (two-sided or post-swap).
+  if (record.createRetryAttempted === true) {
+    return {
+      status: "needs_attention",
+      ...base,
+      execution: {
+        status: "needs_reconciliation",
+        mode: "execute",
+        message:
+          "Operator create retry already attempted for this cycle (createRetryAttempted=true) — refusing further automatic remints",
+        recovery: record,
+      },
+    };
+  }
+
+  if (
+    typeof config.allowCreateRetryCycleId === "string" &&
+    config.allowCreateRetryCycleId !== "" &&
+    config.allowCreateRetryCycleId !== record.cycleId
+  ) {
+    return {
+      status: "needs_attention",
+      ...base,
+      execution: {
+        status: "needs_reconciliation",
+        mode: "execute",
+        message: `LP_AGENT_ALLOW_CREATE_RETRY_CYCLE_ID=${JSON.stringify(config.allowCreateRetryCycleId)} does not match in-progress cycleId ${JSON.stringify(record.cycleId)}`,
+        recovery: record,
+      },
+    };
+  }
+
+  // Explicit operator-approved create retry only when budgets are known.
   const budgets = record.decrease?.budgets;
   if (!budgets) {
-    // May still need swap before create — only if swap not done and funding plan stored.
     if (record.funding?.kind === "needs_swap" && record.swap?.status !== "succeeded") {
       return {
         status: "needs_attention",
@@ -256,7 +343,7 @@ export async function recoverInProgressRebalance(args) {
           status: "needs_reconciliation",
           mode: "execute",
           message:
-            "Operator create retry requested but swap leg not confirmed — reconcile swap first; will not auto-swap from recovery without confirmed prior quote/budgets in state",
+            "Operator create retry requested but swap leg not confirmed — reconcile swap first",
           recovery: record,
         },
       };
@@ -269,6 +356,39 @@ export async function recoverInProgressRebalance(args) {
         mode: "execute",
         message:
           "Operator create retry requested but create budgets unknown — manual reopen required",
+        recovery: record,
+      },
+    };
+  }
+
+  if (typeof getPosition !== "function") {
+    return {
+      status: "needs_attention",
+      ...base,
+      execution: {
+        status: "needs_reconciliation",
+        mode: "execute",
+        message: "Operator create retry requires get_v3_position to verify pair/pool",
+        recovery: record,
+      },
+    };
+  }
+
+  try {
+    const live = await getPosition(mcpClient, {
+      chainId: config.chainId,
+      nftTokenId: record.oldNftTokenId,
+    });
+    assertPositionMatchesRebalanceRecord(live, record);
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err);
+    return {
+      status: "needs_attention",
+      ...base,
+      execution: {
+        status: "needs_reconciliation",
+        mode: "execute",
+        message: `Pre-create position check failed: ${redactSecrets(raw, config.orlojMcpApiKey)}`,
         recovery: record,
       },
     };
@@ -307,6 +427,8 @@ async function executeCreateOnly(args) {
     rangeWidthBps: record.rangeWidthBps,
     poolAddress: record.poolAddress,
   };
+  // One-shot: mark attempted before broadcast so a crash cannot remint forever.
+  record.createRetryAttempted = true;
   record.create = { status: "pending" };
   upsertInProgressRebalance(state, record);
   saveStateFn(stateFilePath, state);
@@ -390,6 +512,7 @@ export async function executeOrObserveRebalance(args) {
     createPosition,
     quoteTrade,
     swapTokens,
+    listPositions,
     state,
     saveStateFn,
     stateFilePath,
@@ -416,7 +539,6 @@ export async function executeOrObserveRebalance(args) {
 
   const existing = getInProgressRebalance(state, position.nftTokenId);
   if (existing) {
-    // Never start a fresh decrease while state exists — recovery owns the path.
     if (decreaseIsNonterminal(existing) || swapIsNonterminal(existing)) {
       return {
         status: "needs_reconciliation",
@@ -433,10 +555,42 @@ export async function executeOrObserveRebalance(args) {
         kind: "rebalance",
         mode: "execute",
         message:
-          "Existing in-progress REBALANCE after successful decrease — use recovery path (no AI remint). Set LP_AGENT_ALLOW_CREATE_RETRY=true only after reconciliation.",
+          "Existing in-progress REBALANCE after successful decrease — use recovery path (no AI remint)",
         recovery: existing,
       };
     }
+  }
+
+  // Baseline owned NFTs before any write (replacement must not be a pre-existing sibling).
+  if (typeof listPositions !== "function") {
+    return {
+      status: "needs_reconciliation",
+      kind: "rebalance",
+      mode: "execute",
+      message: "REBALANCE requires list_v3_positions to capture ownedNftIdsBaseline before decrease",
+    };
+  }
+  let baselineIds;
+  try {
+    const listed = await listPositions(mcpClient, { chainId: config.chainId });
+    const owned = ownedNftIdsFromList(listed);
+    if (!owned.ok) {
+      return {
+        status: "needs_reconciliation",
+        kind: "rebalance",
+        mode: "execute",
+        message: `Cannot capture pre-rebalance NFT baseline (${owned.reason})`,
+      };
+    }
+    baselineIds = owned.ids;
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err);
+    return {
+      status: "needs_reconciliation",
+      kind: "rebalance",
+      mode: "execute",
+      message: `list_v3_positions failed before decrease: ${redactSecrets(raw, config.orlojMcpApiKey)}`,
+    };
   }
 
   const cycleId = newCycleId();
@@ -451,6 +605,8 @@ export async function executeOrObserveRebalance(args) {
     liquidityPercentageToDecrease:
       decreaseStep.arguments.liquidityPercentageToDecrease,
     rangeWidthBps: /** @type {number} */ (rangeWidthBps),
+    ownedNftIdsBaseline: baselineIds,
+    createRetryAttempted: false,
     decrease: { status: "pending", budgets: null },
     swap: { status: "pending" },
     create: { status: "pending" },
@@ -471,7 +627,6 @@ export async function executeOrObserveRebalance(args) {
   } catch (err) {
     const raw = err instanceof Error ? err.message : String(err);
     const message = redactSecrets(raw, config.orlojMcpApiKey);
-    // Leave status=failed (nonterminal for retry purposes) — do not auto-retry.
     record.decrease = { status: "failed", error: message, budgets: null };
     record.swap = { status: "skipped" };
     record.create = { status: "skipped" };
@@ -495,6 +650,34 @@ export async function executeOrObserveRebalance(args) {
     throw failure;
   }
 
+  const decreaseOk = validateDecreaseSuccessResponse(decreaseResp, {
+    nftTokenId: position.nftTokenId,
+    liquidityPercentageToDecrease:
+      decreaseStep.arguments.liquidityPercentageToDecrease,
+    token0: position.token0,
+    token1: position.token1,
+  });
+  if (!decreaseOk.ok) {
+    record.decrease = {
+      status: "failed",
+      error: decreaseOk.reason,
+      budgets: null,
+      mcpResponse: decreaseResp,
+    };
+    record.swap = { status: "skipped" };
+    record.create = { status: "skipped" };
+    upsertInProgressRebalance(state, record);
+    saveStateFn(stateFilePath, state);
+    return {
+      status: "needs_reconciliation",
+      kind: "rebalance",
+      mode: "execute",
+      message: `Decrease response failed validation (${decreaseOk.reason}) — will not fund/create; reconcile on-chain`,
+      recovery: record,
+      mcpResponse: { decrease: decreaseResp },
+    };
+  }
+
   const funding = planRebalanceFunding(decreaseResp, {
     token0: position.token0,
     token1: position.token1,
@@ -504,10 +687,7 @@ export async function executeOrObserveRebalance(args) {
 
   record.decrease = {
     status: "succeeded",
-    hash:
-      decreaseResp && typeof decreaseResp === "object"
-        ? /** @type {any} */ (decreaseResp).hash
-        : undefined,
+    hash: decreaseOk.hash,
     mcpResponse: decreaseResp,
     budgets: null,
   };

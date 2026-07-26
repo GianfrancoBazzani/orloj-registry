@@ -33,6 +33,7 @@ export const DEFAULT_STATE_FILE = ".lp-agent-state.json";
  * @property {string} chainId
  * @property {string} stateFilePath
  * @property {boolean} allowCreateRetry explicit operator-approved create retry only
+ * @property {string | null} allowCreateRetryCycleId optional cycleId gate for create retry
  */
 
 /**
@@ -123,6 +124,12 @@ export function loadConfig(env = process.env) {
     allowCreateRetryRaw === "true" ||
     allowCreateRetryRaw === "yes";
 
+  const allowCreateRetryCycleId =
+    typeof env.LP_AGENT_ALLOW_CREATE_RETRY_CYCLE_ID === "string" &&
+    env.LP_AGENT_ALLOW_CREATE_RETRY_CYCLE_ID.trim() !== ""
+      ? env.LP_AGENT_ALLOW_CREATE_RETRY_CYCLE_ID.trim()
+      : null;
+
   if (missing.length > 0) {
     throw new Error(
       `Missing required environment variables: ${missing.join(", ")}`,
@@ -153,5 +160,6 @@ export function loadConfig(env = process.env) {
     chainId,
     stateFilePath,
     allowCreateRetry,
+    allowCreateRetryCycleId,
   };
 }

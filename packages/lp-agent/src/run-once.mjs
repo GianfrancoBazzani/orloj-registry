@@ -77,6 +77,7 @@ async function evaluatePosition(args) {
     createPosition,
     quoteTradeFn,
     swapTokensFn,
+    listPositions,
     state,
     saveStateFn,
     stateFilePath,
@@ -259,6 +260,7 @@ async function evaluatePosition(args) {
       createPosition,
       quoteTrade: quoteTradeFn,
       swapTokens: swapTokensFn,
+      listPositions,
       state,
       saveStateFn,
       stateFilePath,
@@ -335,8 +337,7 @@ export async function runOnce(deps = {}) {
         stateFilePath: config.stateFilePath,
         createPosition,
         listPositions,
-        quoteTrade: quoteTradeFn,
-        swapTokens: swapTokensFn,
+        getPosition,
       });
       results.push(finalizePositionResult(recovered));
     } catch (err) {
@@ -381,6 +382,7 @@ export async function runOnce(deps = {}) {
         createPosition,
         quoteTradeFn,
         swapTokensFn,
+        listPositions,
         state,
         saveStateFn,
         stateFilePath: config.stateFilePath,
