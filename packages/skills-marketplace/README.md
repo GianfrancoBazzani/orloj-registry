@@ -20,11 +20,11 @@ hash. No contract is deployed; 0G's pre-existing Flow contract does the storing.
 Dry run is the default. Nothing is uploaded and nothing is written unless you
 pass `--confirm`.
 
-    pnpm publish:skills                              # dry run, mainnet
-    pnpm publish:skills --confirm                    # prompts: type 'aristotle'
+    pnpm upload:skills                              # dry run, mainnet
+    pnpm upload:skills --confirm                    # prompts: type 'aristotle'
 
-    pnpm publish:skills --network testnet             # dry run, free
-    pnpm publish:skills --network testnet --confirm   # rehearse for real
+    pnpm upload:skills --network testnet             # dry run, free
+    pnpm upload:skills --network testnet --confirm   # rehearse for real
 
 | Flag | Effect |
 |---|---|
