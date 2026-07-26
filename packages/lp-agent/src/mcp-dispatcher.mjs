@@ -44,10 +44,30 @@ function jsonRpcOk(id, result) {
 }
 
 /**
- * @param {unknown} id
- * @param {number} code
- * @param {string} message
+ * @param {unknown} audit
+ * @returns {boolean}
  */
+function isErrorAuditStatus(audit) {
+  if (!audit || typeof audit !== "object") return true;
+  const status = /** @type {{ status?: unknown }} */ (audit).status;
+  return status === "partial" || status === "error";
+}
+
+/**
+ * @param {unknown} id
+ * @param {unknown} audit
+ */
+function toolCallResultFromAudit(id, audit) {
+  return jsonRpcOk(id, {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(audit),
+      },
+    ],
+    isError: isErrorAuditStatus(audit),
+  });
+}
 function jsonRpcError(id, code, message) {
   return {
     jsonrpc: "2.0",
@@ -233,15 +253,7 @@ export function createLpAgentMcpDispatcher(options) {
         if (toolName === ANALYZE_TOOL) {
           try {
             const audit = await invokeRunOnce("observe");
-            return jsonRpcOk(id, {
-              content: [
-                {
-                  type: "text",
-                  text: JSON.stringify(audit),
-                },
-              ],
-              isError: false,
-            });
+            return toolCallResultFromAudit(id, audit);
           } catch (err) {
             const message =
               err && typeof err === "object" && "message" in err
@@ -284,15 +296,7 @@ export function createLpAgentMcpDispatcher(options) {
           }
           try {
             const audit = await invokeRunOnce("execute");
-            return jsonRpcOk(id, {
-              content: [
-                {
-                  type: "text",
-                  text: JSON.stringify(audit),
-                },
-              ],
-              isError: false,
-            });
+            return toolCallResultFromAudit(id, audit);
           } catch (err) {
             const message =
               err && typeof err === "object" && "message" in err

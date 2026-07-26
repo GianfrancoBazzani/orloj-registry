@@ -166,6 +166,57 @@ describe("lp-agent MCP dispatcher", () => {
     assert.equal(text.leakedSecret, "[REDACTED]");
   });
 
+  it("sets isError for partial and error audit status while preserving the trace", async () => {
+    const partialDispatcher = makeDispatcher({
+      executeEnabled: true,
+      runOnceFn: async (deps) => {
+        runCalls.push(deps);
+        return {
+          status: "partial",
+          phase: 2,
+          agentMode: deps.config.agentMode,
+          discovery: { count: 1 },
+          results: [{ status: "needs_reconciliation" }],
+        };
+      },
+    });
+    const partialRes = await partialDispatcher.dispatch({
+      jsonrpc: "2.0",
+      id: 40,
+      method: "tools/call",
+      params: { name: MANAGE_TOOL, arguments: {} },
+    });
+    assert.equal(partialRes.result.isError, true);
+    assert.equal(JSON.parse(partialRes.result.content[0].text).status, "partial");
+    assert.equal(runCalls[0].config.agentMode, "execute");
+
+    runCalls.length = 0;
+    const errorDispatcher = makeDispatcher({
+      executeEnabled: true,
+      runOnceFn: async (deps) => {
+        runCalls.push(deps);
+        return {
+          status: "error",
+          phase: 2,
+          agentMode: deps.config.agentMode,
+          message: "needs_reopen",
+          results: [{ status: "needs_reopen" }],
+        };
+      },
+    });
+    const errorRes = await errorDispatcher.dispatch({
+      jsonrpc: "2.0",
+      id: 41,
+      method: "tools/call",
+      params: { name: MANAGE_TOOL, arguments: {} },
+    });
+    assert.equal(errorRes.result.isError, true);
+    const errorAudit = JSON.parse(errorRes.result.content[0].text);
+    assert.equal(errorAudit.status, "error");
+    assert.equal(errorAudit.message, "needs_reopen");
+    assert.equal(runCalls[0].config.agentMode, "execute");
+  });
+
   it("manage supplies execute only when enabled", async () => {
     const disabled = makeDispatcher({ executeEnabled: false });
     const denied = await disabled.dispatch({

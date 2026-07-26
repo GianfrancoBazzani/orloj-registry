@@ -1,5 +1,8 @@
 import type { McpServerEntry } from "./mcp-block";
-import { getInternalLpManagerManifest } from "@/lib/lp-agent-mcp";
+import { getInternalLpManagerManifest } from "@/lib/internal-lp-manifest";
+import { selectionRequiresRegistry } from "./selection-registry-policy.mjs";
+
+export { selectionRequiresRegistry };
 
 export const MAX_MCPS = 32;
 
@@ -70,8 +73,15 @@ export const resolveMcpServers = async (
       { name: internal.name, url: internal.url, contractName: internal.contractName },
       ...manifest.filter((m) => m.name !== internal.name),
     ];
-  } else if (registryFailed) {
-    throw new RegistryUnreachableError(registryFailed);
+  }
+
+  // A temporary registry outage must not drop registry MCPs (e.g. uniswap) from the
+  // stored selection. Only allow registry-independent resolve when every requested
+  // name is the internal LP Manager.
+  if (registryFailed) {
+    if (selectionRequiresRegistry(mcpNames, internal?.name ?? null)) {
+      throw new RegistryUnreachableError(registryFailed);
+    }
   }
 
   const byName = new Map(manifest.map((m) => [m.name, m]));
@@ -116,12 +126,7 @@ export const resolveMcpServers = async (
 
   // Only when nothing survived. An empty `mcpNames` returned earlier, so reaching here with
   // no entries means every name was stale — the user has to pick again.
-  if (entries.length === 0) {
-    if (registryFailed && !internal) {
-      throw new RegistryUnreachableError(registryFailed);
-    }
-    throw new SelectionUnresolvableError(dropped);
-  }
+  if (entries.length === 0) throw new SelectionUnresolvableError(dropped);
 
   return { entries, dropped };
 };
