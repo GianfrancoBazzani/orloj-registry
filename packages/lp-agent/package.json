@@ -2,10 +2,18 @@
   "name": "@orloj/lp-agent",
   "version": "0.1.0",
   "private": true,
-  "description": "Graph-powered Uniswap V3 LP management agent for Orloj (Phase 1: observe / dry-run)",
+  "description": "Graph-powered Uniswap V3 LP management agent for Orloj (observe / guarded execute + chat MCP bridge)",
   "type": "module",
   "engines": {
     "node": ">=24.15.0"
+  },
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./src/index.mjs",
+      "default": "./src/index.mjs"
+    }
   },
   "scripts": {
     "test": "node --test test/**/*.test.mjs",
