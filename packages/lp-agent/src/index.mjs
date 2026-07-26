@@ -6,6 +6,7 @@ export {
   DEFAULT_SUBGRAPH_ID,
   DEFAULT_CHAIN_ID,
   DEFAULT_GRAPH_GATEWAY_BASE,
+  DEFAULT_STATE_FILE,
   loadConfig,
   toSubgraphPoolId,
   requireSepoliaChainId,
@@ -23,9 +24,13 @@ export {
 } from "./graph-client.mjs";
 export {
   PHASE1_ACTIONS,
+  ALLOWED_ACTIONS,
   SIGNAL_DIRECTIONS,
   MIN_REDUCE_SUPPORT_SIGNALS,
   MIN_REDUCE_SIGNALS,
+  MIN_REBALANCE_SUPPORT_SIGNALS,
+  DEFAULT_RANGE_WIDTH_BPS,
+  FORBIDDEN_AI_ROUTING_KEYS,
   ACTIONABLE_MARKET_DOMAINS,
   GRAPH_EVIDENCE_DOMAINS,
   featurePathExists,
@@ -49,8 +54,35 @@ export {
 } from "./decision-client.mjs";
 export {
   DECREASE_V3_POSITION_TOOL,
+  CREATE_V3_POSITION_TOOL,
+  SWAP_TOOL,
+  QUOTE_TOOL,
   planAction,
 } from "./action-planner.mjs";
+export { discoverManagedPositions } from "./discovery.mjs";
+export {
+  loadState,
+  saveState,
+  emptyState,
+  getInProgressRebalance,
+  upsertInProgressRebalance,
+  clearInProgressRebalance,
+  newCycleId,
+} from "./state-store.mjs";
+export {
+  formatHumanAmount,
+  budgetsFromDecreaseResponse,
+  planRebalanceFunding,
+  budgetsAfterSwapQuote,
+  validateCreateSuccessResponse,
+  validateSwapSuccessResponse,
+  parseQuoteOutputAmount,
+} from "./amounts.mjs";
+export {
+  recoverInProgressRebalance,
+  executeOrObserveRebalance,
+  reconcileCreateFromListedPositions,
+} from "./rebalance.mjs";
 export { runOnce } from "./run-once.mjs";
 export {
   extractFeatures,
@@ -78,6 +110,8 @@ export {
   getV3PoolState,
   listV3Positions,
   resolveManagedNftTokenId,
+  quoteTrade,
+  swapTokens,
   validateGetV3Position,
   redactSecrets,
   DEFAULT_MCP_TIMEOUT_MS,

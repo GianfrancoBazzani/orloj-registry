@@ -1,15 +1,9 @@
 /**
- * Single-run LP agent pipeline.
+ * Multi-position LP agent pipeline.
  *
- * Phase 1 observe: dry-run audit trace (no MCP write).
- * Phase 2 execute: HOLD never writes; REDUCE calls decrease_v3_position exactly once.
- *
- * Invariants:
- * - pairContextFromMarket(market) must be non-null (ids, symbols, decimals, fee tier).
- * - Pair is validated against features.position before requestDecision.
- * - Never falls back to address-only pair context.
- * - HOLD → no write; REDUCE → hardcoded decrease_v3_position only.
- * - Execute MCP failures fail closed (never silently downgraded to observe).
+ * 1) Recover in-progress REBALANCE from local state (independent of discovery/AI)
+ * 2) Discover active positions (list_v3_positions / NFT filter), skipping in-progress NFTs
+ * 3) Per remaining position: get → Graph → features → pair → AI → plan → execute
  */
 
 import { pathToFileURL } from "node:url";
@@ -17,9 +11,13 @@ import { loadConfig } from "./config.mjs";
 import {
   getV3Position,
   decreaseV3Position,
-  resolveManagedNftTokenId,
+  createV3Position,
+  listV3Positions,
+  quoteTrade,
+  swapTokens,
   redactSecrets,
 } from "./orloj-mcp-client.mjs";
+import { discoverManagedPositions } from "./discovery.mjs";
 import { fetchPoolMarketContext } from "./graph-client.mjs";
 import { extractFeatures } from "./features.mjs";
 import {
@@ -29,6 +27,17 @@ import {
   requestDecision,
 } from "./decision-client.mjs";
 import { planAction } from "./action-planner.mjs";
+import {
+  loadState,
+  saveState,
+  getInProgressRebalance,
+} from "./state-store.mjs";
+import {
+  executeOrObserveRebalance,
+  recoverInProgressRebalance,
+  finalizePositionResult,
+  isSuccessfulPositionResult,
+} from "./rebalance.mjs";
 
 /**
  * @typedef {object} RunOnceDeps
@@ -40,49 +49,57 @@ import { planAction } from "./action-planner.mjs";
  * @property {(client: object, input: object) => Promise<object>} [requestDecisionFn]
  * @property {(decision: object, context: object) => object} [planActionFn]
  * @property {(market: object) => object | null} [pairFromMarketFn]
- * @property {(client: object, config: object, deps?: object) => Promise<{ nftTokenId: string, source: string }>} [resolveNftFn]
+ * @property {(client: object, config: object, deps?: object) => Promise<object>} [discoverFn]
  * @property {(client: object, params: object) => Promise<unknown>} [decreasePosition]
+ * @property {(client: object, params: object) => Promise<unknown>} [createPosition]
+ * @property {(client: object, params: object) => Promise<unknown>} [quoteTradeFn]
+ * @property {(client: object, params: object) => Promise<unknown>} [swapTokensFn]
+ * @property {(client: object, params: object) => Promise<object>} [listPositions]
+ * @property {(path: string) => object} [loadStateFn]
+ * @property {(path: string, state: object) => void} [saveStateFn]
  */
 
-/**
- * Run one observe/propose/(optional execute) cycle and return an audit trace (no secrets).
- * @param {RunOnceDeps} [deps]
- */
-export async function runOnce(deps = {}) {
-  const config = deps.config ?? loadConfig();
-  const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
-  const getPosition = deps.getPosition ?? getV3Position;
-  const fetchMarket = deps.fetchMarket ?? fetchPoolMarketContext;
-  const extractFeaturesFn = deps.extractFeaturesFn ?? extractFeatures;
-  const requestDecisionFn = deps.requestDecisionFn ?? requestDecision;
-  const planActionFn = deps.planActionFn ?? planAction;
-  const pairFromMarketFn = deps.pairFromMarketFn ?? pairContextFromMarket;
-  const resolveNftFn = deps.resolveNftFn ?? resolveManagedNftTokenId;
-  const decreasePosition = deps.decreasePosition ?? decreaseV3Position;
+async function evaluatePosition(args) {
+  const {
+    config,
+    mcpClient,
+    graphClient,
+    aiClient,
+    nftTokenId,
+    discoverySource,
+    getPosition,
+    fetchMarket,
+    extractFeaturesFn,
+    requestDecisionFn,
+    planActionFn,
+    pairFromMarketFn,
+    decreasePosition,
+    createPosition,
+    quoteTradeFn,
+    swapTokensFn,
+    state,
+    saveStateFn,
+    stateFilePath,
+  } = args;
 
-  const mcpClient = {
-    url: config.orlojMcpUrl,
-    apiKey: config.orlojMcpApiKey,
-    fetchImpl,
-  };
-  const graphClient = {
-    graphUrl: config.graphUrl,
-    apiKey: config.theGraphApiKey,
-    subgraphId: config.subgraphId,
-    fetchImpl,
-  };
-  const aiClient = {
-    aiChatCompletionsUrl: config.aiChatCompletionsUrl,
-    aiApiKey: config.aiApiKey,
-    aiModel: config.aiModel,
-    fetchImpl,
-  };
-
-  const resolvedNft = await resolveNftFn(mcpClient, {
-    chainId: config.chainId,
-    nftTokenId: config.nftTokenId,
-  });
-  const nftTokenId = resolvedNft.nftTokenId;
+  // Guard: never AI-drive a position that still has in-progress rebalance state.
+  const existing = getInProgressRebalance(state, nftTokenId);
+  if (existing) {
+    return finalizePositionResult({
+      status: "needs_attention",
+      phase: config.agentMode === "execute" ? 2 : 1,
+      agentMode: config.agentMode,
+      nftResolution: { nftTokenId, source: discoverySource },
+      execution: {
+        status: "needs_reconciliation",
+        kind: "rebalance",
+        mode: config.agentMode,
+        message:
+          "Position has in-progress REBALANCE state — skipped AI evaluation (recovery owns this NFT)",
+        recovery: existing,
+      },
+    });
+  }
 
   const position = await getPosition(mcpClient, {
     chainId: config.chainId,
@@ -97,7 +114,6 @@ export async function runOnce(deps = {}) {
     expectedNftTokenId: nftTokenId,
   });
 
-  // Fail closed: never silently fall back to address-only pair context.
   const pairRaw = pairFromMarketFn(market);
   const pair = requirePairContextFromMarket(pairRaw, market);
   validatePairAgainstFeatures(pair, features);
@@ -107,17 +123,19 @@ export async function runOnce(deps = {}) {
   const plan = planActionFn(decision, {
     nftTokenId: position.nftTokenId,
     chainId: position.chainId ?? config.chainId,
+    token0: position.token0,
+    token1: position.token1,
+    poolAddress: position.poolAddress,
   });
 
   const phase = config.agentMode === "execute" ? 2 : 1;
 
-  /** Audit envelope shared by success and execute-failure paths. */
   const baseTrace = {
     phase,
     agentMode: config.agentMode,
     nftResolution: {
       nftTokenId,
-      source: resolvedNft.source,
+      source: discoverySource,
     },
     position: {
       nftTokenId: position.nftTokenId,
@@ -154,6 +172,7 @@ export async function runOnce(deps = {}) {
       action: decision.action,
       confidence: decision.confidence,
       liquidityPercentageToDecrease: decision.liquidityPercentageToDecrease,
+      rangeWidthBps: decision.rangeWidthBps ?? null,
       summary: decision.summary,
       signals: decision.signals,
       uncertainties: decision.uncertainties,
@@ -164,8 +183,8 @@ export async function runOnce(deps = {}) {
 
   /** @type {Record<string, unknown>} */
   let execution;
-  if (plan.kind === "no_write" || plan.mcpCall === null) {
-    // HOLD: never write — even in execute mode.
+
+  if (plan.kind === "no_write") {
     execution = {
       status: config.agentMode === "execute" ? "held" : "observe",
       kind: "no_write",
@@ -179,63 +198,248 @@ export async function runOnce(deps = {}) {
       called: null,
       mcpResponse: null,
     };
-  } else if (config.agentMode === "execute") {
-    // Phase 2: actually call decrease_v3_position exactly once with plan args.
-    let mcpResponse;
-    try {
-      mcpResponse = await decreasePosition(mcpClient, {
-        chainId: plan.mcpCall.arguments.chainId,
-        nftTokenId: plan.mcpCall.arguments.nftTokenId,
-        liquidityPercentageToDecrease:
-          plan.mcpCall.arguments.liquidityPercentageToDecrease,
-      });
-    } catch (err) {
-      const raw = err instanceof Error ? err.message : String(err);
-      const message = redactSecrets(raw, config.orlojMcpApiKey);
-      const failedExecution = {
-        status: "failed",
+  } else if (plan.kind === "proposed_write") {
+    if (config.agentMode !== "execute") {
+      execution = {
+        status: "observe",
+        kind: "proposed_write",
+        mode: "observe",
+        message: "Dry-run complete — no MCP write performed",
+        proposedCall: plan.mcpCall,
+        called: null,
+        mcpResponse: null,
+      };
+    } else {
+      let mcpResponse;
+      try {
+        mcpResponse = await decreasePosition(mcpClient, {
+          chainId: plan.mcpCall.arguments.chainId,
+          nftTokenId: plan.mcpCall.arguments.nftTokenId,
+          liquidityPercentageToDecrease:
+            plan.mcpCall.arguments.liquidityPercentageToDecrease,
+        });
+      } catch (err) {
+        const raw = err instanceof Error ? err.message : String(err);
+        const message = redactSecrets(raw, config.orlojMcpApiKey);
+        const failedExecution = {
+          status: "failed",
+          kind: "proposed_write",
+          mode: "execute",
+          message: `MCP write failed: ${message}`,
+          called: plan.mcpCall,
+          mcpResponse: null,
+          error: message,
+        };
+        const failure = new Error(`execute decrease_v3_position failed: ${message}`);
+        /** @type {any} */ (failure).auditTrace = {
+          status: "error",
+          ...baseTrace,
+          execution: failedExecution,
+        };
+        /** @type {any} */ (failure).execution = failedExecution;
+        throw failure;
+      }
+      execution = {
+        status: "executed",
         kind: "proposed_write",
         mode: "execute",
-        message: `MCP write failed: ${message}`,
+        message: "decrease_v3_position executed via Orloj MCP",
         called: plan.mcpCall,
-        mcpResponse: null,
-        error: message,
+        mcpResponse,
       };
-      // Fail closed — full audit-complete trace (not observe downgrade).
-      const failure = new Error(`execute decrease_v3_position failed: ${message}`);
-      /** @type {any} */ (failure).auditTrace = {
-        status: "error",
-        ...baseTrace,
-        execution: failedExecution,
-      };
-      /** @type {any} */ (failure).execution = failedExecution;
-      throw failure;
     }
-
-    execution = {
-      status: "executed",
-      kind: "proposed_write",
-      mode: "execute",
-      message: "decrease_v3_position executed via Orloj MCP",
-      called: plan.mcpCall,
-      mcpResponse,
-    };
+  } else if (plan.kind === "rebalance") {
+    execution = await executeOrObserveRebalance({
+      config,
+      mcpClient,
+      plan,
+      position,
+      pair,
+      decreasePosition,
+      createPosition,
+      quoteTrade: quoteTradeFn,
+      swapTokens: swapTokensFn,
+      state,
+      saveStateFn,
+      stateFilePath,
+    });
   } else {
-    execution = {
-      status: "observe",
-      kind: "proposed_write",
-      mode: "observe",
-      message: "Dry-run complete — no MCP write performed",
-      proposedCall: plan.mcpCall,
-      called: null,
-      mcpResponse: null,
-    };
+    throw new Error(`unsupported plan kind ${JSON.stringify(plan.kind)}`);
   }
 
-  return {
+  return finalizePositionResult({
     status: "ok",
     ...baseTrace,
     execution,
+  });
+}
+
+/**
+ * @param {RunOnceDeps} [deps]
+ */
+export async function runOnce(deps = {}) {
+  const config = deps.config ?? loadConfig();
+  const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
+  const getPosition = deps.getPosition ?? getV3Position;
+  const fetchMarket = deps.fetchMarket ?? fetchPoolMarketContext;
+  const extractFeaturesFn = deps.extractFeaturesFn ?? extractFeatures;
+  const requestDecisionFn = deps.requestDecisionFn ?? requestDecision;
+  const planActionFn = deps.planActionFn ?? planAction;
+  const pairFromMarketFn = deps.pairFromMarketFn ?? pairContextFromMarket;
+  const discoverFn = deps.discoverFn ?? discoverManagedPositions;
+  const decreasePosition = deps.decreasePosition ?? decreaseV3Position;
+  const createPosition = deps.createPosition ?? createV3Position;
+  const quoteTradeFn = deps.quoteTradeFn ?? quoteTrade;
+  const swapTokensFn = deps.swapTokensFn ?? swapTokens;
+  const listPositions = deps.listPositions ?? listV3Positions;
+  const loadStateFn = deps.loadStateFn ?? loadState;
+  const saveStateFn = deps.saveStateFn ?? saveState;
+
+  const mcpClient = {
+    url: config.orlojMcpUrl,
+    apiKey: config.orlojMcpApiKey,
+    fetchImpl,
+  };
+  const graphClient = {
+    graphUrl: config.graphUrl,
+    apiKey: config.theGraphApiKey,
+    subgraphId: config.subgraphId,
+    fetchImpl,
+  };
+  const aiClient = {
+    aiChatCompletionsUrl: config.aiChatCompletionsUrl,
+    aiApiKey: config.aiApiKey,
+    aiModel: config.aiModel,
+    fetchImpl,
+  };
+
+  const state = loadStateFn(config.stateFilePath);
+  const phase = config.agentMode === "execute" ? 2 : 1;
+
+  /** @type {object[]} */
+  const results = [];
+  /** @type {Set<string>} */
+  const skipFromDiscovery = new Set();
+
+  // 1) Recovery first — independent of discovery filtering / AI REBALANCE choice.
+  for (const oldNft of Object.keys(state.inProgress ?? {})) {
+    skipFromDiscovery.add(oldNft);
+    const record = state.inProgress[oldNft];
+    try {
+      const recovered = await recoverInProgressRebalance({
+        config,
+        mcpClient,
+        record,
+        state,
+        saveStateFn,
+        stateFilePath: config.stateFilePath,
+        createPosition,
+        listPositions,
+        quoteTrade: quoteTradeFn,
+        swapTokens: swapTokensFn,
+      });
+      results.push(finalizePositionResult(recovered));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      results.push({
+        status: "error",
+        phase,
+        agentMode: config.agentMode,
+        nftResolution: { nftTokenId: oldNft, source: "state_in_progress" },
+        message: redactSecrets(message, config.orlojMcpApiKey),
+        error: redactSecrets(message, config.orlojMcpApiKey),
+      });
+    }
+  }
+
+  // 2) Discover active positions (may omit zero-liquidity NFTs — recovery already handled them).
+  const discovery = await discoverFn(mcpClient, {
+    chainId: config.chainId,
+    nftTokenId: config.nftTokenId,
+  });
+
+  const toEvaluate = discovery.positions.filter(
+    (p) => !skipFromDiscovery.has(p.nftTokenId),
+  );
+
+  for (const discovered of toEvaluate) {
+    try {
+      const result = await evaluatePosition({
+        config,
+        mcpClient,
+        graphClient,
+        aiClient,
+        nftTokenId: discovered.nftTokenId,
+        discoverySource: discovery.source,
+        getPosition,
+        fetchMarket,
+        extractFeaturesFn,
+        requestDecisionFn,
+        planActionFn,
+        pairFromMarketFn,
+        decreasePosition,
+        createPosition,
+        quoteTradeFn,
+        swapTokensFn,
+        state,
+        saveStateFn,
+        stateFilePath: config.stateFilePath,
+      });
+      results.push(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const redacted = redactSecrets(message, config.orlojMcpApiKey);
+      if (err && typeof err === "object" && "auditTrace" in err) {
+        const audit = /** @type {any} */ (err).auditTrace;
+        // Attach base fields if rebalance threw partial auditTrace.
+        results.push(
+          finalizePositionResult({
+            status: "error",
+            phase,
+            agentMode: config.agentMode,
+            nftResolution: {
+              nftTokenId: discovered.nftTokenId,
+              source: discovery.source,
+            },
+            ...audit,
+          }),
+        );
+      } else {
+        results.push({
+          status: "error",
+          phase,
+          agentMode: config.agentMode,
+          nftResolution: {
+            nftTokenId: discovered.nftTokenId,
+            source: discovery.source,
+          },
+          message: redacted,
+          error: redacted,
+        });
+      }
+    }
+  }
+
+  const okCount = results.filter((r) => isSuccessfulPositionResult(r)).length;
+  const errCount = results.length - okCount;
+  /** @type {"ok"|"partial"|"error"} */
+  let status = "ok";
+  if (errCount > 0 && okCount > 0) status = "partial";
+  else if (errCount > 0) status = "error";
+
+  return {
+    status,
+    phase,
+    agentMode: config.agentMode,
+    discovery: {
+      source: discovery.source,
+      truncated: discovery.truncated,
+      count: discovery.count,
+      totalOwned: discovery.totalOwned,
+      nftTokenIds: discovery.nftTokenIds,
+      skippedForRecovery: [...skipFromDiscovery],
+    },
+    results,
   };
 }
 
@@ -243,10 +447,12 @@ async function main() {
   try {
     const trace = await runOnce();
     console.log(JSON.stringify(trace, null, 2));
+    if (trace.status === "error" || trace.status === "partial") {
+      process.exitCode = 1;
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (err && typeof err === "object" && "auditTrace" in err) {
-      // Audit-complete failed execute: full envelope already built.
       console.error(JSON.stringify(/** @type {any} */ (err).auditTrace, null, 2));
     } else {
       console.error(
