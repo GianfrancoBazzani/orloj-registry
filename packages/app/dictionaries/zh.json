@@ -167,6 +167,7 @@
     "saveAndInstall": "保存并安装",
     "saving": "正在保存…",
     "installing": "正在安装…",
+    "installReady": "已保存。点按“安装应用”即可添加到主屏幕。",
     "saveFailed": "无法保存应用标识",
     "installFallback": "您的浏览器需从自身菜单安装：请选择“安装应用”或“分享 → 添加到主屏幕”。"
   },

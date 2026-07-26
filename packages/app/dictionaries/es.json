@@ -167,6 +167,7 @@
     "saveAndInstall": "Guardar e instalar",
     "saving": "Guardando…",
     "installing": "Instalando…",
+    "installReady": "Guardado. Toca Instalar app para añadirla a tu pantalla de inicio.",
     "saveFailed": "No se pudo guardar la identidad",
     "installFallback": "Su navegador instala desde su propio menú: elija Instalar app o Compartir → Añadir a pantalla de inicio."
   },

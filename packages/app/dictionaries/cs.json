@@ -167,6 +167,7 @@
     "saveAndInstall": "Uložit a nainstalovat",
     "saving": "Ukládání…",
     "installing": "Instalace…",
+    "installReady": "Uloženo. Klepnutím na Nainstalovat aplikaci ji přidáte na plochu.",
     "saveFailed": "Vzhled se nepodařilo uložit",
     "installFallback": "Váš prohlížeč instaluje z vlastní nabídky: zvolte Nainstalovat aplikaci nebo Sdílet → Přidat na plochu."
   },
