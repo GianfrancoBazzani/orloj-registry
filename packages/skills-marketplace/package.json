@@ -4,7 +4,11 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/types.ts"
+    ".": "./src/types.ts",
+    "./types": "./src/types.ts",
+    "./gateway": "./src/gateway.ts",
+    "./install-plan": "./src/install-plan.ts",
+    "./marketplace.json": "./marketplace.json"
   },
   "scripts": {
     "upload:skills": "tsx scripts/publish.ts",

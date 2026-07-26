@@ -183,6 +183,7 @@ const pointer = buildPointer({
   indexTxHash: indexUpload.txHash,
   indexSizeBytes: indexBytes.length,
   skillCount: prospective.skills.length,
+  publisher: client.address,
   network: {
     chainId: config.network.chainId,
     name: config.network.name,

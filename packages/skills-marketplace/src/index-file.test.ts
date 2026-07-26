@@ -115,6 +115,7 @@ test('builds and serializes the pointer', () => {
     indexTxHash: '0xTX',
     indexSizeBytes: 100,
     skillCount: 7,
+    publisher: '0xPUB',
     network: { ...MAINNET, indexerRpc: 'https://indexer.example' },
     publishedAt: NOW,
   })
@@ -122,4 +123,17 @@ test('builds and serializes the pointer', () => {
   assert.equal(p.indexRoot, '0xroot')
   assert.equal(p.indexTxHash, '0xtx')
   assert.ok(serializePointer(p).endsWith('\n'))
+})
+
+test('buildPointer records the publishing wallet, lowercased', () => {
+  const p = buildPointer({
+    indexRoot: '0xAA',
+    indexTxHash: '0xBB',
+    indexSizeBytes: 1,
+    skillCount: 1,
+    publisher: '0xDCeb0C6598c28592f55d8CCF0bFDaA0A7B2012D8',
+    network: { chainId: 16661, name: 'n', indexerRpc: 'https://i' },
+    publishedAt: 'now',
+  })
+  assert.equal(p.publisher, '0xdceb0c6598c28592f55d8ccf0bfdaa0a7b2012d8')
 })

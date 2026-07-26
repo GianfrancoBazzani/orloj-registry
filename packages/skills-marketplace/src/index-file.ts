@@ -79,6 +79,8 @@ export interface PointerArgs {
   indexTxHash: string
   indexSizeBytes: number
   skillCount: number
+  /** The uploading wallet. Always written, even though the field is optional. */
+  publisher: string
   network: PointerNetwork
   publishedAt: string
 }
@@ -90,6 +92,7 @@ export function buildPointer(args: PointerArgs): MarketplacePointer {
     indexTxHash: args.indexTxHash.toLowerCase(),
     indexSizeBytes: args.indexSizeBytes,
     skillCount: args.skillCount,
+    publisher: args.publisher.toLowerCase(),
     network: args.network,
     publishedAt: args.publishedAt,
   }

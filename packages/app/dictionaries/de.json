@@ -284,6 +284,18 @@
     "errorRegistry": "Die Registry ist nicht erreichbar, daher können keine MCPs aufgelistet werden.",
     "mcpsDropped": "{n} MCPs dieses Agenten sind nicht mehr in der Registry und wurden aus seinen Tools entfernt.",
     "mcpsAllGone": "Keines der MCPs dieses Agenten ist noch in der Registry. Wähle die aus, die er nutzen soll, um weiterzumachen.",
-    "mcpsDroppedDismiss": "Verstanden"
+    "mcpsDroppedDismiss": "Verstanden",
+    "skillsPanelToggle": "Fähigkeiten",
+    "skillsCount": "{n} Fähigkeiten",
+    "skillsFilterPlaceholder": "Fähigkeiten filtern",
+    "skillsLoading": "Skills werden geladen…",
+    "skillsCatalogEmpty": "Keine Fähigkeiten verfügbar — 0G Storage ist nicht erreichbar.",
+    "skillsDownloadNote": "{n} ausgewählt · {size} von 0G",
+    "skillsProvenance": "{n} Fähigkeiten · Index {root} · {network}",
+    "skillsPublishedBy": "Veröffentlicht von {addr}",
+    "skillsIndexTx": "Index-Tx",
+    "skillsDropped": "{n} ausgewählte Fähigkeiten werden nicht mehr veröffentlicht und wurden entfernt.",
+    "errorZgUnreachable": "0G Storage ist nicht erreichbar, daher können keine Fähigkeiten aufgelistet werden.",
+    "errorSkillVerification": "Eine Fähigkeit hat die Verifizierung nicht bestanden und wurde nicht installiert."
   }
 }

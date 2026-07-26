@@ -37,6 +37,35 @@ pass `--confirm`.
 Republishing with nothing changed is a no-op: zero uploads, zero transactions,
 and both JSON files stay byte-identical.
 
+## Provenance
+
+Everything published here was uploaded by one wallet. Both links are verified;
+StorageScan has no working per-root-hash URL, so there is nothing to link for an
+individual skill file.
+
+- Publisher, with every file it has uploaded —
+  <https://storagescan.0g.ai/address/0xDCeb0C6598c28592f55d8CCF0bFDaA0A7B2012D8>
+- The index-storage transaction —
+  <https://chainscan.0g.ai/tx/0x448f6d8c97251ad593bc43576e2886da9f5e799ffb8ed67a20edeccff7fb5b02>
+
+## Consuming
+
+`packages/app` reads this marketplace at runtime. It imports `marketplace.json`,
+fetches the index from 0G by `indexRoot`, and installs individual skills into an
+agent's zeroclaw workspace:
+
+```ts
+import { fetchIndex, fetchVerified } from '@orloj/skills-marketplace/gateway'
+import { planInstall } from '@orloj/skills-marketplace/install-plan'
+import pointer from '@orloj/skills-marketplace/marketplace.json'
+
+const index = await fetchIndex({ pointer })
+```
+
+Both helpers recompute the 0G Merkle root of whatever the gateway returned and
+reject a mismatch, so a compromised indexer cannot inject content. Reads go over
+plain HTTP (`GET {indexerRpc}/file?root=0x…`); the SDK is only used for hashing.
+
 ## Inspecting
 
     pnpm list:skills     # print the committed index (offline)

@@ -284,6 +284,18 @@
     "errorRegistry": "El registro no está accesible, así que no se pueden listar los MCP.",
     "mcpsDropped": "{n} MCP de este agente ya no están en el registro y se quitaron de sus herramientas.",
     "mcpsAllGone": "Ninguno de los MCP de este agente sigue en el registro. Elige los que debe usar para continuar.",
-    "mcpsDroppedDismiss": "Entendido"
+    "mcpsDroppedDismiss": "Entendido",
+    "skillsPanelToggle": "Habilidades",
+    "skillsCount": "{n} habilidades",
+    "skillsFilterPlaceholder": "Filtrar habilidades",
+    "skillsLoading": "Cargando habilidades…",
+    "skillsCatalogEmpty": "No hay habilidades disponibles: 0G Storage no está accesible.",
+    "skillsDownloadNote": "{n} seleccionadas · {size} desde 0G",
+    "skillsProvenance": "{n} habilidades · índice {root} · {network}",
+    "skillsPublishedBy": "Publicado por {addr}",
+    "skillsIndexTx": "tx del índice",
+    "skillsDropped": "{n} habilidades seleccionadas ya no están publicadas y se han eliminado.",
+    "errorZgUnreachable": "0G Storage no está accesible, así que no se pueden listar habilidades.",
+    "errorSkillVerification": "Una habilidad no superó la verificación y no se instaló."
   }
 }

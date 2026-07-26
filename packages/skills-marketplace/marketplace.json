@@ -4,6 +4,7 @@
   "indexTxHash": "0x448f6d8c97251ad593bc43576e2886da9f5e799ffb8ed67a20edeccff7fb5b02",
   "indexSizeBytes": 7588,
   "skillCount": 7,
+  "publisher": "0xdceb0c6598c28592f55d8ccf0bfdaa0a7b2012d8",
   "network": {
     "chainId": 16661,
     "name": "0g-aristotle-mainnet",

@@ -85,6 +85,28 @@ export const ensureWorkspaceDir = async (agentId: string): Promise<string> => {
   return dir;
 };
 
+// The bundle every orloj-installed skill lives in.
+export const SKILL_BUNDLE = "orloj";
+
+// Where an agent's skills are installed. NOT `<workspace>/skills`, which is the obvious
+// choice and is wrong: when no skill bundle is configured, `zeroclaw skills list` silently
+// MOVES `agents/<alias>/workspace/skills/<name>` out to `shared/skills/<name>` and then does
+// not load it. Probed against the real binary — a skill installed into the workspace vanished
+// from under us between two commands.
+//
+// A configured bundle is the only arrangement that both loads the skill and leaves it where
+// it was put. `zeroclaw skills bundle add` requires the directory to resolve inside
+// `<install>/shared/`, so that is where it goes.
+export const skillsDir = (agentId: string): string =>
+  path.join(agentDir(agentId), "shared", "skills", SKILL_BUNDLE);
+
+// Content-addressed and shared by every agent: the key IS the 0G Merkle root, so two agents
+// installing the same skill cannot collide and a hit needs no re-verification.
+export const skillsCacheDir = (): string =>
+  resolveFromAppRoot(
+    process.env.ZG_SKILLS_CACHE_DIR || path.join(agentsRoot(), "..", "skills-cache"),
+  );
+
 export const configDirExists = async (agentId: string): Promise<boolean> => {
   try {
     await access(agentDir(agentId));
@@ -173,6 +195,18 @@ const runZeroclaw = (args: string[], stdin?: string): Promise<string> =>
 export const applyManagedConfig = async (dir: string): Promise<void> => {
   const ops: Array<{ op: string; path: string; value: unknown }> = [
     { op: "add", path: "/agents/default/acp_enable_mcp", value: true },
+    // Registers the skills bundle. Written on every start, not just on create, so agents
+    // provisioned before skills existed repair themselves. `add` is idempotent here.
+    //
+    // Skills cannot simply be dropped in the workspace: with no bundle configured, zeroclaw
+    // relocates `<workspace>/skills/<name>` to `shared/skills/<name>` and stops loading it.
+    // The directory is relative to the install root and must resolve inside `shared/`.
+    {
+      op: "add",
+      path: `/skill_bundles/${SKILL_BUNDLE}/directory`,
+      value: `shared/skills/${SKILL_BUNDLE}`,
+    },
+    { op: "add", path: "/agents/default/skill_bundles", value: [SKILL_BUNDLE] },
   ];
   const key = modelApiKey();
   // Omitted rather than written as "" when unset: an empty patch value would overwrite a key

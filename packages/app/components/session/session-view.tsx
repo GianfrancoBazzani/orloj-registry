@@ -6,6 +6,7 @@ import { useT } from "@/components/i18n-context";
 import { Btn } from "@/components/ornaments";
 import { ChatBox } from "./chat-box";
 import { McpConfigPanel, type ApplyResult, type McpSelectionItem } from "./mcp-config-panel";
+import { SkillConfigPanel, type SkillApplyResult } from "./skill-config-panel";
 import { McpPicker } from "./mcp-picker";
 import { readTranscript, writeTranscript } from "./transcript-store";
 
@@ -107,6 +108,9 @@ export function SessionView({
   const [error, setError] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [mcps, setMcps] = useState<McpSelectionItem[]>([]);
+  // Skills are not part of a session start payload — they are whatever is on disk — so this
+  // is hydrated from its own endpoint rather than from StartResponse.
+  const [skills, setSkills] = useState<string[]>([]);
   const [selection, setSelection] = useState<string[]>([]);
   const [restored, setRestored] = useState<UIMessage[]>([]);
   const [divider, setDivider] = useState(false);
@@ -142,6 +146,14 @@ export function SessionView({
         messages: storedMessages,
       });
       setPhase("chat");
+      // Fire-and-forget: the panel is useful the moment the chat renders, and a failure here
+      // must not block entering it. Skills are read from disk, not from the start payload.
+      void fetch(`/api/agents/${agentId}/skills`)
+        .then((r) => (r.ok ? (r.json() as Promise<{ skills?: string[] }>) : null))
+        .then((d) => {
+          if (d) setSkills(d.skills ?? []);
+        })
+        .catch(() => {});
     },
     [agentId, userId],
   );
@@ -289,6 +301,16 @@ export function SessionView({
     [userId, agentId],
   );
 
+  // The respawn issues a fresh sessionId, so dropping the rest of the payload would leave the
+  // client posting to a session that no longer exists. `mcps` rides along because the route
+  // re-applies the stored MCP selection on the way through.
+  const onSkillsApplied = useCallback((result: SkillApplyResult) => {
+    setSessionId(result.sessionId);
+    setSkills(result.skills);
+    setMcps(result.mcps);
+    setDivider(!result.resumed);
+  }, []);
+
   // Reset keeps the agent connected and forgets the conversation. It is the one control here
   // that destroys something the user cannot get back, so it confirms.
   const doReset = async () => {
@@ -428,6 +450,17 @@ export function SessionView({
                 mcps={mcps}
                 busy={turnBusy}
                 onApplied={onApplied}
+              />
+              {/* Keyed on the installed set: the panel seeds its checkbox selection from
+                  `skills` once, at mount, but `skills` arrives from its own fetch after the
+                  chat renders. Without the key the picker would open pre-ticked with the
+                  empty initial value. */}
+              <SkillConfigPanel
+                key={skills.join(",")}
+                agentId={agentId}
+                skills={skills}
+                busy={turnBusy}
+                onApplied={onSkillsApplied}
               />
               <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
                 <Btn
