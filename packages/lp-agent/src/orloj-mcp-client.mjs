@@ -536,6 +536,86 @@ export async function createV3Position(client, params) {
 }
 
 /**
+ * Read-only Trading API quote (amount in token smallest units / wei decimal string).
+ * @param {McpClientOptions} client
+ * @param {{
+ *   chainId: string,
+ *   tokenIn: string,
+ *   tokenOut: string,
+ *   amount: string,
+ *   type?: "EXACT_INPUT" | "EXACT_OUTPUT",
+ *   slippageTolerance?: number,
+ * }} params
+ */
+export async function quoteTrade(client, params) {
+  if (params.chainId !== DEFAULT_CHAIN_ID) {
+    throw new Error(`quote only supported here with chainId ${DEFAULT_CHAIN_ID}`);
+  }
+  if (typeof params.tokenIn !== "string" || params.tokenIn.trim() === "") {
+    throw new Error("quote requires non-empty tokenIn");
+  }
+  if (typeof params.tokenOut !== "string" || params.tokenOut.trim() === "") {
+    throw new Error("quote requires non-empty tokenOut");
+  }
+  if (typeof params.amount !== "string" || !/^\d+$/.test(params.amount) || params.amount === "0") {
+    throw new Error("quote amount must be a positive decimal integer string (raw units)");
+  }
+  /** @type {Record<string, unknown>} */
+  const args = {
+    chainId: params.chainId,
+    tokenIn: params.tokenIn,
+    tokenOut: params.tokenOut,
+    amount: params.amount,
+  };
+  if (params.type !== undefined) args.type = params.type;
+  if (params.slippageTolerance !== undefined) {
+    args.slippageTolerance = params.slippageTolerance;
+  }
+  const result = await callMcpTool(client, "quote", args);
+  return result.data ?? result.text;
+}
+
+/**
+ * Fund-moving Trading API swap (amount in raw units). Returns { hash } on success.
+ * @param {McpClientOptions} client
+ * @param {{
+ *   chainId: string,
+ *   tokenIn: string,
+ *   tokenOut: string,
+ *   amount: string,
+ *   type?: "EXACT_INPUT" | "EXACT_OUTPUT",
+ *   slippageTolerance?: number,
+ * }} params
+ */
+export async function swapTokens(client, params) {
+  if (params.chainId !== DEFAULT_CHAIN_ID) {
+    throw new Error(`swap only supported here with chainId ${DEFAULT_CHAIN_ID}`);
+  }
+  if (typeof params.tokenIn !== "string" || params.tokenIn.trim() === "") {
+    throw new Error("swap requires non-empty tokenIn");
+  }
+  if (typeof params.tokenOut !== "string" || params.tokenOut.trim() === "") {
+    throw new Error("swap requires non-empty tokenOut");
+  }
+  if (typeof params.amount !== "string" || !/^\d+$/.test(params.amount) || params.amount === "0") {
+    throw new Error("swap amount must be a positive decimal integer string (raw units)");
+  }
+  /** @type {Record<string, unknown>} */
+  const args = {
+    chainId: params.chainId,
+    tokenIn: params.tokenIn,
+    tokenOut: params.tokenOut,
+    amount: params.amount,
+  };
+  if (params.type !== undefined) args.type = params.type;
+  if (params.slippageTolerance !== undefined) {
+    args.slippageTolerance = params.slippageTolerance;
+  }
+  const result = await callMcpTool(client, "swap", args);
+  return result.data ?? result.text;
+}
+
+/**
  * Read-only pool state (token pair, fee, tick, liquidity). Not used in the manage loop.
  * @param {McpClientOptions} client
  * @param {{ chainId: string, poolAddress: string }} params

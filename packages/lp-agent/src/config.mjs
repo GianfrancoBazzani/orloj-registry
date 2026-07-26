@@ -12,6 +12,9 @@ export const DEFAULT_GRAPH_GATEWAY_BASE =
 /** Ethereum Sepolia — the only chain supported by Orloj Uniswap V3 LP tools. */
 export const DEFAULT_CHAIN_ID = "11155111";
 
+/** Default local state file for in-progress REBALANCE recovery. */
+export const DEFAULT_STATE_FILE = ".lp-agent-state.json";
+
 /** @typedef {"observe" | "execute"} AgentMode */
 
 /**
@@ -26,8 +29,10 @@ export const DEFAULT_CHAIN_ID = "11155111";
  * @property {string} aiApiKey
  * @property {string} aiModel
  * @property {AgentMode} agentMode
- * @property {string | null} nftTokenId null when unset — resolve via list_v3_positions bootstrap
+ * @property {string | null} nftTokenId null when unset — discover via list_v3_positions
  * @property {string} chainId
+ * @property {string} stateFilePath
+ * @property {boolean} allowCreateRetry explicit operator-approved create retry only
  */
 
 /**
@@ -104,6 +109,20 @@ export function loadConfig(env = process.env) {
     );
   }
 
+  const stateFilePath =
+    (typeof env.LP_AGENT_STATE_FILE === "string" &&
+      env.LP_AGENT_STATE_FILE.trim()) ||
+    DEFAULT_STATE_FILE;
+
+  const allowCreateRetryRaw =
+    typeof env.LP_AGENT_ALLOW_CREATE_RETRY === "string"
+      ? env.LP_AGENT_ALLOW_CREATE_RETRY.trim().toLowerCase()
+      : "";
+  const allowCreateRetry =
+    allowCreateRetryRaw === "1" ||
+    allowCreateRetryRaw === "true" ||
+    allowCreateRetryRaw === "yes";
+
   if (missing.length > 0) {
     throw new Error(
       `Missing required environment variables: ${missing.join(", ")}`,
@@ -132,5 +151,7 @@ export function loadConfig(env = process.env) {
     agentMode: /** @type {AgentMode} */ (modeRaw),
     nftTokenId,
     chainId,
+    stateFilePath,
+    allowCreateRetry,
   };
 }
