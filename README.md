@@ -106,6 +106,24 @@ Fill in at least:
 - **`packages/registry/.env`** — `DATABASE_URL` (same Postgres as the app), and either `ONECLAW_API_KEY` + `ONECLAW_BASE_URL` or `ORBITPORT_CLIENT_ID` + `ORBITPORT_CLIENT_SECRET` depending on which vault provider you'll sign with.
 - **`packages/app/.env.local`** — `DATABASE_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL` (defaults to `http://localhost:3000`), `RESEND_API_KEY` + `EMAIL_FROM` for magic-link sign-in, `REGISTRY_URL=http://localhost:3001` so the app can proxy to the registry, plus the same KMS credentials. Optional: `ETH_RPC_URL`, `ETH_RPC_URL_SEPOLIA`, `ENS_CHAIN`.
 
+### Optional: the onchain market sentiment MCP
+
+The `feeling` MCP (dashboard at `/sentiment`) reads Uniswap V3 swap flow through a
+Substreams module that is **not** committed as a build artifact, so it needs one setup
+pass. Skip this and the rest of the registry still runs — only `/sentiment` is affected.
+
+```bash
+cd packages/substreams-sentiment
+SUBSTREAMS_API_KEY=server_... ./setup.sh
+```
+
+The script checks your toolchain, builds the WASM module, validates the manifest, and
+exchanges your API key for the JWT the endpoint requires (the raw key is rejected). It
+is idempotent — re-run it any time. Get a free key at
+[thegraph.com/studio](https://thegraph.com/studio) or
+[app.streamingfast.io](https://app.streamingfast.io); it prints the
+`SUBSTREAMS_API_TOKEN` line to paste into `packages/registry/.env`.
+
 Then run:
 
 ```bash

@@ -81,8 +81,26 @@ Both modules are `kind: map`. This is the load-bearing design decision:
 
 ## Setup from a fresh clone
 
-`target/` is gitignored, so a clone has **no compiled module**. The `feeling` MCP will
-fail until you build it. Four steps:
+`target/` is gitignored, so a clone has **no compiled module** and the `feeling` MCP
+fails until you build one. One command does everything:
+
+```bash
+SUBSTREAMS_API_KEY=server_... ./setup.sh
+```
+
+It verifies the toolchain, installs the wasm target if missing, builds the module,
+validates the manifest, and exchanges your API key for a JWT — then prints the
+`SUBSTREAMS_API_TOKEN` line to paste into `packages/registry/.env`. Idempotent: it skips
+the build when the wasm is newer than every source file, so re-running costs a second.
+`FORCE_BUILD=1` overrides.
+
+Get a free key at [thegraph.com/studio](https://thegraph.com/studio) or
+[app.streamingfast.io](https://app.streamingfast.io). The raw key is **not** the token —
+the exchange is not optional, and skipping it fails at stream time with
+`invalid JWT token`.
+
+<details>
+<summary>Manual equivalent, if you would rather not run a script</summary>
 
 ```bash
 # 1. Toolchain
@@ -91,10 +109,9 @@ brew install protobuf                              # prost-build shells out to p
 brew install streamingfast/tap/substreams          # the MCP shells out to this CLI
 
 # 2. Build the module (produces the .wasm the manifest points at)
-cd packages/substreams-sentiment
 cargo build --target wasm32-unknown-unknown --release
 
-# 3. Exchange your StreamingFast API key for a JWT (one-time, lasts ~3650 days)
+# 3. Exchange the API key for a JWT (one-time, lasts ~3650 days)
 export SUBSTREAMS_API_TOKEN=$(curl -sS -X POST https://auth.streamingfast.io/v1/auth/issue \
   -H "Content-Type: application/json" \
   -d "{\"api_key\":\"$SUBSTREAMS_API_KEY\"}" \
@@ -105,9 +122,7 @@ export SUBSTREAMS_API_TOKEN=$(curl -sS -X POST https://auth.streamingfast.io/v1/
 cd ../registry && cargo run
 ```
 
-Get a free API key at [thegraph.com/studio](https://thegraph.com/studio) or
-[app.streamingfast.io](https://app.streamingfast.io). The raw key is **not** the token —
-step 3 is not optional, and skipping it fails with `invalid JWT token`.
+</details>
 
 ## Build
 
