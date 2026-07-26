@@ -99,6 +99,31 @@ Get a free key at [thegraph.com/studio](https://thegraph.com/studio) or
 the exchange is not optional, and skipping it fails at stream time with
 `invalid JWT token`.
 
+### Running fully in Docker (no host install at all)
+
+`substreams-docker` is a drop-in replacement for the `substreams` binary that executes
+it in a container. Point the registry at it and nothing Substreams-related — not the
+CLI, not Rust, not protoc, not the compiled wasm — needs to exist on the host:
+
+```bash
+export SUBSTREAMS_BIN="$PWD/packages/substreams-sentiment/substreams-docker"
+```
+
+Arguments and output pass through untouched, so the registry cannot tell the
+difference. The image builds itself on first use. `SUBSTREAMS_API_TOKEN` is forwarded
+into the container and never baked into the image.
+
+Use it directly too:
+
+```bash
+./substreams-docker info substreams.yaml
+pnpm cli run substreams.yaml map_swaps -e mainnet.eth.streamingfast.io:443 -s ... -t ...
+```
+
+⚠ The one thing that is still not local: **the module itself always executes on the
+provider's servers** (StreamingFast/Pinax). The container runs the *client*. That is
+inherent to Substreams, not a packaging choice.
+
 ### Building without a local toolchain
 
 If you would rather not install Rust and protoc — common on Linux, where the

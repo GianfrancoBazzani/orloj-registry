@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+#
+# Drop-in replacement for the `substreams` binary that runs it inside Docker.
+#
+# The registry spawns `$SUBSTREAMS_BIN <args...>` per sentiment call (see
+# mcps/feeling/pull.rs). Pointing SUBSTREAMS_BIN at this script means the CLI, the Rust
+# toolchain, protoc, and the compiled module all live in the image — nothing
+# Substreams-related has to be installed on the host.
+#
+#   export SUBSTREAMS_BIN="$PWD/packages/substreams-sentiment/substreams-docker"
+#
+# Arguments and stdout/stderr pass through untouched, so the caller cannot tell the
+# difference. Exit codes propagate.
+
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+IMAGE="${SUBSTREAMS_IMAGE:-substreams-sentiment:latest}"
+
+# Build on first use so a fresh clone works without a separate setup step. Subsequent
+# calls hit the image cache and skip straight to `docker run`.
+if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+  echo "substreams-docker: building $IMAGE (first run only)…" >&2
+  docker build -q -t "$IMAGE" "$HERE" >&2
+fi
+
+# --network host: the CLI needs to reach StreamingFast's gRPC endpoint, and the
+#   registry resolves chain head over RPC before each call.
+# -v "$HERE:/build": mount the package so substreams.yaml and the built wasm inside the
+#   image are overlaid by the host copy — edits to the manifest take effect immediately.
+# SUBSTREAMS_API_TOKEN is forwarded, never baked into the image.
+exec docker run --rm -i \
+  --network host \
+  -e SUBSTREAMS_API_TOKEN="${SUBSTREAMS_API_TOKEN:-}" \
+  -v "$HERE:/build" \
+  -w /build \
+  "$IMAGE" \
+  substreams "$@"
