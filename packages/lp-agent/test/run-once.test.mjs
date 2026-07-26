@@ -9,6 +9,7 @@ import {
   pairContextFromMarket,
   requirePairContextFromMarket,
 } from "../src/decision-client.mjs";
+import { emptyState } from "../src/state-store.mjs";
 
 const CONFIG = {
   orlojMcpUrl: "https://mcp.example/mcp",
@@ -22,6 +23,8 @@ const CONFIG = {
   agentMode: "observe",
   nftTokenId: "7",
   chainId: "11155111",
+  stateFilePath: "/tmp/lp-agent-test-state.json",
+  allowCreateRetry: false,
 };
 
 const POSITION = {
@@ -29,8 +32,8 @@ const POSITION = {
   walletAddress: "0x00000000000000000000000000000000000000aa",
   nftTokenId: "7",
   poolAddress: "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01",
-  token0: "0x01",
-  token1: "0x02",
+  token0: "0x0000000000000000000000000000000000000001",
+  token1: "0x0000000000000000000000000000000000000002",
   fee: "3000",
   tickLower: "0",
   tickUpper: "200",
@@ -46,8 +49,18 @@ const MARKET = {
     feeTier: "3000",
     tick: "10",
     liquidity: "9000",
-    token0: { id: "0x01", symbol: "AAA", decimals: "18", name: "A" },
-    token1: { id: "0x02", symbol: "BBB", decimals: "6", name: "B" },
+    token0: {
+      id: "0x0000000000000000000000000000000000000001",
+      symbol: "AAA",
+      decimals: "18",
+      name: "A",
+    },
+    token1: {
+      id: "0x0000000000000000000000000000000000000002",
+      symbol: "BBB",
+      decimals: "6",
+      name: "B",
+    },
   },
   subgraphId: CONFIG.subgraphId,
   queriedAt: 1_700_000_000,
@@ -71,8 +84,8 @@ const FEATURES = {
     tickUpper: 200,
     positionLiquidity: "5000",
     fee: "3000",
-    token0: "0x01",
-    token1: "0x02",
+    token0: "0x0000000000000000000000000000000000000001",
+    token1: "0x0000000000000000000000000000000000000002",
   },
   range: {
     currentTick: 10,
@@ -92,6 +105,7 @@ const FEATURES = {
     ageSeconds: 100,
   },
   missingInputFlags: ["usd_data_unusable"],
+  liquidity: { trend_24h: { value: -0.2 }, poolLiquidity: "9000" },
 };
 
 function holdDecision() {
@@ -99,6 +113,7 @@ function holdDecision() {
     action: "HOLD",
     confidence: 0.6,
     liquidityPercentageToDecrease: null,
+    rangeWidthBps: null,
     summary: "hold",
     signals: [
       {
@@ -122,6 +137,7 @@ function reduceDecision() {
     action: "REDUCE_LIQUIDITY",
     confidence: 0.8,
     liquidityPercentageToDecrease: 40,
+    rangeWidthBps: null,
     summary: "reduce",
     signals: [
       {
@@ -148,6 +164,49 @@ function reduceDecision() {
   };
 }
 
+function rebalanceDecision() {
+  return {
+    action: "REBALANCE",
+    confidence: 0.85,
+    liquidityPercentageToDecrease: 100,
+    rangeWidthBps: 800,
+    summary: "rebalance",
+    signals: [
+      {
+        direction: "SUPPORTS_REBALANCE",
+        observation: "out of useful range proximity",
+        citations: ["range.nearestBoundaryDistance"],
+      },
+      {
+        direction: "SUPPORTS_REBALANCE",
+        observation: "liquidity trend down",
+        citations: ["liquidity.trend_24h.value"],
+      },
+    ],
+    uncertainties: [],
+    graphEvidence: {
+      subgraphId: CONFIG.subgraphId,
+      indexedBlock: "11348887",
+      ageSeconds: 100,
+      citedFeaturePaths: [
+        "range.nearestBoundaryDistance",
+        "liquidity.trend_24h.value",
+      ],
+    },
+  };
+}
+
+function memoryStateStore() {
+  let state = emptyState();
+  return {
+    loadStateFn: () => structuredClone(state),
+    saveStateFn: (_path, next) => {
+      state = structuredClone(next);
+    },
+    getState: () => state,
+  };
+}
+
 describe("run-once pipeline", () => {
   it("requirePairContextFromMarket fails closed on null", () => {
     assert.throws(
@@ -163,8 +222,10 @@ describe("run-once pipeline", () => {
     let validatedPairBeforeAi = false;
     let aiSawPair = false;
 
+    const store = memoryStateStore();
     const trace = await runOnce({
       config: CONFIG,
+      ...store,
       getPosition: async () => POSITION,
       fetchMarket: async () => MARKET,
       extractFeaturesFn: () => FEATURES,
@@ -181,38 +242,67 @@ describe("run-once pipeline", () => {
 
     assert.equal(validatedPairBeforeAi, true);
     assert.equal(aiSawPair, true);
-    assert.equal(trace.plan.kind, "no_write");
-    assert.equal(trace.plan.mcpCall, null);
-    assert.equal(trace.execution.status, "observe");
-    assert.equal(trace.decision.action, "HOLD");
+    assert.equal(trace.discovery.source, "env_filter");
+    assert.equal(trace.results.length, 1);
+    const r = trace.results[0];
+    assert.equal(r.plan.kind, "no_write");
+    assert.equal(r.plan.mcpCall, null);
+    assert.equal(r.execution.status, "observe");
+    assert.equal(r.decision.action, "HOLD");
+    assert.equal(r.nftResolution.source, "env_filter");
   });
 
   it("observe REDUCE: plans decrease_v3_position only with NFT + percentage", async () => {
+    const store = memoryStateStore();
     const trace = await runOnce({
       config: CONFIG,
+      ...store,
       getPosition: async () => POSITION,
       fetchMarket: async () => MARKET,
-      extractFeaturesFn: () => ({
-        ...FEATURES,
-        liquidity: { trend_24h: { value: -0.2 }, poolLiquidity: "9000" },
-      }),
+      extractFeaturesFn: () => FEATURES,
       requestDecisionFn: async () => reduceDecision(),
     });
 
-    assert.equal(trace.plan.kind, "proposed_write");
-    assert.equal(trace.plan.mcpCall.toolName, "decrease_v3_position");
-    assert.deepEqual(trace.plan.mcpCall.arguments, {
+    const r = trace.results[0];
+    assert.equal(r.plan.kind, "proposed_write");
+    assert.equal(r.plan.mcpCall.toolName, "decrease_v3_position");
+    assert.deepEqual(r.plan.mcpCall.arguments, {
       chainId: "11155111",
       nftTokenId: "7",
       liquidityPercentageToDecrease: 40,
     });
-    assert.equal(trace.execution.proposedCall.toolName, "decrease_v3_position");
+    assert.equal(r.execution.proposedCall.toolName, "decrease_v3_position");
+  });
+
+  it("observe REBALANCE proposes decrease+create only", async () => {
+    const store = memoryStateStore();
+    const trace = await runOnce({
+      config: CONFIG,
+      ...store,
+      getPosition: async () => POSITION,
+      fetchMarket: async () => MARKET,
+      extractFeaturesFn: () => FEATURES,
+      requestDecisionFn: async () => rebalanceDecision(),
+    });
+    const r = trace.results[0];
+    assert.equal(r.plan.kind, "rebalance");
+    assert.equal(r.plan.steps.length, 3);
+    assert.equal(r.plan.steps[0].toolName, "decrease_v3_position");
+    assert.equal(r.plan.steps[1].toolName, "swap");
+    assert.equal(r.plan.steps[2].toolName, "create_v3_position");
+    assert.equal(r.plan.steps[2].arguments.poolAddress, POSITION.poolAddress);
+    assert.equal(r.plan.steps[2].arguments.tokenA, POSITION.token0);
+    assert.equal(r.plan.steps[2].arguments.maxTokenAAmount, null);
+    assert.equal(r.execution.status, "observe");
+    assert.equal(r.execution.proposedSteps.length, 3);
   });
 
   it("execute mode HOLD reports held/no_write and never calls MCP write", async () => {
     let decreaseCalls = 0;
+    const store = memoryStateStore();
     const trace = await runOnce({
       config: { ...CONFIG, agentMode: "execute" },
+      ...store,
       getPosition: async () => POSITION,
       fetchMarket: async () => MARKET,
       extractFeaturesFn: () => FEATURES,
@@ -222,21 +312,24 @@ describe("run-once pipeline", () => {
         throw new Error("should not decrease on HOLD");
       },
     });
+    const r = trace.results[0];
     assert.equal(trace.phase, 2);
-    assert.equal(trace.execution.status, "held");
-    assert.equal(trace.execution.kind, "no_write");
-    assert.equal(trace.execution.called, null);
-    assert.equal(trace.execution.mcpResponse, null);
-    assert.notEqual(trace.execution.status, "pending");
+    assert.equal(r.execution.status, "held");
+    assert.equal(r.execution.kind, "no_write");
+    assert.equal(r.execution.called, null);
+    assert.equal(r.execution.mcpResponse, null);
+    assert.notEqual(r.execution.status, "pending");
     assert.equal(decreaseCalls, 0);
-    assert.match(trace.execution.message, /nothing executed/i);
+    assert.match(r.execution.message, /nothing executed/i);
   });
 
   it("execute mode REDUCE calls decrease_v3_position exactly once with plan args", async () => {
     const calls = [];
     const mcpPayload = { txHash: "0xabc", amount0: "1", amount1: "2" };
+    const store = memoryStateStore();
     const trace = await runOnce({
       config: { ...CONFIG, agentMode: "execute" },
+      ...store,
       getPosition: async () => POSITION,
       fetchMarket: async () => MARKET,
       extractFeaturesFn: () => FEATURES,
@@ -246,16 +339,17 @@ describe("run-once pipeline", () => {
         return mcpPayload;
       },
     });
+    const r = trace.results[0];
     assert.equal(trace.phase, 2);
-    assert.equal(trace.execution.status, "executed");
-    assert.deepEqual(trace.features, FEATURES);
+    assert.equal(r.execution.status, "executed");
+    assert.deepEqual(r.features, FEATURES);
     assert.equal(calls.length, 1);
     assert.deepEqual(calls[0], {
       chainId: "11155111",
       nftTokenId: "7",
       liquidityPercentageToDecrease: 40,
     });
-    assert.deepEqual(trace.execution.called, {
+    assert.deepEqual(r.execution.called, {
       toolName: "decrease_v3_position",
       arguments: {
         chainId: "11155111",
@@ -263,48 +357,45 @@ describe("run-once pipeline", () => {
         liquidityPercentageToDecrease: 40,
       },
     });
-    assert.deepEqual(trace.execution.mcpResponse, mcpPayload);
+    assert.deepEqual(r.execution.mcpResponse, mcpPayload);
   });
 
-  it("execute mode surfaces MCP failure with full audit-complete trace", async () => {
-    await assert.rejects(
-      () =>
-        runOnce({
-          config: { ...CONFIG, agentMode: "execute" },
-          getPosition: async () => POSITION,
-          fetchMarket: async () => MARKET,
-          extractFeaturesFn: () => FEATURES,
-          requestDecisionFn: async () => reduceDecision(),
-          decreasePosition: async () => {
-            throw new Error("MCP tool error: insufficient liquidity");
-          },
-        }),
-      (err) => {
-        assert.match(String(err.message), /execute decrease_v3_position failed/);
-        assert.match(String(err.message), /insufficient liquidity/);
-        const trace = /** @type {any} */ (err).auditTrace;
-        assert.ok(trace, "auditTrace must be attached");
-        assert.equal(trace.status, "error");
-        assert.equal(trace.phase, 2);
-        assert.equal(trace.agentMode, "execute");
-        assert.equal(trace.position.nftTokenId, "7");
-        assert.equal(trace.graph.subgraphId, CONFIG.subgraphId);
-        assert.deepEqual(trace.features, FEATURES);
-        assert.equal(trace.decision.action, "REDUCE_LIQUIDITY");
-        assert.equal(trace.plan.mcpCall.toolName, "decrease_v3_position");
-        assert.equal(trace.execution.status, "failed");
-        assert.equal(trace.execution.mode, "execute");
-        assert.match(trace.execution.error, /insufficient liquidity/);
-        assert.notEqual(trace.execution.status, "observe");
-        return true;
+  it("execute mode surfaces MCP failure with full audit-complete per-position result", async () => {
+    const store = memoryStateStore();
+    const trace = await runOnce({
+      config: { ...CONFIG, agentMode: "execute" },
+      ...store,
+      getPosition: async () => POSITION,
+      fetchMarket: async () => MARKET,
+      extractFeaturesFn: () => FEATURES,
+      requestDecisionFn: async () => reduceDecision(),
+      decreasePosition: async () => {
+        throw new Error("MCP tool error: insufficient liquidity");
       },
-    );
+    });
+    assert.equal(trace.status, "error");
+    assert.equal(trace.results.length, 1);
+    const r = trace.results[0];
+    assert.equal(r.status, "error");
+    assert.equal(r.phase, 2);
+    assert.equal(r.agentMode, "execute");
+    assert.equal(r.position.nftTokenId, "7");
+    assert.equal(r.graph.subgraphId, CONFIG.subgraphId);
+    assert.deepEqual(r.features, FEATURES);
+    assert.equal(r.decision.action, "REDUCE_LIQUIDITY");
+    assert.equal(r.plan.mcpCall.toolName, "decrease_v3_position");
+    assert.equal(r.execution.status, "failed");
+    assert.equal(r.execution.mode, "execute");
+    assert.match(r.execution.error, /insufficient liquidity/);
+    assert.notEqual(r.execution.status, "observe");
   });
 
   it("observe mode REDUCE never calls decreasePosition", async () => {
     let decreaseCalls = 0;
+    const store = memoryStateStore();
     const trace = await runOnce({
       config: CONFIG,
+      ...store,
       getPosition: async () => POSITION,
       fetchMarket: async () => MARKET,
       extractFeaturesFn: () => FEATURES,
@@ -315,23 +406,26 @@ describe("run-once pipeline", () => {
       },
     });
     assert.equal(trace.phase, 1);
-    assert.equal(trace.execution.status, "observe");
+    assert.equal(trace.results[0].execution.status, "observe");
     assert.equal(decreaseCalls, 0);
   });
 
-  it("fails closed when pairContextFromMarket is null", async () => {
-    await assert.rejects(
-      () =>
-        runOnce({
-          config: CONFIG,
-          getPosition: async () => POSITION,
-          fetchMarket: async () => MARKET,
-          extractFeaturesFn: () => FEATURES,
-          pairFromMarketFn: () => null,
-          requestDecisionFn: async () => {
-            throw new Error("AI must not be called");
-          },
-        }),
+  it("fails closed when pairContextFromMarket is null (per-position error preserved)", async () => {
+    const store = memoryStateStore();
+    const trace = await runOnce({
+      config: CONFIG,
+      ...store,
+      getPosition: async () => POSITION,
+      fetchMarket: async () => MARKET,
+      extractFeaturesFn: () => FEATURES,
+      pairFromMarketFn: () => null,
+      requestDecisionFn: async () => {
+        throw new Error("AI must not be called");
+      },
+    });
+    assert.equal(trace.status, "error");
+    assert.match(
+      String(trace.results[0].error),
       /pairContextFromMarket returned null|address-only fallback is forbidden/,
     );
   });
@@ -341,37 +435,324 @@ describe("run-once pipeline", () => {
       ...MARKET,
       pool: { ...MARKET.pool, feeTier: undefined },
     };
-    await assert.rejects(
-      () =>
-        runOnce({
-          config: CONFIG,
-          getPosition: async () => POSITION,
-          fetchMarket: async () => marketNoFee,
-          extractFeaturesFn: () => FEATURES,
-          requestDecisionFn: async () => {
-            throw new Error("AI must not be called");
-          },
-        }),
-      /pairContextFromMarket returned null|fee/,
-    );
+    const store = memoryStateStore();
+    const trace = await runOnce({
+      config: CONFIG,
+      ...store,
+      getPosition: async () => POSITION,
+      fetchMarket: async () => marketNoFee,
+      extractFeaturesFn: () => FEATURES,
+      requestDecisionFn: async () => {
+        throw new Error("AI must not be called");
+      },
+    });
+    assert.equal(trace.status, "error");
+    assert.match(String(trace.results[0].error), /pairContextFromMarket returned null|fee/);
   });
 
   it("fails closed when pair token ids disagree with features.position", async () => {
-    await assert.rejects(
-      () =>
-        runOnce({
-          config: CONFIG,
-          getPosition: async () => POSITION,
-          fetchMarket: async () => MARKET,
-          extractFeaturesFn: () => ({
-            ...FEATURES,
-            position: { ...FEATURES.position, token0: "0x99" },
-          }),
-          requestDecisionFn: async () => {
-            throw new Error("AI must not be called");
-          },
-        }),
-      /token ids do not match/,
+    const store = memoryStateStore();
+    const trace = await runOnce({
+      config: CONFIG,
+      ...store,
+      getPosition: async () => POSITION,
+      fetchMarket: async () => MARKET,
+      extractFeaturesFn: () => ({
+        ...FEATURES,
+        position: {
+          ...FEATURES.position,
+          token0: "0x0000000000000000000000000000000000000099",
+        },
+      }),
+      requestDecisionFn: async () => {
+        throw new Error("AI must not be called");
+      },
+    });
+    assert.equal(trace.status, "error");
+    assert.match(String(trace.results[0].error), /token ids do not match/);
+  });
+
+  it("discovers all positions when NFT unset and truncated=false", async () => {
+    const store = memoryStateStore();
+    const decisions = { "7": holdDecision(), "8": holdDecision() };
+    const trace = await runOnce({
+      config: { ...CONFIG, nftTokenId: null },
+      ...store,
+      discoverFn: async () => ({
+        source: "list_v3_positions",
+        truncated: false,
+        count: 2,
+        totalOwned: 2,
+        nftTokenIds: ["7", "8"],
+        positions: [{ nftTokenId: "7" }, { nftTokenId: "8" }],
+      }),
+      getPosition: async (_c, { nftTokenId }) => ({
+        ...POSITION,
+        nftTokenId,
+      }),
+      fetchMarket: async () => MARKET,
+      extractFeaturesFn: (pos) => ({
+        ...FEATURES,
+        position: { ...FEATURES.position, nftTokenId: pos.nftTokenId },
+      }),
+      requestDecisionFn: async (_c, input) =>
+        decisions[input.features.position.nftTokenId] ?? holdDecision(),
+    });
+    assert.equal(trace.discovery.source, "list_v3_positions");
+    assert.equal(trace.discovery.truncated, false);
+    assert.equal(trace.results.length, 2);
+    assert.deepEqual(
+      trace.results.map((r) => r.nftResolution.nftTokenId),
+      ["7", "8"],
     );
+  });
+
+  it("one failed position does not hide other results in observe", async () => {
+    const store = memoryStateStore();
+    let n = 0;
+    const trace = await runOnce({
+      config: { ...CONFIG, nftTokenId: null },
+      ...store,
+      discoverFn: async () => ({
+        source: "list_v3_positions",
+        truncated: false,
+        count: 2,
+        totalOwned: 2,
+        nftTokenIds: ["7", "8"],
+        positions: [{ nftTokenId: "7" }, { nftTokenId: "8" }],
+      }),
+      getPosition: async (_c, { nftTokenId }) => {
+        n += 1;
+        if (nftTokenId === "7") throw new Error("boom on first");
+        return { ...POSITION, nftTokenId };
+      },
+      fetchMarket: async () => MARKET,
+      extractFeaturesFn: () => FEATURES,
+      requestDecisionFn: async () => holdDecision(),
+    });
+    assert.equal(trace.status, "partial");
+    assert.equal(trace.results.length, 2);
+    assert.equal(trace.results[0].status, "error");
+    assert.match(String(trace.results[0].error), /boom on first/);
+    assert.equal(trace.results[1].status, "ok");
+    assert.equal(trace.results[1].decision.action, "HOLD");
+    assert.equal(n, 2);
+  });
+
+  it("execute REBALANCE does not auto-remint after create failure; recovery before discovery", async () => {
+    const store = memoryStateStore();
+    const decreaseCalls = [];
+    const createCalls = [];
+
+    const decreaseResp = {
+      hash: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      nftTokenId: "7",
+      liquidityPercentageToDecrease: 100,
+      token0: {
+        tokenAddress: POSITION.token0,
+        amount: "1000000000000000000",
+      },
+      token1: { tokenAddress: POSITION.token1, amount: "2000000" },
+    };
+
+    // First run: create fails after decrease.
+    const first = await runOnce({
+      config: { ...CONFIG, agentMode: "execute" },
+      ...store,
+      getPosition: async () => POSITION,
+      fetchMarket: async () => MARKET,
+      extractFeaturesFn: () => FEATURES,
+      requestDecisionFn: async () => rebalanceDecision(),
+      decreasePosition: async (_c, params) => {
+        decreaseCalls.push(params);
+        return decreaseResp;
+      },
+      createPosition: async () => {
+        throw new Error("create blew up");
+      },
+      listPositions: async () => ({
+        truncated: false,
+        positions: [],
+      }),
+    });
+    assert.equal(first.status, "error");
+    assert.equal(decreaseCalls.length, 1);
+    assert.equal(store.getState().inProgress["7"].decrease.status, "succeeded");
+    assert.ok(store.getState().inProgress["7"].decrease.budgets);
+
+    // Second run: NFT filtered out of discovery (zero liquidity) — recovery must still run.
+    // Must NOT decrease again; must NOT auto-create without allowCreateRetry.
+    const second = await runOnce({
+      config: { ...CONFIG, agentMode: "execute", nftTokenId: null },
+      ...store,
+      discoverFn: async () => ({
+        source: "list_v3_positions",
+        truncated: false,
+        count: 0,
+        totalOwned: 1,
+        nftTokenIds: [],
+        positions: [], // zero-liquidity NFT omitted
+      }),
+      getPosition: async () => {
+        throw new Error("should not get_position for AI path");
+      },
+      requestDecisionFn: async () => {
+        throw new Error("AI must not run for recovery");
+      },
+      decreasePosition: async (_c, params) => {
+        decreaseCalls.push(params);
+        throw new Error("must not decrease again");
+      },
+      createPosition: async (_c, params) => {
+        createCalls.push(params);
+        throw new Error("must not auto create");
+      },
+      listPositions: async () => ({
+        truncated: false,
+        positions: [],
+      }),
+    });
+    assert.equal(second.status, "error");
+    assert.equal(decreaseCalls.length, 1);
+    assert.equal(createCalls.length, 0);
+    assert.equal(second.results[0].status, "needs_attention");
+    assert.equal(second.results[0].execution.status, "needs_reconciliation");
+    assert.equal(second.discovery.skippedForRecovery.includes("7"), true);
+    assert.ok(store.getState().inProgress["7"]);
+  });
+
+  it("operator-approved create retry after decrease (LP_AGENT_ALLOW_CREATE_RETRY)", async () => {
+    const store = memoryStateStore();
+    store.saveStateFn("/tmp/x", {
+      version: 1,
+      inProgress: {
+        "7": {
+          cycleId: "c1",
+          oldNftTokenId: "7",
+          poolAddress: POSITION.poolAddress,
+          token0: POSITION.token0,
+          token1: POSITION.token1,
+          liquidityPercentageToDecrease: 100,
+          rangeWidthBps: 800,
+          decrease: {
+            status: "succeeded",
+            budgets: {
+              tokenA: POSITION.token0,
+              tokenB: POSITION.token1,
+              maxTokenAAmount: "1",
+              maxTokenBAmount: "2",
+            },
+            mcpResponse: { hash: "0xdec" },
+          },
+          swap: { status: "skipped" },
+          create: { status: "failed", error: "prior" },
+          newNftTokenId: null,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    });
+
+    const createCalls = [];
+    const trace = await runOnce({
+      config: {
+        ...CONFIG,
+        agentMode: "execute",
+        nftTokenId: null,
+        allowCreateRetry: true,
+      },
+      ...store,
+      discoverFn: async () => ({
+        source: "list_v3_positions",
+        truncated: false,
+        count: 0,
+        totalOwned: 0,
+        nftTokenIds: [],
+        positions: [],
+      }),
+      listPositions: async () => ({ truncated: false, positions: [] }),
+      requestDecisionFn: async () => {
+        throw new Error("no AI");
+      },
+      decreasePosition: async () => {
+        throw new Error("no decrease");
+      },
+      createPosition: async (_c, params) => {
+        createCalls.push(params);
+        return {
+          hash: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          nftTokenId: "99",
+        };
+      },
+    });
+    assert.equal(createCalls.length, 1);
+    assert.equal(trace.status, "ok");
+    assert.equal(trace.results[0].execution.newNftTokenId, "99");
+    assert.equal(store.getState().inProgress["7"], undefined);
+  });
+
+  it("nonterminal decrease status never repeats withdrawal", async () => {
+    const store = memoryStateStore();
+    store.saveStateFn("/tmp/x", {
+      version: 1,
+      inProgress: {
+        "7": {
+          cycleId: "c1",
+          oldNftTokenId: "7",
+          poolAddress: POSITION.poolAddress,
+          token0: POSITION.token0,
+          token1: POSITION.token1,
+          liquidityPercentageToDecrease: 100,
+          rangeWidthBps: 800,
+          decrease: { status: "pending", budgets: null },
+          create: { status: "pending" },
+          newNftTokenId: null,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    });
+    let decreases = 0;
+    const trace = await runOnce({
+      config: { ...CONFIG, agentMode: "execute", nftTokenId: null },
+      ...store,
+      discoverFn: async () => ({
+        source: "list_v3_positions",
+        truncated: false,
+        count: 0,
+        totalOwned: 0,
+        nftTokenIds: [],
+        positions: [],
+      }),
+      listPositions: async () => ({ truncated: false, positions: [] }),
+      decreasePosition: async () => {
+        decreases += 1;
+        throw new Error("nope");
+      },
+    });
+    assert.equal(decreases, 0);
+    assert.equal(trace.results[0].execution.status, "needs_reconciliation");
+    assert.equal(trace.status, "error");
+  });
+
+  it("needs_reopen is unsuccessful (top-level error / nonzero semantics)", async () => {
+    const store = memoryStateStore();
+    const trace = await runOnce({
+      config: { ...CONFIG, agentMode: "execute" },
+      ...store,
+      getPosition: async () => POSITION,
+      fetchMarket: async () => MARKET,
+      extractFeaturesFn: () => FEATURES,
+      requestDecisionFn: async () => rebalanceDecision(),
+      decreasePosition: async () => ({
+        hash: "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        token0: { tokenAddress: POSITION.token0, amount: "0" },
+        token1: { tokenAddress: POSITION.token1, amount: "0" },
+      }),
+      quoteTradeFn: async () => {
+        throw new Error("should not quote");
+      },
+    });
+    assert.equal(trace.results[0].status, "needs_attention");
+    assert.equal(trace.results[0].execution.status, "needs_reopen");
+    assert.equal(trace.status, "error");
   });
 });
