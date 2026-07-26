@@ -151,6 +151,9 @@ export const getPool = (): Promise<Pool> => {
     const pool = new Pool({
       connectionString: process.env.DATABASE_URL,
       ssl: { rejectUnauthorized: false },
+      // Supabase pooler (esp. free tier) is small; keep local/dev clients tiny.
+      max: 3,
+      idleTimeoutMillis: 10_000,
     });
     await ensureSchema(pool);
     return pool;
