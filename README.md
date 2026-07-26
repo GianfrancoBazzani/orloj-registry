@@ -13,6 +13,7 @@ Orloj is a registry that exposes smart-contract interfaces to AI agents as **MCP
 - **Private personal agents, spawned on demand and wired straight into the Orloj MCPs.** Opening a chat spawns that user's own **ZeroClaw** process with an isolated config dir and workspace. At spawn time the agent's selected MCPs are connected to the agent. Inference runs on **0G Compute** through the 0G router using the **`qwen3.7-max`** model.
 - **Immutable curated skills marketplace on 0G Storage.** The curated agent skills in [packages/skills-marketplace/](packages/skills-marketplace/) are published to **0G Storage** and addressed by their Merkle root hash, with the upload registered on 0G Chain. Orloj agents load them **dynamically**: pick a skill from the marketplace and it is fetched by root hash into that agent's workspace, teaching a running personal agent a new capability without redeploying anything.
 - **Direct agent access to the Uniswap API — swap, quote, and manage liquidity.** An extra special MCP at gives the agent multichain `quote` and `swap` functionality over the **Uniswap API** on any registered chain, plus **Uniswap V3** liquidity management over the Uniswap Liquidity API.
+- TODO the graph
 
 ## Tracks Applied
 
@@ -28,7 +29,7 @@ Orloj is a registry that exposes smart-contract interfaces to AI agents as **MCP
 
 - 0G — 🚀 Keep Building on 0G — see [`0G.md`](0G.md) for our integration writeup
 - Uniswap Foundation — 🤖 Best Uniswap API Integration — see [`UNISWAP.md`](UNISWAP.md) for our integration writeup
-- The Graph — 🏆 Best AI Use Case of The Graph (Continuity) — see [`THE-GRAPH.md`](THE-GRAPH.md) for our integration writeup
+- The Graph — 🏆 Best AI Use Case of The Graph (Continuity) — see [`THE-GRAPH.md`](THE-GRAPH.md) for our integration writeup  
 
 ## The Problem It Solves
 
