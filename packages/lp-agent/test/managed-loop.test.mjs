@@ -88,6 +88,28 @@ describe("discovery", () => {
     assert.deepEqual(result.nftTokenIds, ["1", "3"]);
     assert.equal(result.count, 2);
   });
+
+  it("allows empty active discovery when all positions have zero liquidity", async () => {
+    const result = await discoverManagedPositions(
+      {},
+      { chainId: "11155111", nftTokenId: null },
+      {
+        listPositions: async () => ({
+          truncated: false,
+          count: 2,
+          totalOwned: 2,
+          positions: [
+            { nftTokenId: "7", liquidity: "0" },
+            { nftTokenId: "8", liquidity: "0" },
+          ],
+        }),
+      },
+    );
+    assert.equal(result.count, 0);
+    assert.deepEqual(result.positions, []);
+    assert.deepEqual(result.nftTokenIds, []);
+    assert.equal(result.totalOwned, 2);
+  });
 });
 
 describe("amounts", () => {
@@ -194,25 +216,67 @@ describe("amounts", () => {
     assert.equal(ok.ok, true);
   });
 
-  it("reconcileCreateFromListedPositions adopts unique same-pool NFT", () => {
-    const got = reconcileCreateFromListedPositions(
+  it("reconcileCreateFromListedPositions requires baseline-aware new NFT", () => {
+    const pool = "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01";
+    // Pre-existing sibling NFT 8 must NOT be adopted.
+    const falsePositive = reconcileCreateFromListedPositions(
       {
+        truncated: false,
         positions: [
-          { nftTokenId: "7", poolAddress: "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01", liquidity: "0" },
-          { nftTokenId: "99", poolAddress: "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01", liquidity: "1" },
+          { nftTokenId: "7", poolAddress: pool, liquidity: "0" },
+          { nftTokenId: "8", poolAddress: pool, liquidity: "1" },
         ],
       },
       {
         oldNftTokenId: "7",
-        poolAddress: "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01",
+        poolAddress: pool,
+        ownedNftIdsBaseline: ["7", "8"],
       },
     );
-    assert.equal(got.ok, true);
-    if (got.ok) assert.equal(got.newNftTokenId, "99");
+    assert.equal(falsePositive.ok, false);
+    assert.match(falsePositive.reason, /no_replacement/);
+
+    const ok = reconcileCreateFromListedPositions(
+      {
+        truncated: false,
+        positions: [
+          { nftTokenId: "7", poolAddress: pool, liquidity: "0" },
+          { nftTokenId: "8", poolAddress: pool, liquidity: "1" },
+          { nftTokenId: "99", poolAddress: pool, liquidity: "5" },
+        ],
+      },
+      {
+        oldNftTokenId: "7",
+        poolAddress: pool,
+        ownedNftIdsBaseline: ["7", "8"],
+      },
+    );
+    assert.equal(ok.ok, true);
+    if (ok.ok) assert.equal(ok.newNftTokenId, "99");
+
+    const truncated = reconcileCreateFromListedPositions(
+      {
+        truncated: true,
+        positions: [{ nftTokenId: "99", poolAddress: pool, liquidity: "5" }],
+      },
+      {
+        oldNftTokenId: "7",
+        poolAddress: pool,
+        ownedNftIdsBaseline: ["7"],
+      },
+    );
+    assert.equal(truncated.ok, false);
+    assert.match(truncated.reason, /truncated/);
   });
 });
 
 describe("state-store", () => {
+  const POOL = "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01";
+  const T0 = "0x0000000000000000000000000000000000000001";
+  const T1 = "0x0000000000000000000000000000000000000002";
+  const HASH =
+    "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
   it("persists and recovers in-progress rebalance", () => {
     const dir = mkdtempSync(join(tmpdir(), "lp-agent-state-"));
     const path = join(dir, "state.json");
@@ -220,20 +284,24 @@ describe("state-store", () => {
     upsertInProgressRebalance(state, {
       cycleId: newCycleId(),
       oldNftTokenId: "7",
-      poolAddress: "0xpool",
-      token0: "0xa",
-      token1: "0xb",
+      poolAddress: POOL,
+      token0: T0,
+      token1: T1,
       liquidityPercentageToDecrease: 100,
       rangeWidthBps: 1000,
+      ownedNftIdsBaseline: ["7"],
+      createRetryAttempted: false,
       decrease: {
         status: "succeeded",
+        hash: HASH,
         budgets: {
-          tokenA: "0xa",
-          tokenB: "0xb",
+          tokenA: T0,
+          tokenB: T1,
           maxTokenAAmount: "1",
           maxTokenBAmount: "2",
         },
       },
+      swap: { status: "skipped" },
       create: { status: "failed", error: "boom" },
       newNftTokenId: null,
       updatedAt: new Date().toISOString(),
@@ -249,6 +317,50 @@ describe("state-store", () => {
     assert.equal(getInProgressRebalance(loadState(path), "7"), null);
     const raw = JSON.parse(readFileSync(path, "utf8"));
     assert.equal(raw.version, 1);
+  });
+
+  it("rejects key !== oldNftTokenId and invalid addresses", () => {
+    assert.throws(
+      () =>
+        upsertInProgressRebalance(emptyState(), {
+          cycleId: "c1",
+          oldNftTokenId: "7",
+          poolAddress: "not-an-address",
+          token0: T0,
+          token1: T1,
+          liquidityPercentageToDecrease: 100,
+          rangeWidthBps: 1000,
+          decrease: { status: "pending", budgets: null },
+          create: { status: "pending" },
+          newNftTokenId: null,
+          updatedAt: new Date().toISOString(),
+        }),
+      /poolAddress/,
+    );
+    const dir = mkdtempSync(join(tmpdir(), "lp-agent-state-"));
+    const path = join(dir, "bad-key.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        inProgress: {
+          "7": {
+            cycleId: "c1",
+            oldNftTokenId: "8",
+            poolAddress: POOL,
+            token0: T0,
+            token1: T1,
+            liquidityPercentageToDecrease: 100,
+            rangeWidthBps: 1000,
+            decrease: { status: "pending", budgets: null },
+            create: { status: "pending" },
+            newNftTokenId: null,
+            updatedAt: new Date().toISOString(),
+          },
+        },
+      }),
+    );
+    assert.throws(() => loadState(path), /oldNftTokenId/);
   });
 
   it("loadState returns empty on missing file", () => {

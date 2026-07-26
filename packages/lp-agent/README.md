@@ -54,9 +54,12 @@ Allowed actions: **`HOLD` | `REDUCE_LIQUIDITY` | `REBALANCE`**.
   - `needs_reopen` / `needs_reconciliation` mark the position and top-level run as unsuccessful (CLI exit nonzero)
   - State recovery runs **before** discovery/AI and does not depend on the model choosing REBALANCE again
   - Nonterminal decrease/swap → never auto-retry withdrawal/swap
-  - Create auto-remint is **off** by default; reconcile via `list_v3_positions` or set `LP_AGENT_ALLOW_CREATE_RETRY=true`
-  - Successful create must include valid `hash` + `nftTokenId` before clearing state
+  - Create auto-remint is **off** by default; reconcile via `list_v3_positions` (baseline-aware: truncated=false, same pool, active, not old NFT, **not in pre-rebalance owned set**) or one-shot `LP_AGENT_ALLOW_CREATE_RETRY=true` (optional cycle id gate)
+  - Before operator create retry: fresh `get_v3_position` must match stored pair/pool; `createRetryAttempted` prevents remint loops
+  - Successful decrease/create responses must include validated hash (+ nft/percentage/pair for decrease; nftTokenId for create) before advancing/clearing state
+  - Empty active discovery (`positions: []`) is valid after full close — must not discard recovery traces
 - Do **not** plan `claim_v3_fees` immediately before or after decrease
+- Registry `swap` waits for receipt confirmation before returning (so create does not race unsettled output)
 
 ## Orloj MCP tools (external HTTP)
 

@@ -25,6 +25,7 @@ const CONFIG = {
   chainId: "11155111",
   stateFilePath: "/tmp/lp-agent-test-state.json",
   allowCreateRetry: false,
+  allowCreateRetryCycleId: null,
 };
 
 const POSITION = {
@@ -572,13 +573,20 @@ describe("run-once pipeline", () => {
       },
       listPositions: async () => ({
         truncated: false,
-        positions: [],
+        positions: [
+          {
+            nftTokenId: "7",
+            poolAddress: POSITION.poolAddress,
+            liquidity: "5000",
+          },
+        ],
       }),
     });
     assert.equal(first.status, "error");
     assert.equal(decreaseCalls.length, 1);
     assert.equal(store.getState().inProgress["7"].decrease.status, "succeeded");
     assert.ok(store.getState().inProgress["7"].decrease.budgets);
+    assert.deepEqual(store.getState().inProgress["7"].ownedNftIdsBaseline, ["7"]);
 
     // Second run: NFT filtered out of discovery (zero liquidity) — recovery must still run.
     // Must NOT decrease again; must NOT auto-create without allowCreateRetry.
@@ -623,6 +631,8 @@ describe("run-once pipeline", () => {
 
   it("operator-approved create retry after decrease (LP_AGENT_ALLOW_CREATE_RETRY)", async () => {
     const store = memoryStateStore();
+    const HASH =
+      "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     store.saveStateFn("/tmp/x", {
       version: 1,
       inProgress: {
@@ -634,15 +644,18 @@ describe("run-once pipeline", () => {
           token1: POSITION.token1,
           liquidityPercentageToDecrease: 100,
           rangeWidthBps: 800,
+          ownedNftIdsBaseline: ["7"],
+          createRetryAttempted: false,
           decrease: {
             status: "succeeded",
+            hash: HASH,
             budgets: {
               tokenA: POSITION.token0,
               tokenB: POSITION.token1,
               maxTokenAAmount: "1",
               maxTokenBAmount: "2",
             },
-            mcpResponse: { hash: "0xdec" },
+            mcpResponse: { hash: HASH },
           },
           swap: { status: "skipped" },
           create: { status: "failed", error: "prior" },
@@ -659,6 +672,7 @@ describe("run-once pipeline", () => {
         agentMode: "execute",
         nftTokenId: null,
         allowCreateRetry: true,
+        allowCreateRetryCycleId: "c1",
       },
       ...store,
       discoverFn: async () => ({
@@ -670,6 +684,7 @@ describe("run-once pipeline", () => {
         positions: [],
       }),
       listPositions: async () => ({ truncated: false, positions: [] }),
+      getPosition: async () => POSITION,
       requestDecisionFn: async () => {
         throw new Error("no AI");
       },
@@ -688,6 +703,123 @@ describe("run-once pipeline", () => {
     assert.equal(trace.status, "ok");
     assert.equal(trace.results[0].execution.newNftTokenId, "99");
     assert.equal(store.getState().inProgress["7"], undefined);
+  });
+
+  it("create retry is one-shot even if ALLOW_CREATE_RETRY stays true", async () => {
+    const store = memoryStateStore();
+    const HASH =
+      "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    store.saveStateFn("/tmp/x", {
+      version: 1,
+      inProgress: {
+        "7": {
+          cycleId: "c1",
+          oldNftTokenId: "7",
+          poolAddress: POSITION.poolAddress,
+          token0: POSITION.token0,
+          token1: POSITION.token1,
+          liquidityPercentageToDecrease: 100,
+          rangeWidthBps: 800,
+          ownedNftIdsBaseline: ["7"],
+          createRetryAttempted: true,
+          decrease: {
+            status: "succeeded",
+            hash: HASH,
+            budgets: {
+              tokenA: POSITION.token0,
+              tokenB: POSITION.token1,
+              maxTokenAAmount: "1",
+              maxTokenBAmount: "2",
+            },
+          },
+          swap: { status: "skipped" },
+          create: { status: "failed", error: "prior" },
+          newNftTokenId: null,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    });
+    let creates = 0;
+    const trace = await runOnce({
+      config: {
+        ...CONFIG,
+        agentMode: "execute",
+        nftTokenId: null,
+        allowCreateRetry: true,
+      },
+      ...store,
+      discoverFn: async () => ({
+        source: "list_v3_positions",
+        truncated: false,
+        count: 0,
+        totalOwned: 0,
+        nftTokenIds: [],
+        positions: [],
+      }),
+      listPositions: async () => ({ truncated: false, positions: [] }),
+      getPosition: async () => POSITION,
+      createPosition: async () => {
+        creates += 1;
+        return {
+          hash: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          nftTokenId: "99",
+        };
+      },
+    });
+    assert.equal(creates, 0);
+    assert.match(String(trace.results[0].execution.message), /already attempted/);
+  });
+
+  it("empty active discovery after recovery preserves recovery results", async () => {
+    const store = memoryStateStore();
+    store.saveStateFn("/tmp/x", {
+      version: 1,
+      inProgress: {
+        "7": {
+          cycleId: "c1",
+          oldNftTokenId: "7",
+          poolAddress: POSITION.poolAddress,
+          token0: POSITION.token0,
+          token1: POSITION.token1,
+          liquidityPercentageToDecrease: 100,
+          rangeWidthBps: 800,
+          ownedNftIdsBaseline: ["7"],
+          createRetryAttempted: false,
+          decrease: { status: "pending", budgets: null },
+          create: { status: "pending" },
+          newNftTokenId: null,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    });
+    const { discoverManagedPositions } = await import("../src/discovery.mjs");
+    const listPositions = async () => ({
+      truncated: false,
+      count: 1,
+      totalOwned: 1,
+      positions: [
+        {
+          nftTokenId: "7",
+          poolAddress: POSITION.poolAddress,
+          liquidity: "0",
+        },
+      ],
+    });
+    const trace = await runOnce({
+      config: { ...CONFIG, agentMode: "execute", nftTokenId: null },
+      ...store,
+      discoverFn: (client, cfg) =>
+        discoverManagedPositions(client, cfg, { listPositions }),
+      listPositions,
+      decreasePosition: async () => {
+        throw new Error("no decrease");
+      },
+    });
+    assert.equal(trace.results.length, 1);
+    assert.equal(trace.results[0].execution.status, "needs_reconciliation");
+    assert.equal(trace.discovery.count, 0);
+    assert.deepEqual(trace.discovery.nftTokenIds, []);
+    assert.equal(trace.status, "error");
   });
 
   it("nonterminal decrease status never repeats withdrawal", async () => {
@@ -742,8 +874,20 @@ describe("run-once pipeline", () => {
       fetchMarket: async () => MARKET,
       extractFeaturesFn: () => FEATURES,
       requestDecisionFn: async () => rebalanceDecision(),
+      listPositions: async () => ({
+        truncated: false,
+        positions: [
+          {
+            nftTokenId: "7",
+            poolAddress: POSITION.poolAddress,
+            liquidity: "1",
+          },
+        ],
+      }),
       decreasePosition: async () => ({
         hash: "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        nftTokenId: "7",
+        liquidityPercentageToDecrease: 100,
         token0: { tokenAddress: POSITION.token0, amount: "0" },
         token1: { tokenAddress: POSITION.token1, amount: "0" },
       }),
