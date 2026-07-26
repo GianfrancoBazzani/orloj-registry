@@ -120,6 +120,7 @@ function baseHold(overrides = {}) {
     action: "HOLD",
     confidence: 0.7,
     liquidityPercentageToDecrease: null,
+    rangeWidthBps: null,
     summary: "Range healthy; low activity measured as zero in 6h.",
     signals,
     uncertainties: ["usd_data_unusable"],
@@ -168,6 +169,7 @@ function baseReduce(overrides = {}) {
     action: "REDUCE_LIQUIDITY",
     confidence: 0.8,
     liquidityPercentageToDecrease: 25,
+    rangeWidthBps: null,
     summary: "Near boundary with declining liquidity.",
     signals,
     uncertainties: ["fees.usd_6h ignored — USD unusable"],
@@ -179,10 +181,10 @@ function baseReduce(overrides = {}) {
 
 describe("decision-schema", () => {
   it("exposes Phase 1 actions and direction enum", () => {
-    assert.deepEqual([...PHASE1_ACTIONS], ["HOLD", "REDUCE_LIQUIDITY"]);
+    assert.deepEqual([...PHASE1_ACTIONS], ["HOLD", "REDUCE_LIQUIDITY", "REBALANCE"]);
     assert.deepEqual(
       [...SIGNAL_DIRECTIONS],
-      ["SUPPORTS_HOLD", "SUPPORTS_REDUCE", "UNCERTAINTY"],
+      ["SUPPORTS_HOLD", "SUPPORTS_REDUCE", "SUPPORTS_REBALANCE", "UNCERTAINTY"],
     );
     assert.equal(MIN_REDUCE_SUPPORT_SIGNALS, 2);
   });
@@ -217,7 +219,7 @@ describe("decision-schema", () => {
           }),
           FEATURES,
         ),
-      /SUPPORTS_HOLD \| SUPPORTS_REDUCE \| UNCERTAINTY/,
+      /SUPPORTS_HOLD \| SUPPORTS_REDUCE \| SUPPORTS_REBALANCE \| UNCERTAINTY/,
     );
   });
 
@@ -384,6 +386,7 @@ describe("decision-schema", () => {
         action: "REDUCE_LIQUIDITY",
         confidence: 0.7,
         liquidityPercentageToDecrease: 10,
+        rangeWidthBps: null,
         summary: "Fee/TVL and range both adverse.",
         signals: [
           {
@@ -706,6 +709,82 @@ describe("decision-schema", () => {
 
     // Happy path: range + liquidity as separate single-domain signals
     assert.equal(validateDecision(baseReduce(), FEATURES).action, "REDUCE_LIQUIDITY");
+  });
+
+  it("accepts REBALANCE with range + another market domain", () => {
+    const d = validateDecision(
+      {
+        action: "REBALANCE",
+        confidence: 0.8,
+        liquidityPercentageToDecrease: 100,
+        rangeWidthBps: 1000,
+        summary: "reopen around mid",
+        signals: [
+          {
+            direction: "SUPPORTS_REBALANCE",
+            observation: "near boundary",
+            citations: ["range.nearestBoundaryDistance"],
+          },
+          {
+            direction: "SUPPORTS_REBALANCE",
+            observation: "liq trend",
+            citations: ["liquidity.trend_24h.value"],
+          },
+        ],
+        uncertainties: [],
+        graphEvidence: {
+          subgraphId: FEATURES.graph.subgraphId,
+          indexedBlock: FEATURES.graph.indexedBlock,
+          ageSeconds: FEATURES.graph.ageSeconds,
+          citedFeaturePaths: [
+            "range.nearestBoundaryDistance",
+            "liquidity.trend_24h.value",
+          ],
+        },
+      },
+      FEATURES,
+    );
+    assert.equal(d.action, "REBALANCE");
+    assert.equal(d.rangeWidthBps, 1000);
+  });
+
+  it("rejects REBALANCE without range domain support", () => {
+    assert.throws(
+      () =>
+        validateDecision(
+          {
+            action: "REBALANCE",
+            confidence: 0.8,
+            liquidityPercentageToDecrease: 100,
+            rangeWidthBps: null,
+            summary: "no range",
+            signals: [
+              {
+                direction: "SUPPORTS_REBALANCE",
+                observation: "vol",
+                citations: ["volatility.tickProxy6h.tickMovement.value"],
+              },
+              {
+                direction: "SUPPORTS_REBALANCE",
+                observation: "liq",
+                citations: ["liquidity.trend_24h.value"],
+              },
+            ],
+            uncertainties: [],
+            graphEvidence: {
+              subgraphId: FEATURES.graph.subgraphId,
+              indexedBlock: FEATURES.graph.indexedBlock,
+              ageSeconds: FEATURES.graph.ageSeconds,
+              citedFeaturePaths: [
+                "volatility.tickProxy6h.tickMovement.value",
+                "liquidity.trend_24h.value",
+              ],
+            },
+          },
+          FEATURES,
+        ),
+      /range domain/,
+    );
   });
 
   it("regression: indexedBlock requires type-and-value exact match (no String coercion)", () => {

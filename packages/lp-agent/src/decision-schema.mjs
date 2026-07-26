@@ -1,20 +1,37 @@
 /**
  * Strict validation of AI decision JSON.
- * Phase 1 allowed actions: HOLD | REDUCE_LIQUIDITY (CLAIM_FEES / unknown rejected).
+ * Allowed actions: HOLD | REDUCE_LIQUIDITY | REBALANCE (CLAIM_FEES / unknown rejected).
  * Invalid output throws — never coerce to HOLD.
  */
 
-export const PHASE1_ACTIONS = Object.freeze(["HOLD", "REDUCE_LIQUIDITY"]);
+/** @deprecated use ALLOWED_ACTIONS */
+export const PHASE1_ACTIONS = Object.freeze(["HOLD", "REDUCE_LIQUIDITY", "REBALANCE"]);
+
+export const ALLOWED_ACTIONS = Object.freeze([
+  "HOLD",
+  "REDUCE_LIQUIDITY",
+  "REBALANCE",
+]);
 
 /** Signal direction enum. */
 export const SIGNAL_DIRECTIONS = Object.freeze([
   "SUPPORTS_HOLD",
   "SUPPORTS_REDUCE",
+  "SUPPORTS_REBALANCE",
   "UNCERTAINTY",
 ]);
 
 /** REDUCE must include at least this many SUPPORTS_REDUCE signals from distinct domains. */
 export const MIN_REDUCE_SUPPORT_SIGNALS = 2;
+
+/** REBALANCE requires ≥2 SUPPORTS_REBALANCE from distinct domains, including range. */
+export const MIN_REBALANCE_SUPPORT_SIGNALS = 2;
+
+/** Default half-width when AI leaves rangeWidthBps null on REBALANCE. */
+export const DEFAULT_RANGE_WIDTH_BPS = 1000;
+
+export const MIN_RANGE_WIDTH_BPS = 1;
+export const MAX_RANGE_WIDTH_BPS = 9999;
 
 /** @deprecated use MIN_REDUCE_SUPPORT_SIGNALS */
 export const MIN_REDUCE_SIGNALS = MIN_REDUCE_SUPPORT_SIGNALS;
@@ -96,10 +113,26 @@ const DECISION_KEYS = Object.freeze([
   "action",
   "confidence",
   "liquidityPercentageToDecrease",
+  "rangeWidthBps",
   "summary",
   "signals",
   "uncertainties",
   "graphEvidence",
+]);
+
+/** Fields the model must never supply (tool routing / addresses / ticks). */
+export const FORBIDDEN_AI_ROUTING_KEYS = Object.freeze([
+  "toolName",
+  "mcpCall",
+  "tokenA",
+  "tokenB",
+  "poolAddress",
+  "chainId",
+  "nftTokenId",
+  "tickLower",
+  "tickUpper",
+  "maxTokenAAmount",
+  "maxTokenBAmount",
 ]);
 
 const SIGNAL_KEYS = Object.freeze(["direction", "observation", "citations"]);
@@ -129,7 +162,7 @@ export function isGraphDerivedDomain(path) {
 }
 
 /**
- * Whether a path is an explicit market-metric eligible for SUPPORTS_HOLD / SUPPORTS_REDUCE.
+ * Whether a path is an explicit market-metric eligible for SUPPORTS_HOLD / SUPPORTS_REDUCE / SUPPORTS_REBALANCE.
  * .note / .reason / .reasons, identity fields, window/evidence metadata are excluded
  * (they may still be cited by UNCERTAINTY).
  * @param {string} path
@@ -295,11 +328,11 @@ export function validateDecision(decision, features) {
   const d = /** @type {Record<string, unknown>} */ (decision);
 
   if (d.action === "CLAIM_FEES") {
-    throw new Error('decision action "CLAIM_FEES" is not allowed in Phase 1');
+    throw new Error('decision action "CLAIM_FEES" is not allowed');
   }
-  if (d.action !== "HOLD" && d.action !== "REDUCE_LIQUIDITY") {
+  if (!ALLOWED_ACTIONS.includes(/** @type {string} */ (d.action))) {
     throw new Error(
-      `decision action must be HOLD or REDUCE_LIQUIDITY (got ${JSON.stringify(d.action)})`,
+      `decision action must be HOLD | REDUCE_LIQUIDITY | REBALANCE (got ${JSON.stringify(d.action)})`,
     );
   }
 
@@ -332,15 +365,47 @@ export function validateDecision(decision, features) {
         "decision HOLD requires liquidityPercentageToDecrease to be null",
       );
     }
-  } else if (
-    typeof d.liquidityPercentageToDecrease !== "number" ||
-    !Number.isInteger(d.liquidityPercentageToDecrease) ||
-    d.liquidityPercentageToDecrease < 1 ||
-    d.liquidityPercentageToDecrease > 100
-  ) {
-    throw new Error(
-      "decision REDUCE_LIQUIDITY requires liquidityPercentageToDecrease integer 1–100",
-    );
+    if (d.rangeWidthBps !== null) {
+      throw new Error("decision HOLD requires rangeWidthBps to be null");
+    }
+  } else if (d.action === "REDUCE_LIQUIDITY") {
+    if (
+      typeof d.liquidityPercentageToDecrease !== "number" ||
+      !Number.isInteger(d.liquidityPercentageToDecrease) ||
+      d.liquidityPercentageToDecrease < 1 ||
+      d.liquidityPercentageToDecrease > 100
+    ) {
+      throw new Error(
+        "decision REDUCE_LIQUIDITY requires liquidityPercentageToDecrease integer 1–100",
+      );
+    }
+    if (d.rangeWidthBps !== null) {
+      throw new Error("decision REDUCE_LIQUIDITY requires rangeWidthBps to be null");
+    }
+  } else {
+    // REBALANCE
+    if (
+      typeof d.liquidityPercentageToDecrease !== "number" ||
+      !Number.isInteger(d.liquidityPercentageToDecrease) ||
+      d.liquidityPercentageToDecrease < 1 ||
+      d.liquidityPercentageToDecrease > 100
+    ) {
+      throw new Error(
+        "decision REBALANCE requires liquidityPercentageToDecrease integer 1–100",
+      );
+    }
+    if (d.rangeWidthBps !== null) {
+      if (
+        typeof d.rangeWidthBps !== "number" ||
+        !Number.isInteger(d.rangeWidthBps) ||
+        d.rangeWidthBps < MIN_RANGE_WIDTH_BPS ||
+        d.rangeWidthBps > MAX_RANGE_WIDTH_BPS
+      ) {
+        throw new Error(
+          `decision REBALANCE rangeWidthBps must be null or integer ${MIN_RANGE_WIDTH_BPS}–${MAX_RANGE_WIDTH_BPS}`,
+        );
+      }
+    }
   }
 
   /** @type {string[]} */
@@ -392,7 +457,7 @@ export function validateDecision(decision, features) {
       if (direction === "UNCERTAINTY") {
         // Null/reason, notes, identity, and metadata may be cited as uncertainty.
       } else {
-        // SUPPORTS_HOLD | SUPPORTS_REDUCE — actionable market-metric primitives only.
+        // SUPPORTS_HOLD | SUPPORTS_REDUCE | SUPPORTS_REBALANCE — actionable market-metric primitives only.
         if (nullReason) {
           throw new Error(
             `decision signals[${i}].citations[${j}] is null/reason evidence and may only be cited by UNCERTAINTY`,
@@ -420,7 +485,11 @@ export function validateDecision(decision, features) {
       allCitations.push(cite);
     }
 
-    if (direction === "SUPPORTS_HOLD" || direction === "SUPPORTS_REDUCE") {
+    if (
+      direction === "SUPPORTS_HOLD" ||
+      direction === "SUPPORTS_REDUCE" ||
+      direction === "SUPPORTS_REBALANCE"
+    ) {
       if (domains.size !== 1) {
         throw new Error(
           `decision signals[${i}] actionable support must concern exactly one evidence domain (got ${domains.size}: ${[...domains].join(", ") || "none"})`,
@@ -434,8 +503,15 @@ export function validateDecision(decision, features) {
     }
   }
 
-  const requiredDirection =
-    d.action === "HOLD" ? "SUPPORTS_HOLD" : "SUPPORTS_REDUCE";
+  /** @type {string} */
+  let requiredDirection;
+  if (d.action === "HOLD") {
+    requiredDirection = "SUPPORTS_HOLD";
+  } else if (d.action === "REDUCE_LIQUIDITY") {
+    requiredDirection = "SUPPORTS_REDUCE";
+  } else {
+    requiredDirection = "SUPPORTS_REBALANCE";
+  }
   const actionAligned = supportSignals.filter(
     (s) => s.direction === requiredDirection,
   );
@@ -444,7 +520,7 @@ export function validateDecision(decision, features) {
     if (actionAligned.length < 1) {
       throw new Error("decision HOLD requires at least one SUPPORTS_HOLD signal");
     }
-  } else {
+  } else if (d.action === "REDUCE_LIQUIDITY") {
     if (actionAligned.length < MIN_REDUCE_SUPPORT_SIGNALS) {
       throw new Error(
         `decision REDUCE_LIQUIDITY requires at least ${MIN_REDUCE_SUPPORT_SIGNALS} SUPPORTS_REDUCE signals`,
@@ -470,6 +546,36 @@ export function validateDecision(decision, features) {
     if (reduceMarketDomains.size < MIN_REDUCE_SUPPORT_SIGNALS) {
       throw new Error(
         `decision REDUCE_LIQUIDITY requires SUPPORTS_REDUCE signals from at least ${MIN_REDUCE_SUPPORT_SIGNALS} distinct Graph market domains`,
+      );
+    }
+  } else {
+    // REBALANCE — stronger than REDUCE: ≥2 domains including range.
+    if (actionAligned.length < MIN_REBALANCE_SUPPORT_SIGNALS) {
+      throw new Error(
+        `decision REBALANCE requires at least ${MIN_REBALANCE_SUPPORT_SIGNALS} SUPPORTS_REBALANCE signals`,
+      );
+    }
+    const citeKeys = actionAligned.map((s) =>
+      [...s.citations].slice().sort().join("\0"),
+    );
+    if (new Set(citeKeys).size !== citeKeys.length) {
+      throw new Error(
+        "decision REBALANCE rejects duplicate citation sets across SUPPORTS_REBALANCE signals",
+      );
+    }
+    const rebalanceMarketDomains = new Set(
+      actionAligned
+        .map((s) => s.domain)
+        .filter((dom) => ACTIONABLE_MARKET_DOMAINS.includes(dom)),
+    );
+    if (rebalanceMarketDomains.size < MIN_REBALANCE_SUPPORT_SIGNALS) {
+      throw new Error(
+        `decision REBALANCE requires SUPPORTS_REBALANCE signals from at least ${MIN_REBALANCE_SUPPORT_SIGNALS} distinct Graph market domains`,
+      );
+    }
+    if (!rebalanceMarketDomains.has("range")) {
+      throw new Error(
+        "decision REBALANCE requires at least one SUPPORTS_REBALANCE signal from the range domain plus another market domain",
       );
     }
   }
@@ -568,6 +674,7 @@ export function validateDecision(decision, features) {
     action: d.action,
     confidence: d.confidence,
     liquidityPercentageToDecrease: d.liquidityPercentageToDecrease,
+    rangeWidthBps: d.rangeWidthBps === null ? null : d.rangeWidthBps,
     summary: d.summary.trim(),
     signals: d.signals.map((signal) => {
       const s = /** @type {Record<string, unknown>} */ (signal);

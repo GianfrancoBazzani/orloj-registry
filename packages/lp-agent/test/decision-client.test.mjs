@@ -119,6 +119,7 @@ function holdDecision() {
     action: "HOLD",
     confidence: 0.6,
     liquidityPercentageToDecrease: null,
+    rangeWidthBps: null,
     summary: "In range with measured activity; USD ignored.",
     signals,
     uncertainties: ["usdDataUsable.usable is false"],
@@ -148,6 +149,7 @@ function reduceDecision() {
     action: "REDUCE_LIQUIDITY",
     confidence: 0.85,
     liquidityPercentageToDecrease: 40,
+    rangeWidthBps: null,
     summary: "Near lower boundary with adverse liquidity trend.",
     signals,
     uncertainties: ["USD ignored"],
@@ -210,6 +212,9 @@ describe("decision-client", () => {
     assert.match(messages[0].content, /exactly one market domain/);
     assert.match(messages[0].content, /\.note/);
     const user = JSON.parse(messages[1].content);
+    assert.match(user.instruction, /HOLD/);
+    assert.match(user.instruction, /REDUCE_LIQUIDITY/);
+    assert.match(user.instruction, /REBALANCE/);
     assert.match(user.instruction, /untrusted data/i);
     assert.equal(user.pair.token0.symbol, "AAA");
   });

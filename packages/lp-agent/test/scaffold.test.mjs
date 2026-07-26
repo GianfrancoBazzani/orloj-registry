@@ -19,7 +19,7 @@ describe("lp-agent scaffold", () => {
       "2vXTcbEvA3TGTufatwRVUXQjJZDKCHmzZmZKYYXxaeeR",
     );
     assert.equal(DEFAULT_CHAIN_ID, "11155111");
-    assert.deepEqual([...PHASE1_ACTIONS], ["HOLD", "REDUCE_LIQUIDITY"]);
+    assert.deepEqual([...PHASE1_ACTIONS], ["HOLD", "REDUCE_LIQUIDITY", "REBALANCE"]);
     assert.ok(!PHASE1_ACTIONS.includes("CLAIM_FEES"));
     assert.equal(toSubgraphPoolId("0xAbC"), "0xabc");
   });
@@ -47,6 +47,7 @@ describe("lp-agent scaffold", () => {
     assert.match(readme, /execution\.status=held/);
     assert.match(readme, /Phase 2/);
     assert.match(readme, /maxTokenAAmount/);
+    assert.match(readme, /REBALANCE/);
     assert.match(readme, /list_v3_positions/);
     assert.match(readme, /Audit stop before live write/);
   });
