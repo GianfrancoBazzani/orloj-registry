@@ -7,7 +7,7 @@
     ".": "./src/types.ts"
   },
   "scripts": {
-    "publish:skills": "tsx scripts/publish.ts",
+    "upload:skills": "tsx scripts/publish.ts",
     "list:skills": "tsx scripts/list.ts",
     "verify:skills": "tsx scripts/verify.ts",
     "smoke": "tsx scripts/smoke.ts",
