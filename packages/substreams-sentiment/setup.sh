@@ -8,6 +8,7 @@
 #
 #   ./setup.sh                       # reads SUBSTREAMS_API_KEY from the environment
 #   SUBSTREAMS_API_KEY=server_... ./setup.sh
+#   ./setup.sh --docker              # build in a container (no local Rust/protoc needed)
 #
 # Get a free key at https://thegraph.com/studio or https://app.streamingfast.io
 
@@ -24,6 +25,31 @@ warn() { printf '  %s!%s %s\n' "$YELLOW" "$RESET" "$1"; }
 die()  { printf '  %s✗%s %s\n' "$RED" "$RESET" "$1" >&2; exit 1; }
 
 WASM="target/wasm32-unknown-unknown/release/substreams_sentiment.wasm"
+
+DOCKER_BUILD=0
+[ "${1:-}" = "--docker" ] && DOCKER_BUILD=1
+
+# ── 0. Container build (opt-in) ───────────────────────────────────────────────
+# Builds the wasm without Rust, protoc, or the substreams CLI on the host. Useful
+# on Linux, where the CLI ships as a tarball rather than a package. Only the BUILD
+# is containerized — the registry still invokes `substreams` as a local subprocess,
+# so the CLI is needed on the host at run time either way.
+if [ "$DOCKER_BUILD" = 1 ]; then
+  step "Building in a container"
+  command -v docker >/dev/null 2>&1 || die "docker not found"
+  docker build -t substreams-sentiment . || die "image build failed"
+  docker run --rm -v "$PWD:/out" substreams-sentiment || die "wasm extraction failed"
+  [ -f "$WASM" ] || die "container ran but $WASM is missing on the host"
+  ok "$WASM ($(du -h "$WASM" | cut -f1))"
+
+  if ! command -v substreams >/dev/null 2>&1; then
+    warn "substreams CLI is not on the host — the registry shells out to it at run time"
+    printf '    %smacOS: brew install streamingfast/tap/substreams%s\n' "$DIM" "$RESET"
+    printf '    %sLinux: https://github.com/streamingfast/substreams/releases%s\n' "$DIM" "$RESET"
+  fi
+  printf '\n%sModule built.%s Re-run without --docker for the token step.\n' "$BOLD" "$RESET"
+  exit 0
+fi
 
 # ── 1. Toolchain ──────────────────────────────────────────────────────────────
 # Checked before building because cargo's own error for a missing target is much

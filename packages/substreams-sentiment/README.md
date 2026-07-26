@@ -99,6 +99,28 @@ Get a free key at [thegraph.com/studio](https://thegraph.com/studio) or
 the exchange is not optional, and skipping it fails at stream time with
 `invalid JWT token`.
 
+### Building without a local toolchain
+
+If you would rather not install Rust and protoc — common on Linux, where the
+`substreams` CLI ships as a GitHub tarball rather than a package:
+
+```bash
+./setup.sh --docker
+```
+
+Builds the wasm in a container and copies it to the host path the manifest expects.
+Equivalent to:
+
+```bash
+docker build -t substreams-sentiment .
+docker run --rm -v "$PWD:/out" substreams-sentiment
+```
+
+⚠ This containerizes the **build only**. The registry invokes `substreams` as a
+subprocess on every MCP call, so the CLI still has to be on the host at run time. And
+the module itself always executes on the provider's infrastructure, never locally —
+there is no long-running process here to containerize.
+
 <details>
 <summary>Manual equivalent, if you would rather not run a script</summary>
 
