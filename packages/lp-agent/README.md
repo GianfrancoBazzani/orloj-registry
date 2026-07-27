@@ -8,7 +8,7 @@ Standalone Graph-powered Uniswap V3 LP management agent for Orloj.
 
 **Execute:** HOLD never writes; REDUCE calls `decrease_v3_position` once; REBALANCE runs a guarded decrease→create flow with local state idempotency. MCP failures fail closed per position (never silently downgraded to observe).
 
-**Non-overlap:** Does not edit Uniswap MCP / vault / app packages. Treats Orloj Uniswap MCP as an external HTTP service. No Substreams yet — Graph subgraph queries remain load-bearing.
+**Non-overlap:** Does not edit Uniswap MCP / vault packages. Treats Orloj Uniswap MCP as an external HTTP service. The ZeroClaw chat bridge lives in `packages/app` and imports this package in-process. No Substreams yet — Graph subgraph queries remain load-bearing.
 
 ## Requirements
 
@@ -118,6 +118,22 @@ AGENT_MODE=observe node src/run-once.mjs
 ```
 
 Loop/scheduler (`AGENT_RUN_MODE=loop`) is deferred — run once over all positions and cron/npm-loop for demos.
+
+## ZeroClaw chat bridge (MCP)
+
+ZeroClaw is only the **conversational supervisor**. This package remains the specialized management engine: Graph evidence → specialized 0G inference → guarded Orloj Uniswap MCP actions.
+
+Import and invoke in-process (never spawn `node src/run-once.mjs`):
+
+- `runOnce` / `loadConfig`
+- `createLpAgentMcpDispatcher` — JSON-RPC methods: `initialize`, `notifications/initialized`, `ping`, `tools/list`, `tools/call`
+- Tools:
+  - `analyze_uniswap_v3_positions` — always `AGENT_MODE=observe` (no writes)
+  - `manage_uniswap_v3_positions` — one execute cycle; advertised only when the host sets an execute flag
+- Trusted config is built server-side (`buildTrustedChatConfig`): Sepolia only, all active positions, `allowCreateRetry=false`, per-agent hashed state file under a host-provided state directory. Caller/tool arguments cannot override mode, chain, token, NFT, state path, or retry flags.
+- Same-agent concurrent cycles are rejected (`LP_AGENT_BUSY`).
+
+The Next.js host exposes `POST /api/lp-agent/mcp` and adds an internal catalog entry `orloj-lp-manager` when `LP_AGENT_MCP_URL` is set. See `packages/app/.env.example`. File-backed state is PoC-only; DB-backed scheduling is roadmap work. Initial LP creation remains a separate Uniswap MCP / chat action.
 
 ## Secrets
 

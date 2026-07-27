@@ -1,4 +1,8 @@
 import type { Mcp } from "@/components/data";
+import {
+  getInternalLpManagerManifest,
+  toCatalogMcp,
+} from "@/lib/lp-agent-mcp";
 
 const CHAIN_NAMES: Record<number, string> = {
   1: "Ethereum",
@@ -9,6 +13,7 @@ const CHAIN_NAMES: Record<number, string> = {
   42161: "Arbitrum",
   8453: "Base",
   43114: "Avalanche",
+  11155111: "Sepolia",
 };
 
 // Chain-agnostic MCPs (e.g. uniswap) target a chain per tool call rather than being bound to
@@ -100,14 +105,24 @@ function mapToMcp(item: RegistryMcp, registryUrl: string): Mcp {
 
 export async function fetchMcps(): Promise<Mcp[]> {
   const registryUrl = process.env.REGISTRY_URL;
-  if (!registryUrl) return [];
   const publicRegistryUrl = process.env.PUBLIC_REGISTRY_URL ?? registryUrl;
-  try {
-    const res = await fetch(`${registryUrl}/mcp`, { cache: "no-store" });
-    if (!res.ok) return [];
-    const data: RegistryMcp[] = await res.json();
-    return data.map((item) => mapToMcp(item, publicRegistryUrl));
-  } catch {
-    return [];
+  let mcps: Mcp[] = [];
+  if (registryUrl) {
+    try {
+      const res = await fetch(`${registryUrl}/mcp`, { cache: "no-store" });
+      if (res.ok) {
+        const data: RegistryMcp[] = await res.json();
+        mcps = data.map((item) => mapToMcp(item, publicRegistryUrl ?? registryUrl));
+      }
+    } catch {
+      // Registry down — still surface the internal LP Manager when configured.
+    }
   }
+
+  const internal = getInternalLpManagerManifest();
+  if (internal) {
+    mcps = mcps.filter((m) => m.id !== internal.name);
+    mcps = [toCatalogMcp(internal), ...mcps];
+  }
+  return mcps;
 }

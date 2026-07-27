@@ -89,6 +89,18 @@ export {
 } from "./rebalance.mjs";
 export { runOnce } from "./run-once.mjs";
 export {
+  LP_MANAGER_MCP_ID,
+  ANALYZE_TOOL,
+  MANAGE_TOOL,
+  safeAgentStateKey,
+  stateFilePathForAgent,
+  buildTrustedChatConfig,
+  acquireAgentCycleLock,
+  activeAgentCycleLockCount,
+  resetAgentCycleLocksForTests,
+} from "./chat-bridge.mjs";
+export { createLpAgentMcpDispatcher } from "./mcp-dispatcher.mjs";
+export {
   extractFeatures,
   isInRange,
   assessUsdDataUsable,

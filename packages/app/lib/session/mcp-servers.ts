@@ -1,4 +1,8 @@
 import type { McpServerEntry } from "./mcp-block";
+import { getInternalLpManagerManifest } from "@/lib/internal-lp-manifest";
+import { selectionRequiresRegistry } from "./selection-registry-policy.mjs";
+
+export { selectionRequiresRegistry };
 
 export const MAX_MCPS = 32;
 
@@ -45,17 +49,39 @@ export const resolveMcpServers = async (
   bearerToken: string,
 ): Promise<ResolvedMcps> => {
   const registryUrl = process.env.REGISTRY_URL;
-  if (!registryUrl) throw new RegistryUnreachableError(new Error("REGISTRY_URL is unset"));
+  const internal = getInternalLpManagerManifest();
 
   if (mcpNames.length === 0) return { entries: [], dropped: [] };
 
-  let manifest: ManifestEntry[];
-  try {
-    const res = await fetch(`${registryUrl}/mcp`, { cache: "no-store" });
-    if (!res.ok) throw new Error(`registry responded ${res.status}`);
-    manifest = (await res.json()) as ManifestEntry[];
-  } catch (err) {
-    throw new RegistryUnreachableError(err);
+  let manifest: ManifestEntry[] = [];
+  let registryFailed: unknown = null;
+  if (registryUrl) {
+    try {
+      const res = await fetch(`${registryUrl}/mcp`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`registry responded ${res.status}`);
+      manifest = (await res.json()) as ManifestEntry[];
+    } catch (err) {
+      registryFailed = err;
+    }
+  } else {
+    registryFailed = new Error("REGISTRY_URL is unset");
+  }
+
+  // App-owned Graph LP Manager — same definition as the MCP catalog.
+  if (internal) {
+    manifest = [
+      { name: internal.name, url: internal.url, contractName: internal.contractName },
+      ...manifest.filter((m) => m.name !== internal.name),
+    ];
+  }
+
+  // A temporary registry outage must not drop registry MCPs (e.g. uniswap) from the
+  // stored selection. Only allow registry-independent resolve when every requested
+  // name is the internal LP Manager.
+  if (registryFailed) {
+    if (selectionRequiresRegistry(mcpNames, internal?.name ?? null)) {
+      throw new RegistryUnreachableError(registryFailed);
+    }
   }
 
   const byName = new Map(manifest.map((m) => [m.name, m]));
@@ -84,13 +110,16 @@ export const resolveMcpServers = async (
     for (let n = 2; used.has(serverName); n += 1) serverName = `${base}_${n}`;
     used.add(serverName);
 
-    // The manifest's `url` is a path (`/interface/<name>/mcp`), not an absolute URL — the
-    // same join lib/registry-mcps.ts does for the catalog. REGISTRY_URL, not
-    // PUBLIC_REGISTRY_URL: zeroclaw runs on the same host as the app.
+    // Absolute URLs (internal LP Manager) must not be joined against REGISTRY_URL.
+    const absoluteUrl = /^https?:\/\//i.test(item.url)
+      ? item.url
+      : registryUrl
+        ? new URL(item.url, registryUrl).toString()
+        : item.url;
     entries.push({
       mcpName,
       serverName,
-      url: new URL(item.url, registryUrl).toString(),
+      url: absoluteUrl,
       bearerToken,
     });
   }

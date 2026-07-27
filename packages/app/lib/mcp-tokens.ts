@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { getPool } from "@/lib/db";
 
 const TOKEN_PREFIX = "mcpk_live_";
@@ -42,6 +42,32 @@ export const getActiveTokenForAgent = async (
     [agentId],
   );
   return rows[0]?.token ?? null;
+};
+
+/**
+ * Resolve an active (non-revoked) raw MCP bearer token to its Orloj agent_id.
+ * Exact token match only — never authenticate by token_prefix.
+ */
+export const resolveAgentIdFromRawToken = async (
+  rawToken: string,
+): Promise<string | null> => {
+  if (typeof rawToken !== "string" || rawToken.trim() === "") return null;
+  const token = rawToken.trim();
+  const pool = await getPool();
+  const { rows } = await pool.query<{ agent_id: string; token: string }>(
+    `SELECT agent_id, token
+       FROM mcp_api_key
+      WHERE token = $1
+        AND revoked_at IS NULL
+      LIMIT 1`,
+    [token],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  const a = Buffer.from(row.token, "utf8");
+  const b = Buffer.from(token, "utf8");
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+  return row.agent_id;
 };
 
 export const revokeAllTokensForAgent = async (

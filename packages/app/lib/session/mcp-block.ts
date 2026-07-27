@@ -4,6 +4,9 @@ import path from "node:path";
 export const MANAGED_MARKER =
   "# >>> orloj-managed — regenerated on every session start; do not edit below this line";
 
+/** Must match packages/app/lib/internal-lp-manifest.ts LP_MANAGER_MCP_ID. */
+const LP_MANAGER_MCP_ID = "orloj-lp-manager";
+
 const SIDECAR = "orloj-mcps.json";
 const BUNDLE = "remote";
 
@@ -94,6 +97,35 @@ export const writeMcpSelection = async (
   return selection;
 };
 
+/**
+ * Map a managed-block server URL back to an MCP selection id.
+ * Registry paths use /interface/<name>/mcp; the app-hosted LP Manager uses LP_AGENT_MCP_URL.
+ */
+export const mcpNameFromManagedUrl = (url: string): string | null => {
+  if (typeof url !== "string" || url.trim() === "") return null;
+  const trimmed = url.trim();
+  const interfaceMatch = /\/interface\/([^/]+)\/mcp(?:\?|$)/.exec(trimmed)?.[1];
+  if (interfaceMatch) return decodeURIComponent(interfaceMatch);
+
+  const lpUrl = process.env.LP_AGENT_MCP_URL?.trim();
+  if (lpUrl && urlsLooselyEqual(lpUrl, trimmed)) return LP_MANAGER_MCP_ID;
+  return null;
+};
+
+const urlsLooselyEqual = (a: string, b: string): boolean => {
+  try {
+    const ua = new URL(a);
+    const ub = new URL(b);
+    const norm = (u: URL) => {
+      const pathname = u.pathname.replace(/\/+$/, "") || "/";
+      return `${u.protocol}//${u.host}${pathname}${u.search}`;
+    };
+    return norm(ua) === norm(ub);
+  } catch {
+    return a.replace(/\/+$/, "") === b.replace(/\/+$/, "");
+  }
+};
+
 // Derives the selection from the managed block when the sidecar is missing — a dir made by
 // an older build or by hand — and rewrites the sidecar so the next read is cheap.
 const deriveFromBlock = (config: string): McpSelectionItem[] => {
@@ -105,8 +137,8 @@ const deriveFromBlock = (config: string): McpSelectionItem[] => {
   let m: RegExpExecArray | null;
   while ((m = re.exec(block)) !== null) {
     const [, serverName, url] = m;
-    const mcpName = /\/interface\/([^/]+)\/mcp/.exec(url)?.[1];
-    if (mcpName) items.push({ mcpName: decodeURIComponent(mcpName), serverName });
+    const mcpName = mcpNameFromManagedUrl(url);
+    if (mcpName) items.push({ mcpName, serverName });
   }
   return items;
 };
