@@ -23,6 +23,7 @@ use tower_http::cors::CorsLayer;
 
 use crate::{
     auth::require_bearer,
+    contract_source::fetch_contract,
     db::{ContractMetaRow, DbPool},
     mcps::{
         evm_mcp::{EvmMcpServer, build_tools, is_view},
@@ -30,7 +31,6 @@ use crate::{
         uniswap::{UniswapMcpServer, uniswap_tool_count},
     },
     registry::{McpEntry, McpMeta, Registry},
-    sourcify::fetch_contract,
 };
 
 // ---------------------------------------------------------------------------
@@ -259,7 +259,7 @@ async fn validate_contract(address: &str, provider: &impl Provider) -> Result<()
 /// POST /register
 /// Body: `{ chainId, address, rpcUrl? }`
 ///
-/// Validates input, fetches ABI from Sourcify (once ever), persists to DB,
+/// Validates input, fetches the ABI (once ever), persists to DB,
 /// builds the MCP in memory, and returns the entry metadata.
 async fn register(State(state): State<SharedState>, Json(body): Json<RegisterBody>) -> Response {
     let address = body.address.trim().to_string();
@@ -292,7 +292,7 @@ async fn register(State(state): State<SharedState>, Json(body): Json<RegisterBod
         return Json(entry_response(&name, &entry)).into_response();
     }
 
-    // Check DB for existing row — skip Sourcify if already registered.
+    // Check DB for existing row — skip the ABI lookup if already registered.
     let existing = match state.db.load_contract(chain_id, &address).await {
         Ok(row) => row,
         Err(e) => {
@@ -313,20 +313,20 @@ async fn register(State(state): State<SharedState>, Json(body): Json<RegisterBod
             row.rpc_url.or(body.rpc_url),
         )
     } else {
-        // Fetch from Sourcify and persist.
-        let sourcify = match fetch_contract(chain_id, &address).await {
+        // Fetch the ABI (tries multiple sources, see contract_source::fetch_contract) and persist.
+        let resolved = match fetch_contract(chain_id, &address).await {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("[register] sourcify error: {e:#}");
+                eprintln!("[register] abi lookup error: {e:#}");
                 return (
                     StatusCode::BAD_GATEWAY,
-                    Json(json!({ "error": format!("sourcify error: {e}") })),
+                    Json(json!({ "error": format!("abi lookup error: {e}") })),
                 )
                     .into_response();
             }
         };
 
-        let abi_json = match serde_json::to_value(&sourcify.abi) {
+        let abi_json = match serde_json::to_value(&resolved.abi) {
             Ok(v) => v,
             Err(e) => {
                 return (
@@ -342,10 +342,10 @@ async fn register(State(state): State<SharedState>, Json(body): Json<RegisterBod
             .upsert_contract(
                 chain_id,
                 &address,
-                sourcify.implementation.as_deref(),
+                resolved.implementation.as_deref(),
                 body.rpc_url.as_deref(),
                 &abi_json,
-                &sourcify.contract_name,
+                &resolved.contract_name,
             )
             .await
         {
@@ -359,8 +359,8 @@ async fn register(State(state): State<SharedState>, Json(body): Json<RegisterBod
 
         (
             abi_json,
-            sourcify.contract_name,
-            sourcify.implementation,
+            resolved.contract_name,
+            resolved.implementation,
             body.rpc_url,
         )
     };

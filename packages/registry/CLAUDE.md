@@ -4,11 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project is
 
-A Rust MCP registry server. Given a contract address and chain ID it fetches the ABI from Sourcify (once, then persists to Postgres), builds an in-memory MCP server with one tool per ABI function, and routes `POST /interface/:name/mcp` requests to it.
+A Rust MCP registry server. Given a contract address and chain ID it fetches the ABI from Sourcify, falling back to Blockscout if Sourcify has no data for that (chain_id, address) (once, then persists to Postgres), builds an in-memory MCP server with one tool per ABI function, and routes `POST /interface/:name/mcp` requests to it.
 
 Key behaviors:
 - **Lazy loading + idle eviction** — MCPs build on first request; idle for 30 min → evicted, rebuilt on next access
-- **Proxy contract support** — detects proxy via Sourcify `proxyResolution`, fetches implementation ABI, generates tools from it, but all calls target the proxy address
+- **Sourcify → Blockscout ABI fallback** — `contract_source::fetch_contract` tries Sourcify first; any failure (network error, non-2xx, unverified) falls through to Blockscout before erroring. Not every verified contract is indexed by Sourcify. ABI provenance is only logged, not persisted.
+- **Proxy contract support** — detects proxy via Sourcify `proxyResolution` (or Blockscout's `implementations[].address_hash` — note the differing key name), fetches implementation ABI, generates tools from it, but all calls target the proxy address
 - **Vault-per-agent signing** — write calls resolve the agent's vault (Orbitport KMS or 1Claw) from Postgres; no static keys
 
 ## Source layout
@@ -23,6 +24,8 @@ src/
   registry.rs              # Arc<RwLock<HashMap>> registry with idle eviction background task
   server.rs                # axum router: /healthz, /mcp, /register, /register-native, /interface/:name/mcp
   sourcify.rs              # fetch_contract(): Sourcify API, proxy detection + impl ABI fetch
+  blockscout.rs            # fetch_contract(): Blockscout fallback — dynamic chain_id -> instance URL via chains.blockscout.com, proxy detection + impl ABI fetch
+  contract_source.rs       # fetch_contract(): tries sourcify::fetch_contract, falls back to blockscout::fetch_contract on any failure
   mcps/
     mod.rs
     evm_mcp.rs             # EvmMcpServer<P>: list_tools, call_tool, dispatch (JSON-RPC), build_tools
@@ -69,9 +72,15 @@ cargo check                          # fast type-check without linking
 
 `view` / `pure` → `eth_call`. `nonpayable` / `payable` → signed transaction via vault.
 
+## ABI source fallback
+
+`contract_source::fetch_contract(chain_id, address)` is what `POST /register` calls (not `sourcify::fetch_contract` directly). It tries Sourcify first; any `Err` (network error, non-2xx, unverified) logs and falls through to `blockscout::fetch_contract`. Both return the same shape (`abi`, `implementation`, `contract_name`); if both fail, the combined error surfaces as the `502` response. Source (sourcify vs blockscout) is only logged, not persisted to Postgres.
+
 ## Proxy contract flow
 
-`sourcify::fetch_contract` queries `?fields=abi,compilation,proxyResolution`. If `proxyResolution.isProxy` is true and `proxyResolution.implementations[0].address` is present, it makes a second Sourcify call for the implementation's ABI and returns that. The stored ABI is the implementation's; `McpEntry.address` (the proxy) is used for all on-chain calls.
+`sourcify::fetch_contract` queries `?fields=abi,compilation,proxyResolution`. If `proxyResolution.isProxy` is true and `proxyResolution.implementations[0].address` is present, it makes a second Sourcify call for the implementation's ABI and returns that. `blockscout::fetch_contract` mirrors this against `GET {instance}/api/v2/smart-contracts/{address}`, but the proxy pointer is `implementations[0].address_hash` (not `.address`). Either way, the stored ABI is the implementation's; `McpEntry.address` (the proxy) is used for all on-chain calls.
+
+Blockscout has no single multichain endpoint like Sourcify — each chain is a separate instance with no fixed subdomain convention (chain 10's is `explorer.optimism.io`, not `optimism.blockscout.com`). `blockscout::explorer_base_url` resolves `chain_id -> instance URL` dynamically from the public registry at `chains.blockscout.com/api/chains`, cached in-process for the server's lifetime. `BLOCKSCOUT_API_KEY` (optional env var) is appended as `?apikey=` to lift anonymous rate limits.
 
 ## Vault signing flow
 
